@@ -11,6 +11,7 @@ export default defineConfig({
   ],
   base: './',
   server: {
+    port: 5180,
     allowedHosts: true,
   },
   // Vite uses esbuild both for transforms and (in dev) dependency prebundling.
