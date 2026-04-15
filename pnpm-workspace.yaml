@@ -1,0 +1,6 @@
+allowBuilds:
+  "@series-inc/rundot-3d-engine": true
+  "@series-inc/rundot-game-sdk": true
+onlyBuiltDependencies:
+  - "@series-inc/rundot-3d-engine"
+  - "@series-inc/rundot-game-sdk"

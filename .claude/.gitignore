@@ -1,0 +1,13 @@
+# Only commit session data needed for Claude to resume conversations
+# Ignore large/unnecessary files to keep repo size manageable
+cache/
+debug/
+todos/
+shell-snapshots/
+plugins/
+statsig/
+ide/
+plans/
+history.jsonl
+stats-cache.json
+*.log

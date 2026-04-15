@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(asset-bot *)",
+      "Bash(grep *)",
+      "Bash(head *)"
+    ]
+  },
+  "mcpServers": {
+    "asset-bot": {
+      "command": "asset-bot",
+      "args": [
+        "mcp"
+      ],
+      "envFile": ".env"
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/migrate-storage.cjs"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "name": "run-template-2d-react",
+  "version": "1.0.0",
+  "description": "React + Vite + TypeScript app with RundotGameAPI integration",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "_build": "tsc && vite build",
+    "build": "npm run _build",
+    "build:bundled": "cross-env RUNDOT_GAME_DISABLE_EMBEDDED_LIBS=true npm run _build",
+    "preview": "vite preview",
+    "deploy": "npm run build && rundot deploy",
+    "format": "prettier \"{src,public}/**/*.{ts,tsx,js,jsx,json,css,html}\" --write",
+    "format:check": "prettier \"{src,public}/**/*.{ts,tsx,js,jsx,json,css,html}\" --check"
+  },
+  "keywords": [
+    "react",
+    "vite",
+    "typescript",
+    "RUN.game"
+  ],
+  "author": "",
+  "license": "SEE LICENSE IN LICENSE.txt",
+  "devDependencies": {
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@types/three": "^0.183.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "cross-env": "^7.0.3",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.3.5"
+  },
+  "dependencies": {
+    "@series-inc/rundot-game-sdk": "^5.3.0",
+    "delaunator": "^5.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "rot-js": "^2.2.1",
+    "three": "0.183.2",
+    "zustand": "5.0.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@series-inc/rundot-game-sdk"
+    ]
+  }
+}
