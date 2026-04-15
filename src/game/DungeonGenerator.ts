@@ -5,18 +5,24 @@
  *
  * Layer 0: Noise — decides which cells are active
  * Layer 1: Tile grid — reads Layer 0, writes floor/wall tiles
- * Layer 2: Spawn/exit — picks spawn and exit positions
- * Layer 3: Spawn rooms — carves rooms at spawn/exit, connects to dungeon
- * Layer 4: Connectivity — bridges disconnected islands with hallways
+ * Layer 2: Biome — assigns dungeon vs cave per cell based on noise
+ * Layer 3: Fine noise — sculpts cave biome cells only, leaves dungeon cells clean
+ * Layer 4: Spawn/exit — picks spawn and exit positions
+ * Layer 5: Spawn rooms — carves rooms at spawn/exit, connects to dungeon
+ * Layer 6: Connectivity — bridges disconnected islands with hallways
+ * Layer 7: Golden path — A* from spawn to exit, guaranteed route
  */
 
 import { TileType, type DungeonData, type RoomData, type GridPos } from './types';
 import { getOrCreateCell, getCell, resetCells } from './dungeon/cells';
 import { generateLayer0 } from './dungeon/layer0-noise';
 import { generateLayer1TileGrid } from './dungeon/layer1-tilegrid';
+import { assignBiomes } from './dungeon/layer2-biome';
+import { applyFineNoise } from './dungeon/layer1-finenoise';
 import { findSpawnExit, generateLayer2SpawnExit } from './dungeon/layer2-spawnexit';
 import { generateLayer3SpawnRooms } from './dungeon/layer3-spawnrooms';
 import { connectIslands } from './dungeon/layer4-connect';
+import { computeGoldenPath } from './dungeon/layer5-goldenpath';
 
 // ── Config ──
 
@@ -57,6 +63,12 @@ export function generateDungeon(opts: GenerateOpts): DungeonData {
       generateLayer1TileGrid(cell, tiles, rooms, CELL_TILE_SIZE, GRID_TILES, 1);
     }
   }
+
+  // ── Layer 2: Biome assignment ──
+  assignBiomes(CELL_TILE_SIZE, seed + floor * 1000);
+
+  // ── Layer 3: Fine noise — sculpt cave biome cells only ──
+  applyFineNoise(tiles, GRID_TILES, CELL_TILE_SIZE, seed + floor * 1000);
 
   // ── Layer 2: Pick spawn/exit positions ──
   // Red flag: findSpawnExit reads all cells globally (not per-cell).
@@ -100,6 +112,9 @@ export function generateDungeon(opts: GenerateOpts): DungeonData {
 
   // ── Layer 4: Connect disconnected islands ──
   connectIslands(tiles, rooms, entrance, GRID_TILES, CELL_TILE_SIZE);
+
+  // ── Layer 5: Golden path ──
+  computeGoldenPath(tiles, entrance, exit, GRID_TILES);
 
   // ── Output ──
   return {

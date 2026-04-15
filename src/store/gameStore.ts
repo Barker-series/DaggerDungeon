@@ -26,6 +26,7 @@ export interface GameState {
   // ── Player ──
   playerPos: GridPos;
   playerFacing: Direction;
+  playerYaw: number; // camera yaw in radians for minimap
   playerHp: number;
   playerMaxHp: number;
   playerMana: number;
@@ -64,6 +65,7 @@ export interface GameState {
   setSeed: (seed: number) => void;
   setPlayerPos: (pos: GridPos) => void;
   setPlayerFacing: (dir: Direction) => void;
+  setPlayerYaw: (yaw: number) => void;
   setDungeon: (d: DungeonData) => void;
   setCurrentFloor: (f: number) => void;
   takeDamage: (amount: number) => void;
@@ -93,6 +95,7 @@ export const useGameStore = create<GameState>((set) => ({
   screen: 'menu',
   playerPos: { x: 0, y: 0 },
   playerFacing: Direction.North,
+  playerYaw: 0,
   playerHp: 100,
   playerMaxHp: 100,
   playerMana: 0,
@@ -118,6 +121,7 @@ export const useGameStore = create<GameState>((set) => ({
   setSeed: (seed) => set({ seed }),
   setPlayerPos: (playerPos) => set({ playerPos }),
   setPlayerFacing: (playerFacing) => set({ playerFacing }),
+  setPlayerYaw: (playerYaw) => set({ playerYaw }),
   setDungeon: (dungeon) => set({ dungeon }),
   setCurrentFloor: (currentFloor) => set({ currentFloor }),
   takeDamage: (amount) =>

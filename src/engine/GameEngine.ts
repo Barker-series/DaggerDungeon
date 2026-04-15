@@ -287,6 +287,7 @@ export class GameEngine {
     if (facing !== store.playerFacing) {
       store.setPlayerFacing(facing);
     }
+    store.setPlayerYaw(this.gridCamera.yaw);
   }
 
   // ── Enemy AI ──

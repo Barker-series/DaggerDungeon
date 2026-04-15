@@ -9,7 +9,7 @@ export function Minimap() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dungeon = useGameStore((s) => s.dungeon);
   const playerPos = useGameStore((s) => s.playerPos);
-  const playerFacing = useGameStore((s) => s.playerFacing);
+  const playerYaw = useGameStore((s) => s.playerYaw);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -57,29 +57,31 @@ export function Minimap() {
       }
     }
 
-    // Draw player
+    // Draw player as a triangle pointing in look direction
     const ppx = MAP_SIZE / 2;
     const ppy = MAP_SIZE / 2;
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(ppx, ppy, 3, 0, Math.PI * 2);
-    ctx.fill();
 
-    // Draw facing direction
-    const angles = [
-      -Math.PI / 2, // North (up)
-      0, // East (right)
-      Math.PI / 2, // South (down)
-      Math.PI, // West (left)
-    ];
-    const angle = angles[playerFacing] ?? 0;
-    ctx.strokeStyle = '#ff0';
-    ctx.lineWidth = 2;
+    // Camera yaw: 0 = looking toward -Z (south on screen = down)
+    // Minimap: -Y = north (up). So angle on minimap = yaw + PI
+    const angle = playerYaw + Math.PI;
+
+    const size = 6;
+    // Triangle: tip in front, two points behind
+    const tipX = ppx + Math.sin(angle) * size;
+    const tipY = ppy + Math.cos(angle) * size;
+    const leftX = ppx + Math.sin(angle + 2.5) * size * 0.7;
+    const leftY = ppy + Math.cos(angle + 2.5) * size * 0.7;
+    const rightX = ppx + Math.sin(angle - 2.5) * size * 0.7;
+    const rightY = ppy + Math.cos(angle - 2.5) * size * 0.7;
+
+    ctx.fillStyle = '#ff0';
     ctx.beginPath();
-    ctx.moveTo(ppx, ppy);
-    ctx.lineTo(ppx + Math.cos(angle) * 8, ppy + Math.sin(angle) * 8);
-    ctx.stroke();
-  }, [dungeon, playerPos, playerFacing]);
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(leftX, leftY);
+    ctx.lineTo(rightX, rightY);
+    ctx.closePath();
+    ctx.fill();
+  }, [dungeon, playerPos, playerYaw]);
 
   return (
     <canvas

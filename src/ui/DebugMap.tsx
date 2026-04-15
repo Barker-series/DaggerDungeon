@@ -2,11 +2,12 @@ import { useRef, useEffect, useState } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { getAllCells, type DungeonCell } from '../game/dungeon/cells';
 import { hallwayCells } from '../game/dungeon/layer4-connect';
+import { goldenPath } from '../game/dungeon/layer5-goldenpath';
 
 const CELL_PX = 40; // pixels per cell in the debug view
 
-type ViewMode = 'tiles' | 'noise' | 'content' | 'theme';
-const VIEW_MODES: ViewMode[] = ['tiles', 'noise', 'content', 'theme'];
+type ViewMode = 'tiles' | 'biome' | 'noise' | 'content';
+const VIEW_MODES: ViewMode[] = ['tiles', 'biome', 'noise', 'content'];
 
 export function DebugMap() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -57,8 +58,14 @@ export function DebugMap() {
 
     const cellTileSize = 14;
 
+    // Build cell lookup (used by both tile and cell views)
+    const cellMap = new Map<string, DungeonCell>();
+    for (const cell of cells) {
+      cellMap.set(`${cell.cx},${cell.cz}`, cell);
+    }
+
     // ── Tile-level view: draw actual tiles from dungeon.tiles ──
-    if (mode === 'tiles' && dungeon) {
+    if ((mode === 'tiles' || mode === 'biome') && dungeon) {
       const mapSize = 560; // fixed map size in pixels
       const tilePx = Math.max(2, Math.floor(mapSize / dungeon.width));
       canvas.width = dungeon.width * tilePx + 200;
@@ -72,12 +79,26 @@ export function DebugMap() {
           const px = tx * tilePx;
           const pz = tz * tilePx;
 
-          switch (tile) {
-            case 0: ctx.fillStyle = '#1a1a1a'; break; // Wall
-            case 1: ctx.fillStyle = '#3a5a3a'; break; // Floor
-            case 2: ctx.fillStyle = '#5a4a2a'; break; // Door
-            case 3: ctx.fillStyle = '#2a8a2a'; break; // StairsDown
-            default: ctx.fillStyle = '#333'; break;
+          if (mode === 'biome') {
+            if (tile === 0) {
+              ctx.fillStyle = '#0a0a0a';
+            } else if (tile === 3) {
+              ctx.fillStyle = '#2a8a2a';
+            } else {
+              const cellX = Math.floor(tx / cellTileSize);
+              const cellZ = Math.floor(tz / cellTileSize);
+              const biomeCell = cellMap.get(`${cellX},${cellZ}`);
+              const biome = biomeCell?.biome ?? 'dungeon';
+              ctx.fillStyle = biome === 'cave' ? '#8a5a2a' : '#2a5a8a';
+            }
+          } else {
+            switch (tile) {
+              case 0: ctx.fillStyle = '#1a1a1a'; break;
+              case 1: ctx.fillStyle = '#3a5a3a'; break;
+              case 2: ctx.fillStyle = '#5a4a2a'; break;
+              case 3: ctx.fillStyle = '#2a8a2a'; break;
+              default: ctx.fillStyle = '#333'; break;
+            }
           }
           ctx.fillRect(px, pz, tilePx, tilePx);
         }
@@ -93,6 +114,18 @@ export function DebugMap() {
       for (let cz = 0; cz <= gridH; cz++) {
         const z = cz * cellTileSize * tilePx;
         ctx.beginPath(); ctx.moveTo(0, z); ctx.lineTo(dungeon.width * tilePx, z); ctx.stroke();
+      }
+
+      // Golden path — yellow line from spawn to exit
+      if (goldenPath.length > 1) {
+        ctx.strokeStyle = '#ff0';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(goldenPath[0]!.x * tilePx + tilePx / 2, goldenPath[0]!.y * tilePx + tilePx / 2);
+        for (let i = 1; i < goldenPath.length; i++) {
+          ctx.lineTo(goldenPath[i]!.x * tilePx + tilePx / 2, goldenPath[i]!.y * tilePx + tilePx / 2);
+        }
+        ctx.stroke();
       }
 
       // Spawn marker
@@ -122,11 +155,14 @@ export function DebugMap() {
       // Legend
       const legendX = dungeon.width * tilePx + 10;
       ctx.fillStyle = '#ccc'; ctx.font = '12px monospace';
-      ctx.fillText('Mode: tiles', legendX, 20);
+      ctx.fillText(`Mode: ${mode}`, legendX, 20);
       ctx.fillText('` toggle map', legendX, 40);
       ctx.fillText('Tab cycle mode', legendX, 55);
       let ly = 80;
-      for (const [c, text] of [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], ['#2a8a2a', 'Stairs'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const) {
+      const legendItems = mode === 'biome'
+        ? [['#1a1a1a', 'Wall'], ['#2a3a5a', 'Dungeon'], ['#5a3a2a', 'Cave'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const
+        : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const;
+      for (const [c, text] of legendItems) {
         ctx.fillStyle = c; ctx.fillRect(legendX, ly - 8, 12, 12);
         ctx.fillStyle = '#ccc'; ctx.fillText(text, legendX + 18, ly + 2);
         ly += 18;
@@ -134,11 +170,6 @@ export function DebugMap() {
       return; // skip cell-level drawing
     }
 
-    // Build cell lookup
-    const cellMap = new Map<string, DungeonCell>();
-    for (const cell of cells) {
-      cellMap.set(`${cell.cx},${cell.cz}`, cell);
-    }
 
     // Draw cells
     for (let cz = 0; cz < gridH; cz++) {
@@ -178,29 +209,10 @@ export function DebugMap() {
             }
             break;
           }
-          case 'theme': {
-            const themeColors: Record<string, string> = {
-              crypt: '#4a3a5a',
-              sewer: '#2a4a2a',
-              cave: '#4a3a2a',
-              castle: '#3a3a4a',
-              void: '#1a1a1a',
-            };
-            color = themeColors[cell.theme] ?? '#222';
-            label = cell.theme;
-            break;
-          }
         }
 
         ctx.fillStyle = color;
         ctx.fillRect(px, pz, CELL_PX - 1, CELL_PX - 1);
-
-        // Cell border — spine
-        if (cell.isSpine) {
-          ctx.strokeStyle = '#4f4';
-          ctx.lineWidth = 2;
-          ctx.strokeRect(px + 1, pz + 1, CELL_PX - 3, CELL_PX - 3);
-        }
 
         // Waypoint marker — diamond shape
         if (cell.isWaypoint) {
@@ -230,17 +242,6 @@ export function DebugMap() {
         ctx.font = '9px monospace';
         ctx.fillText(label, px + 2, pz + CELL_PX - 4);
 
-        // Entity count
-        if (cell.entities.length > 0) {
-          ctx.fillStyle = '#f88';
-          ctx.fillText(`E${cell.entities.length}`, px + 2, pz + 10);
-        }
-
-        // Correction tiles indicator
-        if (cell.correctionTiles.length > 0) {
-          ctx.fillStyle = '#ff0';
-          ctx.fillText(`C${cell.correctionTiles.length}`, px + CELL_PX - 16, pz + 10);
-        }
       }
     }
 
@@ -296,9 +297,7 @@ export function DebugMap() {
 
     const legendItems: Array<[string, string]> = mode === 'content'
       ? [['#2a3a2a', 'Active'], ['#4a3a1a', 'Hallway'], ['#1a1a1a', 'Void'], ['#0f0', 'Spawn (S)'], ['#f00', 'Exit (X)'], ['#fff', 'Player']]
-      : mode === 'theme'
-      ? [['#4a3a5a', 'Crypt'], ['#2a4a2a', 'Sewer'], ['#4a3a2a', 'Cave'], ['#3a3a4a', 'Castle']]
-      : [['#4f4', 'Spine path'], ['#fff', 'Player']];
+      : [['#0f0', 'High noise'], ['#300', 'Low noise'], ['#fff', 'Player']];
 
     let ly = 80;
     for (const [c, text] of legendItems) {
@@ -315,10 +314,7 @@ export function DebugMap() {
       total: cells.length,
       active: cells.filter((c) => c.active).length,
       waypoints: cells.filter((c) => c.isWaypoint).length,
-      spine: cells.filter((c) => c.isSpine).length,
-      branches: cells.filter((c) => c.branchBlocks.length > 0).length,
-      subtracted: cells.filter((c) => c.subtracted).length,
-      corrections: cells.filter((c) => c.correctionTiles.length > 0).length,
+      hallways: hallwayCells.size,
     };
     ctx.fillStyle = '#aaa';
     ctx.font = '11px monospace';
