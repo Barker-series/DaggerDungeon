@@ -41,6 +41,9 @@ const PROFILES: Record<BiomeType, BiomeHeightProfile> = {
   crypt: { floorMin: 0, floorMax: 0, clearMin: 3.8, clearMax: 5 },
   cave: { floorMin: 0, floorMax: 2.2, clearMin: 4, clearMax: 13 },
   ember: { floorMin: -1.8, floorMax: 2, clearMin: 8, clearMax: 16 },
+  // No ceiling is drawn outside — the huge clearance shapes the canyon rim
+  // walls and pulls neighboring ceilings up into cave-mouth transitions
+  outside: { floorMin: 0, floorMax: 2.5, clearMin: 22, clearMax: 26 },
 };
 
 export interface HeightFields {

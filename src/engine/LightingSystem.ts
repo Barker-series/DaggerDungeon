@@ -17,6 +17,7 @@ const BIOME_TORCH: Record<BiomeType, { color: number; intensity: number }> = {
   cave: { color: 0xffb066, intensity: 2.2 }, // soft amber
   crypt: { color: 0x7799ee, intensity: 2.6 }, // cold witch-light
   ember: { color: 0xff4411, intensity: 3.5 }, // furnace glow
+  outside: { color: 0xa8c4ff, intensity: 3.2 }, // moonlight
 };
 const CORRIDOR_LIGHT_COLOR = 0xcc8844;
 const CORRIDOR_LIGHT_INTENSITY = 1.5;

@@ -220,10 +220,10 @@ export class GameEngine {
     for (let tz = cz - 1; tz <= cz + 1; tz++) {
       for (let tx = cx - 1; tx <= cx + 1; tx++) {
         const tile = this.dungeon.tiles[tz]?.[tx];
-        if (tile === undefined || tile === TileType.Wall) {
-          // Wall tiles in organic cells collide via the contour segments
-          // below (the wall you see), not their tile box
-          if (tile !== undefined && this.contour?.softWalls.has(tz * w + tx)) continue;
+        // Wall tiles in organic cells collide via the contour segments
+        // below (the wall you see), not their tile box
+        const soft = tile !== undefined && this.contour?.softWalls.has(tz * w + tx);
+        if ((tile === undefined || tile === TileType.Wall) && !soft) {
           const tMinX = tx * TILE_SIZE;
           const tMaxX = tMinX + TILE_SIZE;
           const tMinZ = tz * TILE_SIZE;

@@ -38,6 +38,7 @@ const REGION_TINTS: Record<RegionKey, number> = {
   cave: 0xd8b494, // warm earth
   crypt: 0x9fb4cc, // cold blue-grey
   ember: 0xff8866, // heat glow
+  outside: 0xaec8d8, // moonlit stone
   tunnel: 0xb8b0a8, // drab passage
 };
 
@@ -134,6 +135,50 @@ export class DungeonRenderer {
       return false;
     };
 
+    // Wall direction and per-half tangents for each face side
+    const FACE_DIRS = {
+      north: { w: [0, -1], tA: [-1, 0], tB: [1, 0] },
+      south: { w: [0, 1], tA: [-1, 0], tB: [1, 0] },
+      west: { w: [-1, 0], tA: [0, -1], tB: [0, 1] },
+      east: { w: [1, 0], tA: [0, -1], tB: [0, 1] },
+    } as const;
+
+    const emitFace = (
+      buf: MeshBuffers,
+      x: number, y: number,
+      side: WallSide,
+      fA: number, fB: number,
+      hA: number, hB: number,
+    ): void => {
+      const d = FACE_DIRS[side];
+      const wxT = x + d.w[0];
+      const wyT = y + d.w[1];
+      if (!isWall(dungeon, wxT, wyT)) return; // no wall on that side
+
+      const halfOpen = (t: readonly [number, number]): boolean => {
+        const dxT = wxT + t[0];
+        const dyT = wyT + t[1];
+        if (isWall(dungeon, dxT, dyT)) return false; // diagonal is wall -> face half stays
+        // Chamfer only exists where the contour runs — any organic tile in
+        // the corner's 2x2 group
+        return (
+          isOrganicTile(x, y) || isOrganicTile(wxT, wyT) ||
+          isOrganicTile(dxT, dyT) || isOrganicTile(x + t[0], y + t[1])
+        );
+      };
+
+      const wx = x * TILE_SIZE;
+      const wz = y * TILE_SIZE;
+      const openA = halfOpen(d.tA);
+      const openB = halfOpen(d.tB);
+      if (!openA && !openB) {
+        addWallQuad(buf, wx, wz, side, fA, fB, hA, hB);
+      } else {
+        if (!openA) addWallQuad(buf, wx, wz, side, fA, fB, hA, hB, 0, 0.5);
+        if (!openB) addWallQuad(buf, wx, wz, side, fA, fB, hA, hB, 0.5, 1);
+      }
+    };
+
     for (let y = 0; y < dungeon.height; y++) {
       for (let x = 0; x < dungeon.width; x++) {
         const tile = dungeon.tiles[y]![x]!;
@@ -144,16 +189,20 @@ export class DungeonRenderer {
           if (isOrganicTile(x, y) && hasFloorNeighbor(x, y)) {
             const wx = x * TILE_SIZE;
             const wz = y * TILE_SIZE;
-            const buf = regionBuffers(regionOf(x, y));
+            const region = regionOf(x, y);
+            const buf = regionBuffers(region);
             addHorizontalQuad(buf.floor, wx, wz, cornerFloor[y]![x]!, cornerFloor[y]![x + 1]!, cornerFloor[y + 1]![x]!, cornerFloor[y + 1]![x + 1]!, true);
-            addHorizontalQuad(buf.ceil, wx, wz, cornerCeil[y]![x]!, cornerCeil[y]![x + 1]!, cornerCeil[y + 1]![x]!, cornerCeil[y + 1]![x + 1]!, false);
+            if (region !== 'outside') {
+              addHorizontalQuad(buf.ceil, wx, wz, cornerCeil[y]![x]!, cornerCeil[y]![x + 1]!, cornerCeil[y + 1]![x]!, cornerCeil[y + 1]![x + 1]!, false);
+            }
           }
           continue;
         }
 
         const wx = x * TILE_SIZE;
         const wz = y * TILE_SIZE;
-        const buf = regionBuffers(regionOf(x, y));
+        const region = regionOf(x, y);
+        const buf = regionBuffers(region);
 
         const f00 = cornerFloor[y]![x]!;
         const f10 = cornerFloor[y]![x + 1]!;
@@ -165,13 +214,21 @@ export class DungeonRenderer {
         const h11 = cornerCeil[y + 1]![x + 1]!;
 
         addHorizontalQuad(tile === TileType.StairsDown ? stairs : buf.floor, wx, wz, f00, f10, f01, f11, true);
-        addHorizontalQuad(buf.ceil, wx, wz, h00, h10, h01, h11, false);
+        // Outside is open to the sky — no ceiling at all
+        if (region !== 'outside') {
+          addHorizontalQuad(buf.ceil, wx, wz, h00, h10, h01, h11, false);
+        }
 
-        // Walls span from the floor corners to the ceiling corners
-        if (isWall(dungeon, x, y - 1)) addWallQuad(buf.wall, wx, wz, 'north', f00, f10, h00, h10);
-        if (isWall(dungeon, x, y + 1)) addWallQuad(buf.wall, wx, wz, 'south', f01, f11, h01, h11);
-        if (isWall(dungeon, x - 1, y)) addWallQuad(buf.wall, wx, wz, 'west', f00, f01, h00, h01);
-        if (isWall(dungeon, x + 1, y)) addWallQuad(buf.wall, wx, wz, 'east', f10, f11, h10, h11);
+        // Walls span from the floor corners to the ceiling corners.
+        // In organic regions each face is emitted in halves: where the
+        // contour chamfers the wall corner, that half of the axis face
+        // sits inside the walkable pocket and must NOT render (it's the
+        // "clip through the corner" wall). The half toward a corner is
+        // open exactly when the diagonal tile at that corner is floor.
+        emitFace(buf.wall, x, y, 'north', f00, f10, h00, h10);
+        emitFace(buf.wall, x, y, 'south', f01, f11, h01, h11);
+        emitFace(buf.wall, x, y, 'west', f00, f01, h00, h01);
+        emitFace(buf.wall, x, y, 'east', f10, f11, h10, h11);
       }
     }
 
@@ -196,7 +253,7 @@ export class DungeonRenderer {
       const bottom = Math.min(
         sampleCornerField(cornerFloor, seg.x0, seg.z0),
         sampleCornerField(cornerFloor, seg.x1, seg.z1),
-      ) - 0.15;
+      ) - 0.4; // deep skirt: rolling floors must never peek under the wall
       const top = Math.max(
         sampleCornerField(cornerCeil, seg.x0, seg.z0),
         sampleCornerField(cornerCeil, seg.x1, seg.z1),
@@ -320,47 +377,50 @@ function addHorizontalQuad(
   for (let k = 0; k < 4; k++) buf.norms.push(_n.x, _n.y, _n.z);
 }
 
+const SIDE_DEF = {
+  north: { ax: 0, az: 0, bx: 1, bz: 0, nx: 0, nz: 1 },
+  south: { ax: 0, az: 1, bx: 1, bz: 1, nx: 0, nz: -1 },
+  west: { ax: 0, az: 0, bx: 0, bz: 1, nx: 1, nz: 0 },
+  east: { ax: 1, az: 0, bx: 1, bz: 1, nx: -1, nz: 0 },
+} as const;
+
+export type WallSide = keyof typeof SIDE_DEF;
+
 /**
  * Vertical wall quad spanning floor corner heights (fA, fB) to ceiling
- * corner heights (hA, hB). A/B are the side's two corners in the same
- * order for floor and ceiling. Texture tiles once per TILE_SIZE both ways.
+ * corner heights (hA, hB) along the [s0, s1] span of the face (0..1 from
+ * corner A to corner B). Material is double-sided, so winding is uniform;
+ * texture tiles once per TILE_SIZE both ways.
  */
 function addWallQuad(
   buf: MeshBuffers,
   wx: number, wz: number,
-  side: 'north' | 'south' | 'east' | 'west',
+  side: WallSide,
   fA: number, fB: number,
   hA: number, hB: number,
+  s0 = 0, s1 = 1,
 ): void {
   const s = TILE_SIZE;
+  const d = SIDE_DEF[side];
   const i = buf.verts.length / 3;
 
-  switch (side) {
-    case 'north':
-      buf.verts.push(wx, fA, wz, wx + s, fB, wz, wx + s, hB, wz, wx, hA, wz);
-      buf.norms.push(0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1);
-      break;
-    case 'south':
-      buf.verts.push(wx + s, fB, wz + s, wx, fA, wz + s, wx, hA, wz + s, wx + s, hB, wz + s);
-      buf.norms.push(0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1);
-      break;
-    case 'west':
-      buf.verts.push(wx, fB, wz + s, wx, fA, wz, wx, hA, wz, wx, hB, wz + s);
-      buf.norms.push(1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0);
-      break;
-    case 'east':
-      buf.verts.push(wx + s, fA, wz, wx + s, fB, wz + s, wx + s, hB, wz + s, wx + s, hA, wz);
-      buf.norms.push(-1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0);
-      break;
-  }
+  const ax = wx + d.ax * s;
+  const az = wz + d.az * s;
+  const bx = wx + d.bx * s;
+  const bz = wz + d.bz * s;
 
-  // v coordinate follows world height so the texture never stretches
-  const y0 = buf.verts[i * 3 + 1]! / s;
-  const y1 = buf.verts[(i + 1) * 3 + 1]! / s;
-  const y2 = buf.verts[(i + 2) * 3 + 1]! / s;
-  const y3 = buf.verts[(i + 3) * 3 + 1]! / s;
-  buf.uvs.push(0, y0, 1, y1, 1, y2, 0, y3);
+  const x0 = ax + (bx - ax) * s0;
+  const z0 = az + (bz - az) * s0;
+  const x1 = ax + (bx - ax) * s1;
+  const z1 = az + (bz - az) * s1;
+  const f0 = fA + (fB - fA) * s0;
+  const f1 = fA + (fB - fA) * s1;
+  const h0 = hA + (hB - hA) * s0;
+  const h1 = hA + (hB - hA) * s1;
 
+  buf.verts.push(x0, f0, z0, x1, f1, z1, x1, h1, z1, x0, h0, z0);
+  for (let k = 0; k < 4; k++) buf.norms.push(d.nx, 0, d.nz);
+  buf.uvs.push(s0, f0 / s, s1, f1 / s, s1, h1 / s, s0, h0 / s);
   buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
 }
 

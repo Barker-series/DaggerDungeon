@@ -12,6 +12,7 @@ const BIOME_COLORS = {
   cave: '#8a5a2a',
   crypt: '#5a7a9a',
   ember: '#9a3a1a',
+  outside: '#3a7a3a',
 } as const;
 
 type ViewMode = 'tiles' | 'biome' | 'noise' | 'content';
@@ -183,7 +184,7 @@ export function DebugMap() {
       ctx.fillText('Tab cycle mode', legendX, 55);
       let ly = 80;
       const legendItems = mode === 'biome'
-        ? [['#1a1a1a', 'Wall'], [BIOME_COLORS.dungeon, 'Dungeon'], [BIOME_COLORS.cave, 'Cave'], [BIOME_COLORS.crypt, 'Crypt'], [BIOME_COLORS.ember, 'Ember'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const
+        ? [['#1a1a1a', 'Wall'], [BIOME_COLORS.dungeon, 'Dungeon'], [BIOME_COLORS.cave, 'Cave'], [BIOME_COLORS.crypt, 'Crypt'], [BIOME_COLORS.ember, 'Ember'], [BIOME_COLORS.outside, 'Outside'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const
         : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const;
       for (const [c, text] of legendItems) {
         ctx.fillStyle = c; ctx.fillRect(legendX, ly - 8, 12, 12);
