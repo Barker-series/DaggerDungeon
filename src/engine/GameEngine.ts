@@ -9,12 +9,15 @@ import { buildCornerField, sampleCornerField } from '../game/dungeon/heightfield
 import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
 import { DungeonBot } from '../bot/DungeonBot';
 import { useGameStore } from '../store/gameStore';
-import { TileType, Direction, TILE_SIZE } from '../game/types';
+import { TileType, Direction, TILE_SIZE, EYE_HEIGHT } from '../game/types';
 import type { DungeonData } from '../game/types';
 
 const MOVE_SPEED = 7;
 const SPRINT_MULT = 1.6;
 const PLAYER_RADIUS = 0.35;
+const CROUCH_SPEED_MULT = 0.55;
+const CROUCH_EYE_DROP = 0.7; // eye height drop when fully crouched
+const CROUCH_BLEND_RATE = 12; // how fast the crouch transition settles
 
 const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
@@ -43,6 +46,8 @@ export class GameEngine {
   private jumpVelocity = 0;
   private jumpHeight = 0;
   private isGrounded = true;
+  private crouchAmount = 0; // 0 = standing, 1 = fully crouched
+  private bobOffset = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -143,6 +148,9 @@ export class GameEngine {
     this.processMovement(dt);
     this.syncGridPos(store);
     this.gridCamera.update();
+    // Jump and head-bob offsets go on AFTER the camera writes its position —
+    // applying them earlier gets overwritten and the jump never shows
+    this.threeCamera.position.y += this.jumpHeight + this.bobOffset;
 
     // Sprites + animated dungeon elements (exit marker)
     this.sprites.update(dt, this.threeCamera);
@@ -176,11 +184,18 @@ export class GameEngine {
       }
     }
 
+    // Crouch — smooth blend of eye height and speed
+    const crouchTarget = this.input.isCrouching() ? 1 : 0;
+    this.crouchAmount += (crouchTarget - this.crouchAmount) * (1 - Math.exp(-CROUCH_BLEND_RATE * dt));
+    this.gridCamera.eyeHeight = EYE_HEIGHT - CROUCH_EYE_DROP * this.crouchAmount;
+
     this.input.getMovementDir(_moveDir);
     const isMoving = _moveDir.x !== 0 || _moveDir.y !== 0;
 
     if (isMoving) {
-      const speed = MOVE_SPEED * (this.input.isSprinting() ? SPRINT_MULT : 1);
+      const speed = MOVE_SPEED
+        * (this.input.isSprinting() ? SPRINT_MULT : 1)
+        * (1 - (1 - CROUCH_SPEED_MULT) * this.crouchAmount);
       this.gridCamera.getForward(_forward);
       this.gridCamera.getRight(_right);
 
@@ -206,8 +221,7 @@ export class GameEngine {
       pos.y = sampleCornerField(this.cornerFloor, pos.x, pos.z);
     }
 
-    const bob = this.isGrounded && isMoving ? Math.sin(this.bobPhase * 2) * 0.04 : 0;
-    this.threeCamera.position.y += this.jumpHeight + bob;
+    this.bobOffset = this.isGrounded && isMoving ? Math.sin(this.bobPhase * 2) * 0.04 : 0;
   }
 
   private collidesAt(x: number, z: number): boolean {

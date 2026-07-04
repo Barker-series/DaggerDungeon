@@ -70,7 +70,7 @@ export function GameScreen() {
       <AutoPlayPanel />
       <DebugMap />
       <div className="controls-hint">
-        WASD move | E interact | P auto | ` debug map
+        WASD move | Space jump | Ctrl crouch | Shift sprint | F interact | P auto | ` debug map
       </div>
     </div>
   );

@@ -33,7 +33,7 @@ export function MainMenu() {
           </button>
         </div>
         <div className="menu-footer">
-          <span>WASD move | E interact | P auto-play</span>
+          <span>WASD move | Space jump | Ctrl crouch | F interact | P auto-play</span>
         </div>
       </div>
     </div>

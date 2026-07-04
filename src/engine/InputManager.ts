@@ -9,9 +9,10 @@ export type InputAction =
   | 'toggleAutoPlay';
 
 /**
- * FPS input manager — Skyrim/Fallout 4 style controls.
+ * FPS input manager — modern layout with room for weapons later.
  *
- * WASD move, E interact, Shift sprint, Space jump, P auto-play.
+ * WASD move, Space jump, Ctrl/C crouch, Shift sprint, F interact,
+ * P auto-play. E/Q/R and mouse buttons stay free for future combat.
  */
 export class KeyboardInput {
   private keysDown = new Set<string>();
@@ -56,6 +57,11 @@ export class KeyboardInput {
 
   isSprinting(): boolean {
     return this.keysDown.has('ShiftLeft') || this.keysDown.has('ShiftRight');
+  }
+
+  /** Ctrl or C — C exists because browsers own Ctrl+W (closes the tab) */
+  isCrouching(): boolean {
+    return this.keysDown.has('ControlLeft') || this.keysDown.has('ControlRight') || this.keysDown.has('KeyC');
   }
 
   /** Did the player just press Space (jump)? Consumed on read. */
@@ -109,7 +115,7 @@ export class KeyboardInput {
 
     if (!e.repeat) {
       switch (e.code) {
-        case 'KeyE':
+        case 'KeyF':
           this.actionQueue.push('interact');
           break;
         case 'KeyP':
@@ -125,9 +131,9 @@ export class KeyboardInput {
 
   private isGameKey(code: string): boolean {
     return [
-      'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyP',
+      'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyP', 'KeyC',
       'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-      'Space', 'ShiftLeft', 'ShiftRight',
+      'Space', 'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
     ].includes(code);
   }
 }

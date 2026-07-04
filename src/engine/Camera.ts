@@ -18,6 +18,9 @@ export class GridCamera {
   yaw = 0;
   pitch = 0;
 
+  // Eye height above the feet — lowered while crouching
+  eyeHeight = EYE_HEIGHT;
+
   // Pointer lock
   private canvas: HTMLElement | null = null;
   private isPointerLocked = false;
@@ -91,7 +94,7 @@ export class GridCamera {
   /** Apply position + rotation to the Three.js camera. Call every frame. */
   update(): void {
     // position.y is the ground height under the player's feet
-    this.camera.position.set(this.position.x, this.position.y + EYE_HEIGHT, this.position.z);
+    this.camera.position.set(this.position.x, this.position.y + this.eyeHeight, this.position.z);
     this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
   }
 

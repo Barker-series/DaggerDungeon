@@ -16,7 +16,8 @@
 
 import { TileType, RoomType, type GridPos, type RoomData } from '../types';
 
-const HALLWAY_HALF_WIDTH = 3; // tiles from center — total width = 7
+const HALLWAY_HALF_WIDTH = 1; // tiles from center — total width = 3: tight
+// passages make the open biomes hit harder when they arrive
 
 /** Set of cell keys that became hallways. Read by debug map. */
 export const hallwayCells = new Set<string>();
