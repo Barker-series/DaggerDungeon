@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { TileType, TILE_SIZE } from '../game/types';
 import type { DungeonData } from '../game/types';
 import { getCell, type BiomeType } from '../game/dungeon/cells';
-import { buildCornerField, sampleCornerField } from '../game/dungeon/heightfield';
+import { buildCornerField, sampleCornerField, PIT_LEVEL } from '../game/dungeon/heightfield';
 import { buildOrganicContour, isOrganicTile } from '../game/dungeon/organiccontour';
 
 const loader = new THREE.TextureLoader();
@@ -135,6 +135,21 @@ export class DungeonRenderer {
       return false;
     };
 
+    // A tile whose 3x3 neighborhood spans a pit boundary renders at higher
+    // tessellation — the plunge geometry earns real curvature
+    const nearPitEdge = (x: number, y: number): boolean => {
+      let hasPit = false;
+      let hasGrade = false;
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (isWall(dungeon, x + dx, y + dz)) continue;
+          if (dungeon.floorHeights[y + dz]![x + dx]! <= PIT_LEVEL) hasPit = true;
+          else hasGrade = true;
+        }
+      }
+      return hasPit && hasGrade;
+    };
+
     // Wall direction and per-half tangents for each face side
     const FACE_DIRS = {
       north: { w: [0, -1], tA: [-1, 0], tB: [1, 0] },
@@ -213,7 +228,12 @@ export class DungeonRenderer {
         const h01 = cornerCeil[y + 1]![x]!;
         const h11 = cornerCeil[y + 1]![x + 1]!;
 
-        addHorizontalQuad(tile === TileType.StairsDown ? stairs : buf.floor, wx, wz, f00, f10, f01, f11, true);
+        const floorBuf = tile === TileType.StairsDown ? stairs : buf.floor;
+        if (nearPitEdge(x, y)) {
+          addTessellatedFloor(floorBuf, wx, wz, cornerFloor, PIT_TESS);
+        } else {
+          addHorizontalQuad(floorBuf, wx, wz, f00, f10, f01, f11, true);
+        }
         // Outside is open to the sky — no ceiling at all
         if (region !== 'outside') {
           addHorizontalQuad(buf.ceil, wx, wz, h00, h10, h01, h11, false);
@@ -339,6 +359,62 @@ function isWall(dungeon: DungeonData, x: number, y: number): boolean {
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
 const _n = new THREE.Vector3();
+
+/** Tessellation for floor tiles at pit boundaries — the plunge and its
+ *  shoulder get real curvature instead of one giant facet */
+const PIT_TESS = 4;
+
+/**
+ * One sub-quad of a tessellated floor patch. Heights are sampled from the
+ * corner field (smoothstep), UVs span the tile so the texture is unchanged.
+ */
+function addFloorPatch(
+  buf: MeshBuffers,
+  x0: number, z0: number, x1: number, z1: number,
+  h00: number, h10: number, h01: number, h11: number,
+  u0: number, v0: number, u1: number, v1: number,
+): void {
+  const i = buf.verts.length / 3;
+  buf.verts.push(x0, h00, z0);
+  buf.verts.push(x1, h10, z0);
+  buf.verts.push(x1, h11, z1);
+  buf.verts.push(x0, h01, z1);
+  buf.uvs.push(u0, v0, u1, v0, u1, v1, u0, v1);
+  buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
+
+  _a.set(x1 - x0, h11 - h00, z1 - z0);
+  _b.set(x0 - x1, h01 - h10, z1 - z0);
+  _n.crossVectors(_a, _b).normalize();
+  if (_n.y < 0) _n.negate();
+  for (let k = 0; k < 4; k++) buf.norms.push(_n.x, _n.y, _n.z);
+}
+
+/** Tessellated floor tile sampled from the corner field. */
+function addTessellatedFloor(
+  buf: MeshBuffers,
+  wx: number, wz: number,
+  corners: number[][],
+  n: number,
+): void {
+  const s = TILE_SIZE;
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const x0 = wx + (s * i) / n;
+      const x1 = wx + (s * (i + 1)) / n;
+      const z0 = wz + (s * j) / n;
+      const z1 = wz + (s * (j + 1)) / n;
+      addFloorPatch(
+        buf,
+        x0, z0, x1, z1,
+        sampleCornerField(corners, x0, z0),
+        sampleCornerField(corners, x1, z0),
+        sampleCornerField(corners, x0, z1),
+        sampleCornerField(corners, x1, z1),
+        i / n, j / n, (i + 1) / n, (j + 1) / n,
+      );
+    }
+  }
+}
 
 /**
  * Sloped horizontal quad through four corner heights.

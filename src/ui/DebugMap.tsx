@@ -3,7 +3,10 @@ import { useGameStore } from '../store/gameStore';
 import { getAllCells, type DungeonCell } from '../game/dungeon/cells';
 import { hallwayCells } from '../game/dungeon/layer4-connect';
 import { goldenPath } from '../game/dungeon/layer5-goldenpath';
+import { PIT_LEVEL } from '../game/dungeon/heightfield';
 import { findPathToExit } from '../game/pathfinding';
+
+const PIT_COLOR = '#601525';
 
 const CELL_PX = 40; // pixels per cell in the debug view
 
@@ -88,9 +91,12 @@ export function DebugMap() {
           const px = tx * tilePx;
           const pz = tz * tilePx;
 
+          const isPit = tile !== 0 && dungeon.floorHeights[tz]![tx]! <= PIT_LEVEL;
           if (mode === 'biome') {
             if (tile === 0) {
               ctx.fillStyle = '#0a0a0a';
+            } else if (isPit) {
+              ctx.fillStyle = PIT_COLOR;
             } else if (tile === 3) {
               ctx.fillStyle = '#2a8a2a';
             } else {
@@ -100,6 +106,8 @@ export function DebugMap() {
               const biome = biomeCell?.biome ?? 'dungeon';
               ctx.fillStyle = BIOME_COLORS[biome] ?? '#2a5a8a';
             }
+          } else if (isPit) {
+            ctx.fillStyle = PIT_COLOR;
           } else {
             switch (tile) {
               case 0: ctx.fillStyle = '#1a1a1a'; break;
@@ -184,8 +192,8 @@ export function DebugMap() {
       ctx.fillText('Tab cycle mode', legendX, 55);
       let ly = 80;
       const legendItems = mode === 'biome'
-        ? [['#1a1a1a', 'Wall'], [BIOME_COLORS.dungeon, 'Dungeon'], [BIOME_COLORS.cave, 'Cave'], [BIOME_COLORS.crypt, 'Crypt'], [BIOME_COLORS.ember, 'Ember'], [BIOME_COLORS.outside, 'Outside'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const
-        : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const;
+        ? [['#1a1a1a', 'Wall'], [BIOME_COLORS.dungeon, 'Dungeon'], [BIOME_COLORS.cave, 'Cave'], [BIOME_COLORS.crypt, 'Crypt'], [BIOME_COLORS.ember, 'Ember'], [BIOME_COLORS.outside, 'Outside'], [PIT_COLOR, 'Pit'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const
+        : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], [PIT_COLOR, 'Pit'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const;
       for (const [c, text] of legendItems) {
         ctx.fillStyle = c; ctx.fillRect(legendX, ly - 8, 12, 12);
         ctx.fillStyle = '#ccc'; ctx.fillText(text, legendX + 18, ly + 2);

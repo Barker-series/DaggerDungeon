@@ -10,8 +10,9 @@
 
 import { TileType, TILE_SIZE } from '../types';
 
-/** Values at or below this are pit voids — they never blend with grade */
-const PIT_EXCLUDE = -15;
+/** Floor values at or below this are pit voids — they never blend with
+ *  grade, and the UI maps render them as holes */
+export const PIT_LEVEL = -15;
 
 /**
  * Average the (up to 4) floor-tile values touching each grid corner.
@@ -44,7 +45,7 @@ export function buildCornerField(
         if (tx! < 0 || ty! < 0 || tx! >= width || ty! >= height) continue;
         if (tiles[ty!]![tx!] === TileType.Wall) continue;
         const v = values[ty!]![tx!]!;
-        if (v <= PIT_EXCLUDE) {
+        if (v <= PIT_LEVEL) {
           pitMin = Math.min(pitMin, v);
           continue;
         }
@@ -59,14 +60,21 @@ export function buildCornerField(
   return corners;
 }
 
-/** Bilinearly sample a corner field at a world position. */
+/**
+ * Sample a corner field at a world position with smoothstep interpolation —
+ * transitions curve into rounded shoulders instead of creasing at tile
+ * lines. The surface still passes exactly through every corner value, so
+ * coarse (1-quad) tiles and tessellated tiles stay seam-consistent.
+ */
 export function sampleCornerField(corners: number[][], wx: number, wz: number): number {
   const fx = wx / TILE_SIZE;
   const fz = wz / TILE_SIZE;
   const x0 = Math.max(0, Math.min(corners[0]!.length - 2, Math.floor(fx)));
   const z0 = Math.max(0, Math.min(corners.length - 2, Math.floor(fz)));
-  const u = Math.max(0, Math.min(1, fx - x0));
-  const v = Math.max(0, Math.min(1, fz - z0));
+  let u = Math.max(0, Math.min(1, fx - x0));
+  let v = Math.max(0, Math.min(1, fz - z0));
+  u = u * u * (3 - 2 * u);
+  v = v * v * (3 - 2 * v);
 
   const h00 = corners[z0]![x0]!;
   const h10 = corners[z0]![x0 + 1]!;

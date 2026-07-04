@@ -1,6 +1,7 @@
 import { useRef, useEffect } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { TileType } from '../game/types';
+import { PIT_LEVEL } from '../game/dungeon/heightfield';
 
 const MAP_SIZE = 140; // pixels
 const TILE_PX = 3; // pixels per tile on minimap
@@ -40,18 +41,22 @@ export function Minimap() {
         // Skip tiles outside minimap
         if (px < -TILE_PX || px > MAP_SIZE || py < -TILE_PX || py > MAP_SIZE) continue;
 
-        switch (tile) {
-          case TileType.Floor:
-            ctx.fillStyle = '#333';
-            break;
-          case TileType.Door:
-            ctx.fillStyle = '#654';
-            break;
-          case TileType.StairsDown:
-            ctx.fillStyle = '#3a3';
-            break;
-          default:
-            ctx.fillStyle = '#333';
+        if (dungeon.floorHeights[y]![x]! <= PIT_LEVEL) {
+          ctx.fillStyle = '#601525'; // pit void — do not step here
+        } else {
+          switch (tile) {
+            case TileType.Floor:
+              ctx.fillStyle = '#333';
+              break;
+            case TileType.Door:
+              ctx.fillStyle = '#654';
+              break;
+            case TileType.StairsDown:
+              ctx.fillStyle = '#3a3';
+              break;
+            default:
+              ctx.fillStyle = '#333';
+          }
         }
         ctx.fillRect(px, py, TILE_PX, TILE_PX);
       }
