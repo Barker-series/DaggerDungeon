@@ -43,6 +43,8 @@ export interface DungeonData {
   width: number;
   height: number;
   tiles: TileType[][];
+  /** Per-tile ceiling height in world units (Layer 6). Walls hold a filler value. */
+  ceilingHeights: number[][];
   rooms: RoomData[];
   entrance: GridPos;
   exit: GridPos;

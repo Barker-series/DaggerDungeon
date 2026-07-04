@@ -45,17 +45,20 @@ export class LightingSystem {
     this.scene.add(hemi);
     this.lights.push(hemi);
 
-    // Torch point lights at room centers
+    // Torch point lights at room centers, hung into the local ceiling vault
+    // so tall halls and caverns read instead of going black overhead
     for (const room of dungeon.rooms) {
+      const ceilH = dungeon.ceilingHeights[room.center.y]?.[room.center.x] ?? WALL_HEIGHT;
+      const lightY = Math.max(WALL_HEIGHT * 0.75, ceilH * 0.65);
       const light = new THREE.PointLight(
         TORCH_COLOR,
         TORCH_INTENSITY,
-        TORCH_DISTANCE,
+        TORCH_DISTANCE + ceilH,
         TORCH_DECAY,
       );
       light.position.set(
         room.center.x * TILE_SIZE + TILE_SIZE / 2,
-        WALL_HEIGHT * 0.75,
+        lightY,
         room.center.y * TILE_SIZE + TILE_SIZE / 2,
       );
       this.scene.add(light);

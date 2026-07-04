@@ -22,6 +22,17 @@ function loadTex(path: string): THREE.Texture {
   return tex;
 }
 
+interface MeshBuffers {
+  verts: number[];
+  idxs: number[];
+  uvs: number[];
+  norms: number[];
+}
+
+function newBuffers(): MeshBuffers {
+  return { verts: [], idxs: [], uvs: [], norms: [] };
+}
+
 export class DungeonRenderer {
   private scene: THREE.Scene;
   private meshGroup: THREE.Group;
@@ -48,20 +59,10 @@ export class DungeonRenderer {
   }
 
   build(dungeon: DungeonData): void {
-    // Build a per-tile height map from room data
-    const CORRIDOR_HEIGHT = 2.5;
-    const heightMap: number[][] = Array.from({ length: dungeon.height }, () =>
-      Array.from({ length: dungeon.width }, () => CORRIDOR_HEIGHT),
-    );
-    for (const room of dungeon.rooms) {
-      for (let y = room.top; y < room.top + room.height; y++) {
-        for (let x = room.left; x < room.left + room.width; x++) {
-          if (y >= 0 && y < dungeon.height && x >= 0 && x < dungeon.width) {
-            heightMap[y]![x] = room.ceilingHeight;
-          }
-        }
-      }
-    }
+    // Ceiling heights are averaged at tile corners so the ceiling forms one
+    // continuous surface — per-tile noise becomes slopes, cell steps become
+    // short ramps, and walls seal exactly by sharing the corner heights.
+    const cornerH = buildCornerHeights(dungeon);
 
     // Per-tile cave biome flag
     const CELL_TILE_SIZE = 14;
@@ -70,25 +71,10 @@ export class DungeonRenderer {
       return cell?.biome === 'cave';
     };
 
-    const floorVerts: number[] = [];
-    const floorIdxs: number[] = [];
-    const floorUvs: number[] = [];
-    const floorNorms: number[] = [];
-
-    const ceilVerts: number[] = [];
-    const ceilIdxs: number[] = [];
-    const ceilUvs: number[] = [];
-    const ceilNorms: number[] = [];
-
-    const wallVerts: number[] = [];
-    const wallIdxs: number[] = [];
-    const wallUvs: number[] = [];
-    const wallNorms: number[] = [];
-
-    const stairsVerts: number[] = [];
-    const stairsIdxs: number[] = [];
-    const stairsUvs: number[] = [];
-    const stairsNorms: number[] = [];
+    const floor = newBuffers();
+    const ceil = newBuffers();
+    const wall = newBuffers();
+    const stairs = newBuffers();
 
     for (let y = 0; y < dungeon.height; y++) {
       for (let x = 0; x < dungeon.width; x++) {
@@ -97,68 +83,34 @@ export class DungeonRenderer {
 
         const wx = x * TILE_SIZE;
         const wz = y * TILE_SIZE;
-        const h = heightMap[y]![x]!;
 
-        // Floor + ceiling: always use regular quads (even for cave — no visible jaggedness from inside)
         if (tile === TileType.StairsDown) {
-          addFloorQuad(stairsVerts, stairsIdxs, stairsUvs, stairsNorms, wx, wz);
+          addFloorQuad(stairs, wx, wz);
         } else {
-          addFloorQuad(floorVerts, floorIdxs, floorUvs, floorNorms, wx, wz);
+          addFloorQuad(floor, wx, wz);
         }
-        addCeilingQuad(ceilVerts, ceilIdxs, ceilUvs, ceilNorms, wx, wz, h);
 
-        // Walls — use MAX height of adjacent tiles to seal gaps
-        const hN = getHeight(heightMap, dungeon, x, y - 1, h);
-        const hS = getHeight(heightMap, dungeon, x, y + 1, h);
-        const hW = getHeight(heightMap, dungeon, x - 1, y, h);
-        const hE = getHeight(heightMap, dungeon, x + 1, y, h);
+        // Ceiling — sloped quad through the four corner heights
+        const h00 = cornerH[y]![x]!;
+        const h10 = cornerH[y]![x + 1]!;
+        const h01 = cornerH[y + 1]![x]!;
+        const h11 = cornerH[y + 1]![x + 1]!;
+        addCeilingQuad(ceil, wx, wz, h00, h10, h01, h11);
 
-        // All tiles get regular wall quads. Cave tiles also get marching squares
-        // walls on top — the smooth walls cover the axis-aligned ones, and the
-        // axis-aligned ones seal any gaps at edges/boundaries.
-        if (isWall(dungeon, x, y - 1)) addWallQuad(wallVerts, wallIdxs, wallUvs, wallNorms, wx, wz, 'north', Math.max(h, hN));
-        if (isWall(dungeon, x, y + 1)) addWallQuad(wallVerts, wallIdxs, wallUvs, wallNorms, wx, wz, 'south', Math.max(h, hS));
-        if (isWall(dungeon, x - 1, y)) addWallQuad(wallVerts, wallIdxs, wallUvs, wallNorms, wx, wz, 'west', Math.max(h, hW));
-        if (isWall(dungeon, x + 1, y)) addWallQuad(wallVerts, wallIdxs, wallUvs, wallNorms, wx, wz, 'east', Math.max(h, hE));
-
-        // Transition walls — where two floor tiles have different heights,
-        // add a wall strip from the lower ceiling to the higher ceiling
-        if (!isWall(dungeon, x, y - 1) && hN !== h) {
-          const hi = Math.max(h, hN);
-          addWallQuad(wallVerts, wallIdxs, wallUvs, wallNorms, wx, wz, 'north', hi);
-          // Also add a ceiling patch at the lower height to close the gap
-          if (h > hN) addCeilingQuad(ceilVerts, ceilIdxs, ceilUvs, ceilNorms, wx, wz, hN);
-        }
-        if (!isWall(dungeon, x, y + 1) && hS !== h) {
-          const hi = Math.max(h, hS);
-          addWallQuad(wallVerts, wallIdxs, wallUvs, wallNorms, wx, wz, 'south', hi);
-          if (h > hS) addCeilingQuad(ceilVerts, ceilIdxs, ceilUvs, ceilNorms, wx, wz, hS);
-        }
-        if (!isWall(dungeon, x - 1, y) && hW !== h) {
-          const hi = Math.max(h, hW);
-          addWallQuad(wallVerts, wallIdxs, wallUvs, wallNorms, wx, wz, 'west', hi);
-          if (h > hW) addCeilingQuad(ceilVerts, ceilIdxs, ceilUvs, ceilNorms, wx, wz, hW);
-        }
-        if (!isWall(dungeon, x + 1, y) && hE !== h) {
-          const hi = Math.max(h, hE);
-          addWallQuad(wallVerts, wallIdxs, wallUvs, wallNorms, wx, wz, 'east', hi);
-          if (h > hE) addCeilingQuad(ceilVerts, ceilIdxs, ceilUvs, ceilNorms, wx, wz, hE);
-        }
+        // Walls rise to the shared corner heights, so they meet the ceiling
+        // with no gap and no transition-strip patches.
+        if (isWall(dungeon, x, y - 1)) addWallQuad(wall, wx, wz, 'north', h00, h10);
+        if (isWall(dungeon, x, y + 1)) addWallQuad(wall, wx, wz, 'south', h01, h11);
+        if (isWall(dungeon, x - 1, y)) addWallQuad(wall, wx, wz, 'west', h00, h01);
+        if (isWall(dungeon, x + 1, y)) addWallQuad(wall, wx, wz, 'east', h10, h11);
       }
     }
 
     // ── Marching squares cave walls ──
-    // For cave biome regions, generate smooth wall contours instead of axis-aligned quads
-    const caveWallVerts: number[] = [];
-    const caveWallIdxs: number[] = [];
-    const caveWallUvs: number[] = [];
-    const caveWallNorms: number[] = [];
-
-    buildCaveWalls(dungeon, heightMap, isCave,
-      caveWallVerts, caveWallIdxs, caveWallUvs, caveWallNorms,
-      floorVerts, floorIdxs, floorUvs, floorNorms,
-      ceilVerts, ceilIdxs, ceilUvs, ceilNorms,
-    );
+    // For cave biome regions, overlay smooth wall contours on the axis-aligned
+    // quads (which stay underneath to seal edges and boundaries).
+    const caveWall = newBuffers();
+    buildCaveWalls(dungeon, cornerH, isCave, caveWall);
 
     // Build meshes with textures
     const wallMat = new THREE.MeshStandardMaterial({ map: loadTex('/textures/wall-stone.png'), roughness: 0.85, side: THREE.DoubleSide });
@@ -166,29 +118,21 @@ export class DungeonRenderer {
     const ceilMat = new THREE.MeshStandardMaterial({ map: loadTex('/textures/ceiling-dark.png'), roughness: 0.95, side: THREE.DoubleSide });
     const stairsMat = new THREE.MeshStandardMaterial({ map: loadTex('/textures/stairs-down.png'), roughness: 0.7, emissive: 0x1a3a2a, emissiveIntensity: 0.15, side: THREE.DoubleSide });
 
-    this.addMesh(floorVerts, floorIdxs, floorUvs, floorNorms, floorMat);
-    this.addMesh(ceilVerts, ceilIdxs, ceilUvs, ceilNorms, ceilMat);
-    this.addMesh(wallVerts, wallIdxs, wallUvs, wallNorms, wallMat);
+    this.addMesh(floor, floorMat);
+    this.addMesh(ceil, ceilMat);
+    this.addMesh(wall, wallMat);
     // Cave walls get same material for now — can swap to rocky texture later
-    this.addMesh(caveWallVerts, caveWallIdxs, caveWallUvs, caveWallNorms, wallMat);
-    this.addMesh(stairsVerts, stairsIdxs, stairsUvs, stairsNorms, stairsMat);
-
-    // CryptJS prefab geometry removed — will be reimplemented as a layer
+    this.addMesh(caveWall, wallMat);
+    this.addMesh(stairs, stairsMat);
   }
 
-  private addMesh(
-    verts: number[],
-    idxs: number[],
-    uvs: number[],
-    norms: number[],
-    material: THREE.Material,
-  ): void {
-    if (verts.length === 0) return;
+  private addMesh(buf: MeshBuffers, material: THREE.Material): void {
+    if (buf.verts.length === 0) return;
     const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-    geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geom.setAttribute('normal', new THREE.Float32BufferAttribute(norms, 3));
-    geom.setIndex(idxs);
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(buf.verts, 3));
+    geom.setAttribute('uv', new THREE.Float32BufferAttribute(buf.uvs, 2));
+    geom.setAttribute('normal', new THREE.Float32BufferAttribute(buf.norms, 3));
+    geom.setIndex(buf.idxs);
     const mesh = new THREE.Mesh(geom, material);
     this.meshGroup.add(mesh);
   }
@@ -201,75 +145,116 @@ function isWall(dungeon: DungeonData, x: number, y: number): boolean {
   return dungeon.tiles[y]![x] === TileType.Wall;
 }
 
-function getHeight(heightMap: number[][], dungeon: DungeonData, x: number, y: number, fallback: number): number {
-  if (x < 0 || y < 0 || x >= dungeon.width || y >= dungeon.height) return fallback;
-  return heightMap[y]![x] ?? fallback;
+/**
+ * Average ceiling heights of the (up to 4) floor tiles touching each grid
+ * corner. Corners touching no floor tile keep a filler value — no geometry
+ * ever references them.
+ */
+function buildCornerHeights(dungeon: DungeonData): number[][] {
+  const w = dungeon.width;
+  const h = dungeon.height;
+  const corners: number[][] = Array.from({ length: h + 1 }, () =>
+    Array.from({ length: w + 1 }, () => 0),
+  );
+
+  for (let cy = 0; cy <= h; cy++) {
+    for (let cx = 0; cx <= w; cx++) {
+      let sum = 0;
+      let count = 0;
+      for (const [tx, ty] of [[cx - 1, cy - 1], [cx, cy - 1], [cx - 1, cy], [cx, cy]]) {
+        if (tx! < 0 || ty! < 0 || tx! >= w || ty! >= h) continue;
+        if (dungeon.tiles[ty!]![tx!] === TileType.Wall) continue;
+        sum += dungeon.ceilingHeights[ty!]![tx!]!;
+        count++;
+      }
+      corners[cy]![cx] = count > 0 ? sum / count : 3;
+    }
+  }
+
+  return corners;
 }
 
-function addFloorQuad(
-  verts: number[], idxs: number[], uvs: number[], norms: number[],
-  wx: number, wz: number,
-): void {
+function addFloorQuad(buf: MeshBuffers, wx: number, wz: number): void {
   const s = TILE_SIZE;
-  const i = verts.length / 3;
+  const i = buf.verts.length / 3;
   // Four corners of the floor tile at y=0
-  verts.push(wx, 0, wz);
-  verts.push(wx + s, 0, wz);
-  verts.push(wx + s, 0, wz + s);
-  verts.push(wx, 0, wz + s);
+  buf.verts.push(wx, 0, wz);
+  buf.verts.push(wx + s, 0, wz);
+  buf.verts.push(wx + s, 0, wz + s);
+  buf.verts.push(wx, 0, wz + s);
   // Indices (two triangles, CCW for upward-facing normal)
-  idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
+  buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
   // UVs
-  uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+  buf.uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
   // Normals (up)
-  norms.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
+  buf.norms.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
 }
+
+const _a = new THREE.Vector3();
+const _b = new THREE.Vector3();
+const _n = new THREE.Vector3();
 
 function addCeilingQuad(
-  verts: number[], idxs: number[], uvs: number[], norms: number[],
-  wx: number, wz: number, h: number,
+  buf: MeshBuffers,
+  wx: number, wz: number,
+  h00: number, h10: number, h01: number, h11: number,
 ): void {
   const s = TILE_SIZE;
-  const i = verts.length / 3;
-  verts.push(wx, h, wz);
-  verts.push(wx, h, wz + s);
-  verts.push(wx + s, h, wz + s);
-  verts.push(wx + s, h, wz);
-  idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
-  uvs.push(0, 0, 0, 1, 1, 1, 1, 0);
-  norms.push(0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0);
+  const i = buf.verts.length / 3;
+  buf.verts.push(wx, h00, wz);
+  buf.verts.push(wx, h01, wz + s);
+  buf.verts.push(wx + s, h11, wz + s);
+  buf.verts.push(wx + s, h10, wz);
+  buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
+  buf.uvs.push(0, 0, 0, 1, 1, 1, 1, 0);
+
+  // One averaged downward-facing normal for the (possibly non-planar) quad
+  _a.set(s, h10 - h01, -s); // v3 - v1
+  _b.set(s, h11 - h00, s); // v2 - v0
+  _n.crossVectors(_a, _b).normalize();
+  if (_n.y > 0) _n.negate();
+  for (let k = 0; k < 4; k++) buf.norms.push(_n.x, _n.y, _n.z);
 }
 
+/**
+ * Vertical wall quad whose top edge follows the ceiling corner heights
+ * (hA at the first corner of the side, hB at the second).
+ * Texture tiles once per TILE_SIZE both ways so tall walls don't stretch.
+ */
 function addWallQuad(
-  verts: number[], idxs: number[], uvs: number[], norms: number[],
+  buf: MeshBuffers,
   wx: number, wz: number,
   side: 'north' | 'south' | 'east' | 'west',
-  h: number,
+  hA: number, hB: number,
 ): void {
   const s = TILE_SIZE;
-  const i = verts.length / 3;
+  const i = buf.verts.length / 3;
 
   switch (side) {
     case 'north':
-      verts.push(wx, 0, wz, wx + s, 0, wz, wx + s, h, wz, wx, h, wz);
-      norms.push(0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1);
+      buf.verts.push(wx, 0, wz, wx + s, 0, wz, wx + s, hB, wz, wx, hA, wz);
+      buf.norms.push(0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1);
       break;
     case 'south':
-      verts.push(wx + s, 0, wz + s, wx, 0, wz + s, wx, h, wz + s, wx + s, h, wz + s);
-      norms.push(0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1);
+      buf.verts.push(wx + s, 0, wz + s, wx, 0, wz + s, wx, hA, wz + s, wx + s, hB, wz + s);
+      buf.norms.push(0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1);
       break;
     case 'west':
-      verts.push(wx, 0, wz + s, wx, 0, wz, wx, h, wz, wx, h, wz + s);
-      norms.push(1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0);
+      buf.verts.push(wx, 0, wz + s, wx, 0, wz, wx, hA, wz, wx, hB, wz + s);
+      buf.norms.push(1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0);
       break;
     case 'east':
-      verts.push(wx + s, 0, wz, wx + s, 0, wz + s, wx + s, h, wz + s, wx + s, h, wz);
-      norms.push(-1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0);
+      buf.verts.push(wx + s, 0, wz, wx + s, 0, wz + s, wx + s, hB, wz + s, wx + s, hA, wz);
+      buf.norms.push(-1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0);
       break;
   }
 
-  idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
-  uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+  // Vertex order is bottom0, bottom1, top1, top0 — top v coords follow height
+  const v2 = buf.verts[(i + 2) * 3 + 1]! / s;
+  const v3 = buf.verts[(i + 3) * 3 + 1]! / s;
+  buf.uvs.push(0, 0, 1, 0, 1, v2, 0, v3);
+
+  buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
 }
 
 // ── Marching Squares Cave Walls ──
@@ -302,11 +287,9 @@ const MS_TABLE: number[][][] = [
 
 function buildCaveWalls(
   dungeon: DungeonData,
-  heightMap: number[][],
+  cornerH: number[][],
   isCave: (tx: number, tz: number) => boolean,
-  verts: number[], idxs: number[], uvs: number[], norms: number[],
-  _floorVerts: number[], _floorIdxs: number[], _floorUvs: number[], _floorNorms: number[],
-  _ceilVerts: number[], _ceilIdxs: number[], _ceilUvs: number[], _ceilNorms: number[],
+  buf: MeshBuffers,
 ): void {
   const s = TILE_SIZE;
 
@@ -314,6 +297,15 @@ function buildCaveWalls(
   const getTile = (tx: number, tz: number): number => {
     if (tx < 0 || tz < 0 || tx >= dungeon.width || tz >= dungeon.height) return 0;
     return dungeon.tiles[tz]![tx] !== TileType.Wall ? 1 : 0;
+  };
+
+  // Height above an edge midpoint — midpoint of the edge's two grid corners.
+  // Slightly overshooting the ceiling is fine (hidden above it); undershooting
+  // would open a gap, so take the max toward the sealing axis wall behind.
+  const edgeTop = (cx0: number, cz0: number, cx1: number, cz1: number): number => {
+    const a = cornerH[cz0]?.[cx0] ?? 3;
+    const b = cornerH[cz1]?.[cx1] ?? 3;
+    return Math.max(a, b);
   };
 
   // Walk every 2x2 group — include last column/row by treating OOB as wall
@@ -337,18 +329,16 @@ function buildCaveWalls(
       const wx = tx * s;
       const wz = tz * s;
 
-      // Edge midpoints in world space
+      // Edge midpoints in world space + their top heights (from the two
+      // grid corners each midpoint sits between).
       // 0=top (between TL and TR), 1=right (between TR and BR),
       // 2=bottom (between BL and BR), 3=left (between TL and BL)
-      const edgeMid: [number, number][] = [
-        [wx + s * 0.5, wz],         // top
-        [wx + s,       wz + s * 0.5], // right
-        [wx + s * 0.5, wz + s],     // bottom
-        [wx,           wz + s * 0.5], // left
+      const edgeMid: [number, number, number][] = [
+        [wx + s * 0.5, wz, edgeTop(tx, tz, tx + 1, tz)],                 // top
+        [wx + s, wz + s * 0.5, edgeTop(tx + 1, tz, tx + 1, tz + 1)],     // right
+        [wx + s * 0.5, wz + s, edgeTop(tx, tz + 1, tx + 1, tz + 1)],     // bottom
+        [wx, wz + s * 0.5, edgeTop(tx, tz, tx, tz + 1)],                 // left
       ];
-
-      // Get ceiling height for this area
-      const h = heightMap[tz]?.[tx] ?? 3;
 
       // For each segment, extrude a vertical wall quad
       for (const seg of (segments ?? [])) {
@@ -357,16 +347,17 @@ function buildCaveWalls(
         const e1 = seg[1]!;
         const p0 = edgeMid[e0]!;
         const p1 = edgeMid[e1]!;
+        const h = Math.max(p0[2], p1[2]);
 
         // Wall quad: p0 bottom → p1 bottom → p1 top → p0 top
-        const vi = verts.length / 3;
-        verts.push(p0[0], 0, p0[1]);
-        verts.push(p1[0], 0, p1[1]);
-        verts.push(p1[0], h, p1[1]);
-        verts.push(p0[0], h, p0[1]);
+        const vi = buf.verts.length / 3;
+        buf.verts.push(p0[0], 0, p0[1]);
+        buf.verts.push(p1[0], 0, p1[1]);
+        buf.verts.push(p1[0], h, p1[1]);
+        buf.verts.push(p0[0], h, p0[1]);
 
-        idxs.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
-        uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+        buf.idxs.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+        buf.uvs.push(0, 0, 1, 0, 1, h / s, 0, h / s);
 
         // Normal: perpendicular to the segment, pointing toward floor side
         const dx = p1[0] - p0[0];
@@ -374,10 +365,8 @@ function buildCaveWalls(
         const len = Math.sqrt(dx * dx + dz * dz) || 1;
         const nx = -dz / len;
         const nz = dx / len;
-        norms.push(nx, 0, nz, nx, 0, nz, nx, 0, nz, nx, 0, nz);
+        buf.norms.push(nx, 0, nz, nx, 0, nz, nx, 0, nz, nx, 0, nz);
       }
-
-      // Floor + ceiling use regular tile quads — only walls get marching squares
     }
   }
 }

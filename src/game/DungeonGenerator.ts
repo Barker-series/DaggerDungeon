@@ -23,6 +23,7 @@ import { findSpawnExit, generateLayer2SpawnExit } from './dungeon/layer2-spawnex
 import { generateLayer3SpawnRooms } from './dungeon/layer3-spawnrooms';
 import { connectIslands } from './dungeon/layer4-connect';
 import { computeGoldenPath } from './dungeon/layer5-goldenpath';
+import { computeCeilingHeights } from './dungeon/layer6-heights';
 
 // ── Config ──
 
@@ -116,11 +117,15 @@ export function generateDungeon(opts: GenerateOpts): DungeonData {
   // ── Layer 5: Golden path ──
   computeGoldenPath(tiles, entrance, exit, GRID_TILES);
 
+  // ── Layer 6: Ceiling heights ──
+  const ceilingHeights = computeCeilingHeights(tiles, GRID_TILES, CELL_TILE_SIZE, seed + floor * 1000);
+
   // ── Output ──
   return {
     width: GRID_TILES,
     height: GRID_TILES,
     tiles,
+    ceilingHeights,
     rooms,
     entrance,
     exit,
