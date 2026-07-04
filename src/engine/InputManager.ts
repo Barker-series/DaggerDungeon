@@ -6,6 +6,7 @@ export type InputAction =
   | 'turnLeft'
   | 'turnRight'
   | 'interact'
+  | 'respawn'
   | 'toggleAutoPlay';
 
 /**
@@ -118,6 +119,9 @@ export class KeyboardInput {
         case 'KeyF':
           this.actionQueue.push('interact');
           break;
+        case 'KeyR':
+          this.actionQueue.push('respawn');
+          break;
         case 'KeyP':
           this.actionQueue.push('toggleAutoPlay');
           break;
@@ -131,7 +135,7 @@ export class KeyboardInput {
 
   private isGameKey(code: string): boolean {
     return [
-      'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyP', 'KeyC',
+      'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyP', 'KeyC', 'KeyR',
       'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
       'Space', 'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
     ].includes(code);

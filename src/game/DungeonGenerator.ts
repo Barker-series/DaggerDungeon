@@ -123,7 +123,7 @@ export function generateDungeon(opts: GenerateOpts): DungeonData {
 
   // ── Layer 6: Height fields ──
   const { floor: floorHeights, ceiling: ceilingHeights } = computeHeightFields(
-    tiles, GRID_TILES, CELL_TILE_SIZE, seed + floor * 1000,
+    tiles, GRID_TILES, CELL_TILE_SIZE, seed + floor * 1000, entrance, exit,
   );
 
   // ── Output ──

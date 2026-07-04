@@ -60,6 +60,8 @@ export class LightingSystem {
     const CELL_TILE_SIZE = 14;
     for (const room of dungeon.rooms) {
       const floorH = dungeon.floorHeights[room.center.y]?.[room.center.x] ?? 0;
+      // No lights down in pit voids — the abyss stays black
+      if (floorH < -5) continue;
       const ceilH = dungeon.ceilingHeights[room.center.y]?.[room.center.x] ?? WALL_HEIGHT;
       const lightY = Math.max(floorH + WALL_HEIGHT * 0.75, floorH + (ceilH - floorH) * 0.65);
       const cell = getCell(

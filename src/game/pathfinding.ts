@@ -9,9 +9,14 @@ import { TileType, type DungeonData, type GridPos } from './types';
  * tiles are open: the player has a collision radius, so cutting a corner
  * between two diagonally-touching walls is not walkable and must not be
  * suggested.
+ *
+ * Cliff rule: an edge is blocked when the floor rises or drops more than
+ * MAX_CLIMB between tiles — routes go around terraces or through their
+ * carved ramps, matching what the player can actually walk.
  */
 
 const SQRT2 = Math.SQRT2;
+const MAX_CLIMB = 0.75; // per-tile floor height change a route may use
 
 // dx, dy, cost
 const DIRS: readonly [number, number, number][] = [
@@ -76,6 +81,15 @@ export function findPath(dungeon: DungeonData, from: GridPos, to: GridPos): Grid
       if (!passable(nx, ny)) continue;
       // No corner cutting: a diagonal needs both cardinals open
       if (dx !== 0 && dy !== 0 && (!passable(cur.x + dx, cur.y) || !passable(cur.x, cur.y + dy))) continue;
+      // No cliffs: the route must stay walkable in both directions
+      const hCur = dungeon.floorHeights[cur.y]![cur.x]!;
+      if (Math.abs(dungeon.floorHeights[ny]![nx]! - hCur) > MAX_CLIMB) continue;
+      // Diagonals also need both cardinal intermediates near our height —
+      // the walk surface at the crossing corner is pulled by all 4 tiles
+      if (dx !== 0 && dy !== 0 && (
+        Math.abs(dungeon.floorHeights[cur.y]![cur.x + dx]! - hCur) > MAX_CLIMB ||
+        Math.abs(dungeon.floorHeights[cur.y + dy]![cur.x]! - hCur) > MAX_CLIMB
+      )) continue;
 
       const nKey = ny * w + nx;
       if (closed.has(nKey)) continue;

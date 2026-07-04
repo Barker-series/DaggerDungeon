@@ -19,6 +19,16 @@ const CROUCH_SPEED_MULT = 0.55;
 const CROUCH_EYE_DROP = 0.7; // eye height drop when fully crouched
 const CROUCH_BLEND_RATE = 12; // how fast the crouch transition settles
 
+// Vertical physics — cliffs are real obstacles
+const GRAVITY = 15;
+const JUMP_VELOCITY = 5.6; // peak ~1.05: enough to mantle a 1-unit ledge
+// Slope limit (rise per unit of horizontal run). All grade-level rolling
+// terrain stays comfortably under this — you glide up every hill without
+// jumping. Only pit walls (slope ~10+) exceed it.
+const MAX_SLOPE = 0.85;
+const AIR_STEP = 0.05; // while airborne, can move onto ground at most this far above the feet
+const FALL_DROP = 0.5; // ground falling away further than this puts you airborne
+
 const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _moveDir = { x: 0, y: 0 };
@@ -43,8 +53,7 @@ export class GameEngine {
   private contour: OrganicContour | null = null;
   private seed = 0;
   private bobPhase = 0;
-  private jumpVelocity = 0;
-  private jumpHeight = 0;
+  private vy = 0; // vertical velocity; gridCamera.position.y is the feet
   private isGrounded = true;
   private crouchAmount = 0; // 0 = standing, 1 = fully crouched
   private bobOffset = 0;
@@ -111,7 +120,9 @@ export class GameEngine {
 
     const spawnX = this.dungeon.entrance.x * TILE_SIZE + TILE_SIZE / 2;
     const spawnZ = this.dungeon.entrance.y * TILE_SIZE + TILE_SIZE / 2;
-    this.gridCamera.setPosition(spawnX, 0, spawnZ);
+    this.gridCamera.setPosition(spawnX, sampleCornerField(this.cornerFloor, spawnX, spawnZ), spawnZ);
+    this.vy = 0;
+    this.isGrounded = true;
     this.gridCamera.setFacingDirection(Direction.North);
     store.setPlayerPos(this.dungeon.entrance);
     store.setPlayerFacing(Direction.North);
@@ -148,9 +159,9 @@ export class GameEngine {
     this.processMovement(dt);
     this.syncGridPos(store);
     this.gridCamera.update();
-    // Jump and head-bob offsets go on AFTER the camera writes its position —
-    // applying them earlier gets overwritten and the jump never shows
-    this.threeCamera.position.y += this.jumpHeight + this.bobOffset;
+    // Head-bob goes on AFTER the camera writes its position —
+    // applying it earlier gets overwritten and never shows
+    this.threeCamera.position.y += this.bobOffset;
 
     // Sprites + animated dungeon elements (exit marker)
     this.sprites.update(dt, this.threeCamera);
@@ -168,20 +179,13 @@ export class GameEngine {
   // ── Player Movement ──
 
   private processMovement(dt: number): void {
-    if (!this.dungeon) return;
+    if (!this.dungeon || !this.cornerFloor) return;
+    const pos = this.gridCamera.position;
+    const groundAt = (x: number, z: number): number => sampleCornerField(this.cornerFloor!, x, z);
 
-    if (this.input.consumeJump() && this.isGrounded) {
-      this.jumpVelocity = 5.0;
+    if (this.isGrounded && this.input.consumeJump()) {
+      this.vy = JUMP_VELOCITY;
       this.isGrounded = false;
-    }
-    if (!this.isGrounded) {
-      this.jumpVelocity -= 15.0 * dt;
-      this.jumpHeight += this.jumpVelocity * dt;
-      if (this.jumpHeight <= 0) {
-        this.jumpHeight = 0;
-        this.jumpVelocity = 0;
-        this.isGrounded = true;
-      }
     }
 
     // Crouch — smooth blend of eye height and speed
@@ -202,12 +206,26 @@ export class GameEngine {
       const velX = (_forward.x * _moveDir.y + _right.x * _moveDir.x) * speed * dt;
       const velZ = (_forward.z * _moveDir.y + _right.z * _moveDir.x) * speed * dt;
 
-      // Substep so a slow frame can't tunnel through a thin contour wall
-      const pos = this.gridCamera.position;
+      // Substep so a slow frame can't tunnel through a thin contour wall.
+      // A step is blocked by walls AND by ground rising faster than legs
+      // can climb — cliffs are obstacles, ramps are not. While airborne,
+      // ground at most a hair above the feet is enterable (ledge mantling).
+      const canStand = (x: number, z: number, run: number): boolean => {
+        const g = groundAt(x, z);
+        return this.isGrounded ? g - pos.y <= MAX_SLOPE * run : g <= pos.y + AIR_STEP;
+      };
       const steps = Math.max(1, Math.ceil(Math.max(Math.abs(velX), Math.abs(velZ)) / 0.25));
       for (let i = 0; i < steps; i++) {
-        if (!this.collidesAt(pos.x + velX / steps, pos.z)) pos.x += velX / steps;
-        if (!this.collidesAt(pos.x, pos.z + velZ / steps)) pos.z += velZ / steps;
+        const nx = pos.x + velX / steps;
+        if (!this.collidesAt(nx, pos.z) && canStand(nx, pos.z, Math.abs(velX / steps))) pos.x = nx;
+        const nz = pos.z + velZ / steps;
+        if (!this.collidesAt(pos.x, nz) && canStand(pos.x, nz, Math.abs(velZ / steps))) pos.z = nz;
+        // Grounded feet track the surface between substeps so long slopes
+        // accumulate correctly
+        if (this.isGrounded) {
+          const g = groundAt(pos.x, pos.z);
+          if (g >= pos.y - FALL_DROP) pos.y = g;
+        }
       }
 
       if (this.isGrounded) this.bobPhase += dt * speed * 0.7;
@@ -215,10 +233,25 @@ export class GameEngine {
       this.bobPhase *= 0.9;
     }
 
-    // Feet follow the same corner-averaged floor surface the renderer draws
-    if (this.cornerFloor) {
-      const pos = this.gridCamera.position;
-      pos.y = sampleCornerField(this.cornerFloor, pos.x, pos.z);
+    // Vertical resolution
+    const ground = groundAt(pos.x, pos.z);
+    if (this.isGrounded) {
+      if (ground < pos.y - FALL_DROP) {
+        // Walked off an edge
+        this.isGrounded = false;
+        this.vy = 0;
+      } else {
+        pos.y = ground;
+      }
+    }
+    if (!this.isGrounded) {
+      this.vy -= GRAVITY * dt;
+      pos.y += this.vy * dt;
+      if (this.vy <= 0 && pos.y <= ground) {
+        pos.y = ground;
+        this.vy = 0;
+        this.isGrounded = true;
+      }
     }
 
     this.bobOffset = this.isGrounded && isMoving ? Math.sin(this.bobPhase * 2) * 0.04 : 0;
@@ -291,6 +324,9 @@ export class GameEngine {
       case 'interact':
         this.tryInteract();
         break;
+      case 'respawn':
+        this.respawn();
+        break;
       case 'toggleAutoPlay': {
         const store = useGameStore.getState();
         store.toggleAutoPlay();
@@ -311,6 +347,13 @@ export class GameEngine {
         this.botMovePulse(action);
         break;
     }
+  }
+
+  /** Return to the current floor's entrance (pit fall, or R to unstick) */
+  private respawn(): void {
+    if (!this.dungeon) return;
+    this.teleport(this.dungeon.entrance.x, this.dungeon.entrance.y);
+    this.bot.reset();
   }
 
   private tryInteract(): void {
@@ -352,11 +395,12 @@ export class GameEngine {
 
   /** Dev/debug helper: place the player at a tile, optionally facing a yaw. */
   teleport(tileX: number, tileY: number, yaw?: number): void {
-    this.gridCamera.setPosition(
-      tileX * TILE_SIZE + TILE_SIZE / 2,
-      0,
-      tileY * TILE_SIZE + TILE_SIZE / 2,
-    );
+    const x = tileX * TILE_SIZE + TILE_SIZE / 2;
+    const z = tileY * TILE_SIZE + TILE_SIZE / 2;
+    const y = this.cornerFloor ? sampleCornerField(this.cornerFloor, x, z) : 0;
+    this.gridCamera.setPosition(x, y, z);
+    this.vy = 0;
+    this.isGrounded = true;
     if (yaw !== undefined) this.gridCamera.yaw = yaw;
   }
 

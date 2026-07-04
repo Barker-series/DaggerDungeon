@@ -10,10 +10,19 @@
 
 import { TileType, TILE_SIZE } from '../types';
 
+/** Values at or below this are pit voids — they never blend with grade */
+const PIT_EXCLUDE = -15;
+
 /**
  * Average the (up to 4) floor-tile values touching each grid corner.
  * Corners touching no floor tile keep the fallback — geometry and sampling
  * never reference them.
+ *
+ * Pit-depth values never average with grade values: a corner touching both
+ * takes only the grade side. Rims therefore stay flat right up to the tile
+ * edge, and the first pit tile plunges near-vertically — the rendered edge
+ * IS the physical edge. (Only relevant for floor fields; ceilings never
+ * carry pit values.)
  */
 export function buildCornerField(
   tiles: TileType[][],
@@ -30,13 +39,20 @@ export function buildCornerField(
     for (let cx = 0; cx <= width; cx++) {
       let sum = 0;
       let count = 0;
+      let pitMin = Infinity;
       for (const [tx, ty] of [[cx - 1, cy - 1], [cx, cy - 1], [cx - 1, cy], [cx, cy]]) {
         if (tx! < 0 || ty! < 0 || tx! >= width || ty! >= height) continue;
         if (tiles[ty!]![tx!] === TileType.Wall) continue;
-        sum += values[ty!]![tx!]!;
+        const v = values[ty!]![tx!]!;
+        if (v <= PIT_EXCLUDE) {
+          pitMin = Math.min(pitMin, v);
+          continue;
+        }
+        sum += v;
         count++;
       }
       if (count > 0) corners[cy]![cx] = sum / count;
+      else if (pitMin < Infinity) corners[cy]![cx] = pitMin;
     }
   }
 
