@@ -90,7 +90,8 @@ export class GridCamera {
 
   /** Apply position + rotation to the Three.js camera. Call every frame. */
   update(): void {
-    this.camera.position.set(this.position.x, EYE_HEIGHT, this.position.z);
+    // position.y is the ground height under the player's feet
+    this.camera.position.set(this.position.x, this.position.y + EYE_HEIGHT, this.position.z);
     this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
   }
 

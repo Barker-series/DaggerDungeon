@@ -4,68 +4,41 @@
  * Reads: Layer 0 (noise values), Layer 1 (tile grid)
  * Writes: Assigns a biome type to each active cell.
  *
- * Rules:
- * - If there are disconnected islands, the smallest island becomes cave
- * - If there's only one island, 50% chance the whole thing is cave
- * - Only one island gets cave, rest stay dungeon
+ * Two noise fields drive assignment so biomes form contiguous regions:
+ * - "wildness" separates built space (dungeon/crypt) from organic space
+ *   (cave/ember)
+ * - "depth" splits each side into its common and rare variant
+ *
+ * Biomes:
+ * - dungeon: brick halls, flat floor, mid ceilings (common built)
+ * - crypt:   cold, low, dense pillars — oppressive (rare built)
+ * - cave:    warm organic, rolling floor, swelling ceilings (common organic)
+ * - ember:   vast red-lit rifts, tall vaults, deep floors (rare organic)
  */
 
-import { type DungeonCell, getAllCells, getCell } from './cells';
+import { getAllCells } from './cells';
+import { sampleNoise } from './noise';
+
+const WILDNESS_SCALE = 3; // cells per region feature
+const DEPTH_SCALE = 4;
+const ORGANIC_THRESHOLD = 0.52; // above = cave/ember
+const CRYPT_THRESHOLD = 0.62; // built cells above this depth = crypt
+const EMBER_THRESHOLD = 0.66; // organic cells above this depth = ember
 
 export function assignBiomes(_cellTileSize: number, worldSeed: number): void {
-  const activeCells = getAllCells().filter((c) => c.active);
-  if (activeCells.length === 0) return;
+  const wildSeed = worldSeed + 1313;
+  const depthSeed = worldSeed + 2626;
 
-  // Find islands via flood fill on the cell grid
-  const visited = new Set<string>();
-  const islands: DungeonCell[][] = [];
+  for (const cell of getAllCells()) {
+    if (!cell.active) continue;
 
-  for (const cell of activeCells) {
-    if (visited.has(cell.key)) continue;
+    const wildness = sampleNoise(cell.cx, cell.cz, wildSeed, WILDNESS_SCALE);
+    const depth = sampleNoise(cell.cx, cell.cz, depthSeed, DEPTH_SCALE);
 
-    // Flood fill this island
-    const island: DungeonCell[] = [];
-    const queue: DungeonCell[] = [cell];
-    visited.add(cell.key);
-
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
-      island.push(cur);
-
-      for (const off of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
-        const nx = cur.cx + off[0]!;
-        const nz = cur.cz + off[1]!;
-        const neighbor = getCell(nx, nz);
-        if (!neighbor?.active) continue;
-        if (visited.has(neighbor.key)) continue;
-        visited.add(neighbor.key);
-        queue.push(neighbor);
-      }
-    }
-
-    islands.push(island);
-  }
-
-  // Default everything to dungeon
-  for (const cell of activeCells) {
-    cell.biome = 'dungeon';
-  }
-
-  if (islands.length >= 2) {
-    // Multiple islands — smallest one becomes cave
-    islands.sort((a, b) => a.length - b.length);
-    const caveIsland = islands[0]!;
-    for (const cell of caveIsland) {
-      cell.biome = 'cave';
-    }
-  } else {
-    // Single island — 50% chance it's cave
-    // Use seed for determinism
-    const roll = (worldSeed * 2654435761 >>> 0) / 4294967296;
-    if (roll < 0.5) {
-      for (const cell of activeCells) {
-        cell.biome = 'cave';
-      }
+    if (wildness > ORGANIC_THRESHOLD) {
+      cell.biome = depth > EMBER_THRESHOLD ? 'ember' : 'cave';
+    } else {
+      cell.biome = depth > CRYPT_THRESHOLD ? 'crypt' : 'dungeon';
     }
   }
 }

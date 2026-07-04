@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { GameEngine } from '../engine/GameEngine';
 import { useGameStore } from '../store/gameStore';
 import { HUD } from './HUD';
+import { Compass } from './Compass';
 import { Minimap } from './Minimap';
 import { MobileControls } from './MobileControls';
 import { AutoPlayPanel } from './AutoPlayPanel';
@@ -19,6 +20,9 @@ export function GameScreen() {
 
     const engine = new GameEngine(canvas);
     engineRef.current = engine;
+    if (import.meta.env.DEV) {
+      (window as unknown as { __engine?: GameEngine }).__engine = engine;
+    }
 
     const seed = useGameStore.getState().seed;
     engine.loadFloor(1, seed);
@@ -60,6 +64,7 @@ export function GameScreen() {
       )}
 
       <HUD />
+      <Compass />
       <Minimap />
       <MobileControls onAction={handleMobileAction} />
       <AutoPlayPanel />

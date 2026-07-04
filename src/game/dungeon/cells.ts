@@ -8,7 +8,12 @@
 
 // ── The cell ──
 
-export type BiomeType = 'dungeon' | 'cave';
+export type BiomeType = 'dungeon' | 'cave' | 'crypt' | 'ember';
+
+/** Biomes with organic (noise-sculpted, marching-squares) walls and rolling floors */
+export function isOrganicBiome(biome: BiomeType): boolean {
+  return biome === 'cave' || biome === 'ember';
+}
 
 export interface DungeonCell {
   cx: number;

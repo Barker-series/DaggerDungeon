@@ -5,6 +5,8 @@ import { LightingSystem } from './LightingSystem';
 import { SpriteManager } from './SpriteManager';
 import { KeyboardInput, type InputAction } from './InputManager';
 import { generateDungeon } from '../game/DungeonGenerator';
+import { buildCornerField, sampleCornerField } from '../game/dungeon/heightfield';
+import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
 import { DungeonBot } from '../bot/DungeonBot';
 import { useGameStore } from '../store/gameStore';
 import { TileType, Direction, TILE_SIZE } from '../game/types';
@@ -24,6 +26,7 @@ export class GameEngine {
   private threeCamera: THREE.PerspectiveCamera;
   private timer: THREE.Timer;
   private animFrameId = 0;
+  private stopped = false;
 
   private dungeonRenderer: DungeonRenderer;
   private gridCamera: GridCamera;
@@ -33,6 +36,8 @@ export class GameEngine {
   private bot: DungeonBot;
 
   private dungeon: DungeonData | null = null;
+  private cornerFloor: number[][] | null = null;
+  private contour: OrganicContour | null = null;
   private seed = 0;
   private bobPhase = 0;
   private jumpVelocity = 0;
@@ -87,6 +92,11 @@ export class GameEngine {
     this.bot.reset();
 
     this.dungeon = generateDungeon({ seed, floor });
+    this.cornerFloor = buildCornerField(
+      this.dungeon.tiles, this.dungeon.floorHeights,
+      this.dungeon.width, this.dungeon.height, 0,
+    );
+    this.contour = buildOrganicContour(this.dungeon);
     this.dungeonRenderer.build(this.dungeon);
     this.lighting.setup(this.dungeon);
 
@@ -104,16 +114,20 @@ export class GameEngine {
 
   start(): void {
     const loop = (timestamp: number) => {
+      if (this.stopped) return;
       this.animFrameId = requestAnimationFrame(loop);
       this.timer.update(timestamp);
       const dt = Math.min(this.timer.getDelta(), 0.1);
       this.update(dt);
       this.renderer.render(this.scene, this.threeCamera);
     };
-    requestAnimationFrame(loop);
+    // Store the FIRST frame's id too — stop() before the first frame fires
+    // (React StrictMode does exactly this) must not leave a zombie loop
+    this.animFrameId = requestAnimationFrame(loop);
   }
 
   stop(): void {
+    this.stopped = true;
     cancelAnimationFrame(this.animFrameId);
     this.input.dispose();
     this.gridCamera.detach();
@@ -130,8 +144,9 @@ export class GameEngine {
     this.syncGridPos(store);
     this.gridCamera.update();
 
-    // Sprites
+    // Sprites + animated dungeon elements (exit marker)
     this.sprites.update(dt, this.threeCamera);
+    this.dungeonRenderer.update(dt);
 
     // Bot
     if (store.autoPlay) {
@@ -172,13 +187,23 @@ export class GameEngine {
       const velX = (_forward.x * _moveDir.y + _right.x * _moveDir.x) * speed * dt;
       const velZ = (_forward.z * _moveDir.y + _right.z * _moveDir.x) * speed * dt;
 
+      // Substep so a slow frame can't tunnel through a thin contour wall
       const pos = this.gridCamera.position;
-      if (!this.collidesAt(pos.x + velX, pos.z)) pos.x += velX;
-      if (!this.collidesAt(pos.x, pos.z + velZ)) pos.z += velZ;
+      const steps = Math.max(1, Math.ceil(Math.max(Math.abs(velX), Math.abs(velZ)) / 0.25));
+      for (let i = 0; i < steps; i++) {
+        if (!this.collidesAt(pos.x + velX / steps, pos.z)) pos.x += velX / steps;
+        if (!this.collidesAt(pos.x, pos.z + velZ / steps)) pos.z += velZ / steps;
+      }
 
       if (this.isGrounded) this.bobPhase += dt * speed * 0.7;
     } else {
       this.bobPhase *= 0.9;
+    }
+
+    // Feet follow the same corner-averaged floor surface the renderer draws
+    if (this.cornerFloor) {
+      const pos = this.gridCamera.position;
+      pos.y = sampleCornerField(this.cornerFloor, pos.x, pos.z);
     }
 
     const bob = this.isGrounded && isMoving ? Math.sin(this.bobPhase * 2) * 0.04 : 0;
@@ -188,12 +213,17 @@ export class GameEngine {
   private collidesAt(x: number, z: number): boolean {
     if (!this.dungeon) return true;
     const r = PLAYER_RADIUS;
+    const w = this.dungeon.width;
     const cx = Math.floor(x / TILE_SIZE);
     const cz = Math.floor(z / TILE_SIZE);
+    const seen = new Set<unknown>();
     for (let tz = cz - 1; tz <= cz + 1; tz++) {
       for (let tx = cx - 1; tx <= cx + 1; tx++) {
         const tile = this.dungeon.tiles[tz]?.[tx];
         if (tile === undefined || tile === TileType.Wall) {
+          // Wall tiles in organic cells collide via the contour segments
+          // below (the wall you see), not their tile box
+          if (tile !== undefined && this.contour?.softWalls.has(tz * w + tx)) continue;
           const tMinX = tx * TILE_SIZE;
           const tMaxX = tMinX + TILE_SIZE;
           const tMinZ = tz * TILE_SIZE;
@@ -203,6 +233,15 @@ export class GameEngine {
           const ddx = x - closestX;
           const ddz = z - closestZ;
           if (ddx * ddx + ddz * ddz < r * r) return true;
+        }
+        // Contour segments registered to this tile (exact visual walls)
+        const segs = this.contour?.byTile.get(tz * w + tx);
+        if (segs) {
+          for (const seg of segs) {
+            if (seen.has(seg)) continue;
+            seen.add(seg);
+            if (segmentDistSq(seg, x, z) < r * r) return true;
+          }
         }
       }
     }
@@ -226,16 +265,25 @@ export class GameEngine {
   // ── Actions ──
 
   private processActions(): void {
-    const action = this.input.consumeAction();
-    if (!action) return;
+    // Drain the whole queue — actions left to next frame execute stale
+    let action: InputAction | null;
+    while ((action = this.input.consumeAction())) {
+      this.processAction(action);
+    }
+  }
 
+  private processAction(action: InputAction): void {
     switch (action) {
       case 'interact':
         this.tryInteract();
         break;
-      case 'toggleAutoPlay':
-        useGameStore.getState().toggleAutoPlay();
+      case 'toggleAutoPlay': {
+        const store = useGameStore.getState();
+        store.toggleAutoPlay();
+        // Release the bot's virtual keys when switching off mid-walk
+        if (!useGameStore.getState().autoPlay) this.bot.reset();
         break;
+      }
       case 'turnLeft':
         this.gridCamera.yaw += Math.PI / 2;
         break;
@@ -286,6 +334,16 @@ export class GameEngine {
 
   pushAction(action: InputAction): void {
     this.input.pushAction(action);
+  }
+
+  /** Dev/debug helper: place the player at a tile, optionally facing a yaw. */
+  teleport(tileX: number, tileY: number, yaw?: number): void {
+    this.gridCamera.setPosition(
+      tileX * TILE_SIZE + TILE_SIZE / 2,
+      0,
+      tileY * TILE_SIZE + TILE_SIZE / 2,
+    );
+    if (yaw !== undefined) this.gridCamera.yaw = yaw;
   }
 
   getCamera(): THREE.PerspectiveCamera {

@@ -1,14 +1,23 @@
 import * as THREE from 'three';
 import { TILE_SIZE, WALL_HEIGHT } from '../game/types';
 import type { DungeonData } from '../game/types';
+import { getCell, type BiomeType } from '../game/dungeon/cells';
 
 const FOG_COLOR = 0x0f0e12;
 const AMBIENT_COLOR = 0xffeedd;
-const AMBIENT_INTENSITY = 0.6;
+const AMBIENT_INTENSITY = 0.68;
 const TORCH_COLOR = 0xff9944;
 const TORCH_INTENSITY = 2.5;
-const TORCH_DISTANCE = TILE_SIZE * 7;
+const TORCH_DISTANCE = TILE_SIZE * 10; // must reach cell corners from its center
 const TORCH_DECAY = 1.5;
+
+// Each biome lights differently — the strongest cheap mood signal there is
+const BIOME_TORCH: Record<BiomeType, { color: number; intensity: number }> = {
+  dungeon: { color: 0xff9944, intensity: 2.5 }, // warm torchlight
+  cave: { color: 0xffb066, intensity: 2.2 }, // soft amber
+  crypt: { color: 0x7799ee, intensity: 2.6 }, // cold witch-light
+  ember: { color: 0xff4411, intensity: 3.5 }, // furnace glow
+};
 const CORRIDOR_LIGHT_COLOR = 0xcc8844;
 const CORRIDOR_LIGHT_INTENSITY = 1.5;
 const CORRIDOR_LIGHT_DISTANCE = TILE_SIZE * 4;
@@ -47,12 +56,19 @@ export class LightingSystem {
 
     // Torch point lights at room centers, hung into the local ceiling vault
     // so tall halls and caverns read instead of going black overhead
+    const CELL_TILE_SIZE = 14;
     for (const room of dungeon.rooms) {
+      const floorH = dungeon.floorHeights[room.center.y]?.[room.center.x] ?? 0;
       const ceilH = dungeon.ceilingHeights[room.center.y]?.[room.center.x] ?? WALL_HEIGHT;
-      const lightY = Math.max(WALL_HEIGHT * 0.75, ceilH * 0.65);
+      const lightY = Math.max(floorH + WALL_HEIGHT * 0.75, floorH + (ceilH - floorH) * 0.65);
+      const cell = getCell(
+        Math.floor(room.center.x / CELL_TILE_SIZE),
+        Math.floor(room.center.y / CELL_TILE_SIZE),
+      );
+      const torch = cell?.active ? BIOME_TORCH[cell.biome] : { color: TORCH_COLOR, intensity: TORCH_INTENSITY };
       const light = new THREE.PointLight(
-        TORCH_COLOR,
-        TORCH_INTENSITY,
+        torch.color,
+        torch.intensity,
         TORCH_DISTANCE + ceilH,
         TORCH_DECAY,
       );
@@ -89,6 +105,17 @@ export class LightingSystem {
         }
       }
     }
+
+    // Exit beacon — green glow marking the way down
+    const exitFloor = dungeon.floorHeights[dungeon.exit.y]?.[dungeon.exit.x] ?? 0;
+    const beacon = new THREE.PointLight(0x33ff88, 3, TILE_SIZE * 7, 1.2);
+    beacon.position.set(
+      dungeon.exit.x * TILE_SIZE + TILE_SIZE / 2,
+      exitFloor + 2.2,
+      dungeon.exit.y * TILE_SIZE + TILE_SIZE / 2,
+    );
+    this.scene.add(beacon);
+    this.lights.push(beacon);
 
     // Add dim lights along corridors (at door positions) so corridors aren't pitch black
     for (const room of dungeon.rooms) {

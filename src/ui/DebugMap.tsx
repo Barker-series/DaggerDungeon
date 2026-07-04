@@ -3,8 +3,16 @@ import { useGameStore } from '../store/gameStore';
 import { getAllCells, type DungeonCell } from '../game/dungeon/cells';
 import { hallwayCells } from '../game/dungeon/layer4-connect';
 import { goldenPath } from '../game/dungeon/layer5-goldenpath';
+import { findPathToExit } from '../game/pathfinding';
 
 const CELL_PX = 40; // pixels per cell in the debug view
+
+const BIOME_COLORS = {
+  dungeon: '#2a5a8a',
+  cave: '#8a5a2a',
+  crypt: '#5a7a9a',
+  ember: '#9a3a1a',
+} as const;
 
 type ViewMode = 'tiles' | 'biome' | 'noise' | 'content';
 const VIEW_MODES: ViewMode[] = ['tiles', 'biome', 'noise', 'content'];
@@ -89,7 +97,7 @@ export function DebugMap() {
               const cellZ = Math.floor(tz / cellTileSize);
               const biomeCell = cellMap.get(`${cellX},${cellZ}`);
               const biome = biomeCell?.biome ?? 'dungeon';
-              ctx.fillStyle = biome === 'cave' ? '#8a5a2a' : '#2a5a8a';
+              ctx.fillStyle = BIOME_COLORS[biome] ?? '#2a5a8a';
             }
           } else {
             switch (tile) {
@@ -128,6 +136,21 @@ export function DebugMap() {
         ctx.stroke();
       }
 
+      // Live route — green line from the player to the exit (what the compass follows)
+      if (playerPos) {
+        const route = findPathToExit(dungeon, playerPos);
+        if (route.length > 0) {
+          ctx.strokeStyle = '#3dd68c';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(playerPos.x * tilePx + tilePx / 2, playerPos.y * tilePx + tilePx / 2);
+          for (const p of route) {
+            ctx.lineTo(p.x * tilePx + tilePx / 2, p.y * tilePx + tilePx / 2);
+          }
+          ctx.stroke();
+        }
+      }
+
       // Spawn marker
       const spx = dungeon.entrance.x * tilePx + tilePx / 2;
       const spz = dungeon.entrance.y * tilePx + tilePx / 2;
@@ -160,8 +183,8 @@ export function DebugMap() {
       ctx.fillText('Tab cycle mode', legendX, 55);
       let ly = 80;
       const legendItems = mode === 'biome'
-        ? [['#1a1a1a', 'Wall'], ['#2a3a5a', 'Dungeon'], ['#5a3a2a', 'Cave'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const
-        : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const;
+        ? [['#1a1a1a', 'Wall'], [BIOME_COLORS.dungeon, 'Dungeon'], [BIOME_COLORS.cave, 'Cave'], [BIOME_COLORS.crypt, 'Crypt'], [BIOME_COLORS.ember, 'Ember'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const
+        : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const;
       for (const [c, text] of legendItems) {
         ctx.fillStyle = c; ctx.fillRect(legendX, ly - 8, 12, 12);
         ctx.fillStyle = '#ccc'; ctx.fillText(text, legendX + 18, ly + 2);

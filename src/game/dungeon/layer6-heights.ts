@@ -1,70 +1,133 @@
 /**
- * Layer 6 — Ceiling Heights
+ * Layer 6 — Height Fields (floor + ceiling)
  *
  * Reads: final tile grid, cell biomes (Layer 2)
- * Writes: a per-tile ceiling height field.
+ * Writes: per-tile floor elevation and ceiling height.
  *
  * Height is generation data, not a renderer afterthought:
- * - Cave biome: broad noise swells — low crawls opening into tall caverns
- * - Dungeon biome: one architectural height per cell, so merged cells
- *   read as distinct halls stepping into each other
- * - Carved connections through void: low tunnels, for contrast
+ * - Organic biomes (cave, ember) get rolling floors and swelling vaults;
+ *   ember runs deeper and far taller — a rift, not a room
+ * - Built biomes (dungeon, crypt) stay flat with one architectural
+ *   clearance per cell; crypt is deliberately low and oppressive
+ * - Carved connections through void are tight flat tunnels, so the big
+ *   spaces feel big by contrast
  *
- * The renderer averages heights at tile corners, so single-tile jumps
- * become slopes and per-cell steps become short transition bands.
+ * Ceiling = floor + clearance, so headroom is guaranteed everywhere.
+ * Floors are smoothed so every gradient stays walkable, and the renderer
+ * corner-averages both fields into continuous surfaces.
  */
 
 import { TileType } from '../types';
-import { getCell } from './cells';
+import { getCell, isOrganicBiome, type BiomeType } from './cells';
 import { sampleNoise } from './noise';
 
-// World units. TILE_SIZE is 3 — corridors stay tighter than they are wide,
-// halls and caverns open well past it.
-const TUNNEL_HEIGHT = 3.5;
-const DUNGEON_MIN = 5;
-const DUNGEON_MAX = 8.5;
-const CAVE_MIN = 4;
-const CAVE_MAX = 13;
-const CAVE_SWELL_SCALE = 14; // tiles per noise feature — broad swells
-const CAVE_DETAIL_SCALE = 4; // small rock detail
-const HEIGHT_STEP = 0.5; // dungeon heights quantize to this
+const TUNNEL_CLEARANCE = 3.5;
+const HEIGHT_STEP = 0.5; // built-biome clearances quantize to this
+const FLOOR_SMOOTH_PASSES = 2;
 
-export function computeCeilingHeights(
+const FLOOR_SWELL_SCALE = 9; // tiles per floor feature
+const CEIL_SWELL_SCALE = 14; // tiles per ceiling feature
+const CEIL_DETAIL_SCALE = 4;
+
+interface BiomeHeightProfile {
+  floorMin: number;
+  floorMax: number;
+  clearMin: number;
+  clearMax: number;
+}
+
+const PROFILES: Record<BiomeType, BiomeHeightProfile> = {
+  dungeon: { floorMin: 0, floorMax: 0, clearMin: 5, clearMax: 8.5 },
+  crypt: { floorMin: 0, floorMax: 0, clearMin: 3.8, clearMax: 5 },
+  cave: { floorMin: 0, floorMax: 2.2, clearMin: 4, clearMax: 13 },
+  ember: { floorMin: -1.8, floorMax: 2, clearMin: 8, clearMax: 16 },
+};
+
+export interface HeightFields {
+  floor: number[][];
+  ceiling: number[][];
+}
+
+export function computeHeightFields(
   tiles: TileType[][],
   gridTiles: number,
   cellTileSize: number,
   worldSeed: number,
-): number[][] {
+): HeightFields {
   const heightSeed = worldSeed + 4242;
-  const heights: number[][] = Array.from({ length: gridTiles }, () =>
-    Array.from({ length: gridTiles }, () => TUNNEL_HEIGHT),
+  const floor: number[][] = Array.from({ length: gridTiles }, () =>
+    Array.from({ length: gridTiles }, () => 0),
+  );
+  const ceiling: number[][] = Array.from({ length: gridTiles }, () =>
+    Array.from({ length: gridTiles }, () => TUNNEL_CLEARANCE),
   );
 
+  // ── Floor elevation ──
   for (let tz = 0; tz < gridTiles; tz++) {
     for (let tx = 0; tx < gridTiles; tx++) {
       if (tiles[tz]![tx] === TileType.Wall) continue;
 
       const cell = getCell(Math.floor(tx / cellTileSize), Math.floor(tz / cellTileSize));
+      if (!cell?.active || !isOrganicBiome(cell.biome)) continue; // built + tunnels stay flat
 
-      if (!cell?.active) {
-        // Carved connection through void — low tunnel
-        heights[tz]![tx] = TUNNEL_HEIGHT;
-        continue;
-      }
+      const p = PROFILES[cell.biome];
+      const swell = sampleNoise(tx, tz, heightSeed + 55, FLOOR_SWELL_SCALE);
+      floor[tz]![tx] = p.floorMin + swell * (p.floorMax - p.floorMin);
+    }
+  }
 
-      if (cell.biome === 'cave') {
-        const swell = sampleNoise(tx, tz, heightSeed, CAVE_SWELL_SCALE);
-        const detail = sampleNoise(tx, tz, heightSeed + 99, CAVE_DETAIL_SCALE);
-        const h = CAVE_MIN + swell * (CAVE_MAX - CAVE_MIN) + (detail - 0.5) * 1.5;
-        heights[tz]![tx] = Math.max(TUNNEL_HEIGHT, h);
-      } else {
-        // Dungeon — one flat architectural height per cell
-        const cellNoise = sampleNoise(cell.cx, cell.cz, heightSeed + 7, 2);
-        const raw = DUNGEON_MIN + cellNoise * (DUNGEON_MAX - DUNGEON_MIN);
-        heights[tz]![tx] = Math.round(raw / HEIGHT_STEP) * HEIGHT_STEP;
+  // Smooth floors so every gradient stays walkable — average each floor
+  // tile with its floor neighbors (walls excluded, flat tiles pull toward 0)
+  for (let pass = 0; pass < FLOOR_SMOOTH_PASSES; pass++) {
+    const snapshot = floor.map((row) => [...row]);
+    for (let tz = 0; tz < gridTiles; tz++) {
+      for (let tx = 0; tx < gridTiles; tx++) {
+        if (tiles[tz]![tx] === TileType.Wall) continue;
+        let sum = snapshot[tz]![tx]!;
+        let count = 1;
+        for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+          const nx = tx + dx!;
+          const nz = tz + dz!;
+          if (nx < 0 || nz < 0 || nx >= gridTiles || nz >= gridTiles) continue;
+          if (tiles[nz]![nx] === TileType.Wall) continue;
+          sum += snapshot[nz]![nx]!;
+          count++;
+        }
+        floor[tz]![tx] = sum / count;
       }
     }
   }
 
-  return heights;
+  // ── Ceiling = floor + biome clearance ──
+  for (let tz = 0; tz < gridTiles; tz++) {
+    for (let tx = 0; tx < gridTiles; tx++) {
+      if (tiles[tz]![tx] === TileType.Wall) continue;
+
+      const cell = getCell(Math.floor(tx / cellTileSize), Math.floor(tz / cellTileSize));
+      const f = floor[tz]![tx]!;
+
+      if (!cell?.active) {
+        ceiling[tz]![tx] = f + TUNNEL_CLEARANCE;
+        continue;
+      }
+
+      const p = PROFILES[cell.biome];
+      let clearance: number;
+      if (isOrganicBiome(cell.biome)) {
+        const swell = sampleNoise(tx, tz, heightSeed, CEIL_SWELL_SCALE);
+        const detail = sampleNoise(tx, tz, heightSeed + 99, CEIL_DETAIL_SCALE);
+        clearance = p.clearMin + swell * (p.clearMax - p.clearMin) + (detail - 0.5) * 1.5;
+        clearance = Math.max(TUNNEL_CLEARANCE, clearance);
+      } else {
+        // One flat architectural clearance per cell
+        const cellNoise = sampleNoise(cell.cx, cell.cz, heightSeed + 7, 2);
+        const raw = p.clearMin + cellNoise * (p.clearMax - p.clearMin);
+        clearance = Math.round(raw / HEIGHT_STEP) * HEIGHT_STEP;
+      }
+
+      ceiling[tz]![tx] = f + clearance;
+    }
+  }
+
+  return { floor, ceiling };
 }

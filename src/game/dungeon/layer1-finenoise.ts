@@ -10,7 +10,7 @@
  */
 
 import { TileType } from '../types';
-import { getCell } from './cells';
+import { getCell, isOrganicBiome } from './cells';
 import { sampleNoiseOctaves } from './noise';
 
 const FINE_THRESHOLD = 0.38;
@@ -32,7 +32,7 @@ export function applyFineNoise(
       const cx = Math.floor(tx / cellTileSize);
       const cz = Math.floor(tz / cellTileSize);
       const cell = getCell(cx, cz);
-      if (!cell || cell.biome !== 'cave') continue;
+      if (!cell || !isOrganicBiome(cell.biome)) continue;
 
       const noise = sampleNoiseOctaves(tx, tz, fineSeed, 2, 2.5, 0.6);
       if (noise < FINE_THRESHOLD) {
@@ -51,11 +51,11 @@ export function applyFineNoise(
 
     for (let tz = 1; tz < gridTiles - 1; tz++) {
       for (let tx = 1; tx < gridTiles - 1; tx++) {
-        // Only smooth cave biome cells
+        // Only smooth organic biome cells
         const cx = Math.floor(tx / cellTileSize);
         const cz = Math.floor(tz / cellTileSize);
         const cell = getCell(cx, cz);
-        if (!cell || cell.biome !== 'cave') continue;
+        if (!cell || !isOrganicBiome(cell.biome)) continue;
 
         // Count wall neighbors (8-directional)
         let wallCount = 0;

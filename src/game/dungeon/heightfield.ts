@@ -1,0 +1,63 @@
+/**
+ * Height field utilities shared by the renderer and the game engine.
+ *
+ * Per-tile height values are averaged at tile corners, turning the field
+ * into one continuous surface: single-tile noise becomes slopes and
+ * cell-to-cell steps become short ramps. The renderer builds geometry from
+ * corner heights; the engine bilinearly samples the same corners so the
+ * player walks exactly the surface that is drawn.
+ */
+
+import { TileType, TILE_SIZE } from '../types';
+
+/**
+ * Average the (up to 4) floor-tile values touching each grid corner.
+ * Corners touching no floor tile keep the fallback — geometry and sampling
+ * never reference them.
+ */
+export function buildCornerField(
+  tiles: TileType[][],
+  values: number[][],
+  width: number,
+  height: number,
+  fallback: number,
+): number[][] {
+  const corners: number[][] = Array.from({ length: height + 1 }, () =>
+    Array.from({ length: width + 1 }, () => fallback),
+  );
+
+  for (let cy = 0; cy <= height; cy++) {
+    for (let cx = 0; cx <= width; cx++) {
+      let sum = 0;
+      let count = 0;
+      for (const [tx, ty] of [[cx - 1, cy - 1], [cx, cy - 1], [cx - 1, cy], [cx, cy]]) {
+        if (tx! < 0 || ty! < 0 || tx! >= width || ty! >= height) continue;
+        if (tiles[ty!]![tx!] === TileType.Wall) continue;
+        sum += values[ty!]![tx!]!;
+        count++;
+      }
+      if (count > 0) corners[cy]![cx] = sum / count;
+    }
+  }
+
+  return corners;
+}
+
+/** Bilinearly sample a corner field at a world position. */
+export function sampleCornerField(corners: number[][], wx: number, wz: number): number {
+  const fx = wx / TILE_SIZE;
+  const fz = wz / TILE_SIZE;
+  const x0 = Math.max(0, Math.min(corners[0]!.length - 2, Math.floor(fx)));
+  const z0 = Math.max(0, Math.min(corners.length - 2, Math.floor(fz)));
+  const u = Math.max(0, Math.min(1, fx - x0));
+  const v = Math.max(0, Math.min(1, fz - z0));
+
+  const h00 = corners[z0]![x0]!;
+  const h10 = corners[z0]![x0 + 1]!;
+  const h01 = corners[z0 + 1]![x0]!;
+  const h11 = corners[z0 + 1]![x0 + 1]!;
+
+  const top = h00 * (1 - u) + h10 * u;
+  const bot = h01 * (1 - u) + h11 * u;
+  return top * (1 - v) + bot * v;
+}

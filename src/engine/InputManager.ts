@@ -94,6 +94,12 @@ export class KeyboardInput {
     this.keysDown.delete('KeyD');
   }
 
+  /** Bot sprint override — holds/releases virtual Shift */
+  setSprintOverride(on: boolean): void {
+    if (on) this.keysDown.add('ShiftLeft');
+    else this.keysDown.delete('ShiftLeft');
+  }
+
   // ── Keyboard ──
 
   private onKeyDown = (e: KeyboardEvent): void => {

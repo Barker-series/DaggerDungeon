@@ -1,21 +1,32 @@
-import { Path } from 'rot-js';
-import { TileType, TILE_SIZE, type DungeonData, type GridPos } from '../game/types';
+import { TileType, TILE_SIZE, type GridPos } from '../game/types';
+import { findPath } from '../game/pathfinding';
 import type { InputAction, KeyboardInput } from '../engine/InputManager';
 import type { GridCamera } from '../engine/Camera';
 import type { GameState } from '../store/gameStore';
 
 export enum BotState {
-  Explore = 'explore',
-  UseExit = 'useExit',
+  ToExit = 'toExit',
+  Arrived = 'arrived',
 }
 
+const ARRIVE_RADIUS = 0.9; // world units to a waypoint before advancing
+const TURN_RATE = 10; // yaw damping factor — higher turns faster
+
+/** Shortest-arc angle from a to b, in (-PI, PI] */
+function angleDelta(a: number, b: number): number {
+  return ((b - a + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+}
+
+/**
+ * Speedrunner bot: sprints the fastest route to the exit, then stops and
+ * hands control back — descending is the player's call.
+ */
 export class DungeonBot {
-  currentState = BotState.Explore;
+  currentState = BotState.ToExit;
   private path: GridPos[] = [];
   private tickAccumulator = 0;
   private readonly TICK_RATE = 0.12;
 
-  private explored = new Set<string>();
   private pushAction: (action: InputAction) => void;
   private getState: () => GameState;
   private input: KeyboardInput;
@@ -25,6 +36,10 @@ export class DungeonBot {
   private lastX = 0;
   private lastZ = 0;
   private stuckTimer = 0;
+
+  // Arrival is announced exactly once — plan() ticks several times while
+  // crossing the stairs tile, and a second toggle would switch auto back on
+  private announcedArrival = false;
 
   constructor(
     pushAction: (action: InputAction) => void,
@@ -39,28 +54,83 @@ export class DungeonBot {
   }
 
   update(dt: number): void {
-    this.tickAccumulator += dt;
-    if (this.tickAccumulator < this.TICK_RATE) return;
-    this.tickAccumulator -= this.TICK_RATE;
-
     const state = this.getState();
     if (state.screen !== 'playing') {
-      this.input.clearMovementOverride();
+      this.stop();
       return;
     }
 
-    this.explored.add(`${state.playerPos.x},${state.playerPos.y}`);
+    // Steering runs every frame so turning is smooth; planning is tick-gated
+    this.steer(dt);
 
+    this.tickAccumulator += dt;
+    if (this.tickAccumulator < this.TICK_RATE) return;
+    this.tickAccumulator -= this.TICK_RATE;
+    this.plan(state);
+  }
+
+  reset(): void {
+    this.path = [];
+    this.stuckTimer = 0;
+    this.currentState = BotState.ToExit;
+    this.announcedArrival = false;
+    this.stop();
+  }
+
+  /** Release all virtual keys */
+  private stop(): void {
+    this.input.clearMovementOverride();
+    this.input.setSprintOverride(false);
+  }
+
+  // ── Per-frame steering ──
+
+  private steer(dt: number): void {
+    let next = this.path[0];
+    if (!next) {
+      this.stop();
+      // Replan on the very next update instead of waiting out the tick
+      this.tickAccumulator = this.TICK_RATE;
+      return;
+    }
+
+    const pos = this.camera.position;
+    let tx = next.x * TILE_SIZE + TILE_SIZE / 2;
+    let tz = next.y * TILE_SIZE + TILE_SIZE / 2;
+
+    // Advance through any waypoints we're already close to — no dead frames
+    while (next && (tx - pos.x) ** 2 + (tz - pos.z) ** 2 < ARRIVE_RADIUS * ARRIVE_RADIUS) {
+      this.path.shift();
+      next = this.path[0];
+      if (!next) {
+        this.stop();
+        return;
+      }
+      tx = next.x * TILE_SIZE + TILE_SIZE / 2;
+      tz = next.y * TILE_SIZE + TILE_SIZE / 2;
+    }
+
+    // Damped turn toward the waypoint; movement follows facing, so the
+    // walk curves smoothly through corners instead of snapping
+    const desiredYaw = Math.atan2(-(tx - pos.x), -(tz - pos.z));
+    const blend = 1 - Math.exp(-TURN_RATE * dt);
+    this.camera.yaw += angleDelta(this.camera.yaw, desiredYaw) * blend;
+
+    this.input.setMovementOverride(1, 0);
+    this.input.setSprintOverride(true);
+  }
+
+  // ── Tick-rate planning ──
+
+  private plan(state: GameState): void {
     // Stuck detection — if we haven't moved 0.3 units in 1.5 seconds, repath
     const pos = this.camera.position;
     const movedDist = Math.sqrt((pos.x - this.lastX) ** 2 + (pos.z - this.lastZ) ** 2);
-    if (movedDist < 0.3) {
+    if (movedDist < 0.3 && this.path.length > 0) {
       this.stuckTimer += this.TICK_RATE;
       if (this.stuckTimer > 1.5) {
         this.path = [];
         this.stuckTimer = 0;
-        // Nudge: try a random direction
-        this.camera.yaw += (Math.random() - 0.5) * Math.PI;
       }
     } else {
       this.stuckTimer = 0;
@@ -68,102 +138,23 @@ export class DungeonBot {
     this.lastX = pos.x;
     this.lastZ = pos.z;
 
-    // On stairs -> use
+    // On stairs -> arrived: release the controls and switch auto off
     const tile = state.dungeon?.tiles[state.playerPos.y]?.[state.playerPos.x];
     if (tile === TileType.StairsDown) {
-      this.currentState = BotState.UseExit;
-      this.input.clearMovementOverride();
-      this.pushAction('interact');
-      this.explored.clear();
+      this.currentState = BotState.Arrived;
+      this.stop();
       this.path = [];
+      if (!this.announcedArrival) {
+        this.announcedArrival = true;
+        this.pushAction('toggleAutoPlay');
+      }
       return;
     }
 
-    // No path -> explore
+    // No path -> route straight to the exit
     if (this.path.length === 0 && state.dungeon) {
-      this.currentState = BotState.Explore;
-      const unexplored = this.findNearestUnexplored(state.playerPos, state.dungeon);
-      const target = unexplored ?? state.dungeon.exit;
-      this.path = this.findPath(state.playerPos, target, state.dungeon);
+      this.currentState = BotState.ToExit;
+      this.path = findPath(state.dungeon, state.playerPos, state.dungeon.exit);
     }
-
-    // Follow path
-    if (this.path.length > 0) {
-      this.followPath();
-    } else {
-      this.input.clearMovementOverride();
-    }
-  }
-
-  reset(): void {
-    this.explored.clear();
-    this.path = [];
-    this.stuckTimer = 0;
-    this.currentState = BotState.Explore;
-    this.input.clearMovementOverride();
-  }
-
-  private followPath(): void {
-    const next = this.path[0];
-    if (!next) {
-      this.input.clearMovementOverride();
-      return;
-    }
-
-    const pos = this.camera.position;
-    const tx = next.x * TILE_SIZE + TILE_SIZE / 2;
-    const tz = next.y * TILE_SIZE + TILE_SIZE / 2;
-    const dx = tx - pos.x;
-    const dz = tz - pos.z;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-
-    // Tight arrival — must be close to tile center before advancing
-    if (dist < 0.8) {
-      this.path.shift();
-      if (this.path.length === 0) {
-        this.input.clearMovementOverride();
-        return;
-      }
-      // Don't recurse — wait for next tick to face new waypoint
-      return;
-    }
-
-    // Face toward the NEXT waypoint only
-    this.camera.yaw = Math.atan2(-dx, -dz);
-    this.input.setMovementOverride(1, 0);
-  }
-
-  private findPath(from: GridPos, to: GridPos, dungeon: DungeonData): GridPos[] {
-    const passable = (x: number, y: number): boolean => {
-      const tile = dungeon.tiles[y]?.[x];
-      return tile !== undefined && tile !== TileType.Wall;
-    };
-    const astar = new Path.AStar(to.x, to.y, passable, { topology: 4 });
-    const path: GridPos[] = [];
-    astar.compute(from.x, from.y, (x, y) => { path.push({ x, y }); });
-    if (path.length > 0) path.shift();
-    return path;
-  }
-
-  private findNearestUnexplored(from: GridPos, dungeon: DungeonData): GridPos | null {
-    const visited = new Set<string>();
-    const queue: GridPos[] = [from];
-    visited.add(`${from.x},${from.y}`);
-
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      for (const off of [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }]) {
-        const nx = current.x + off.x;
-        const ny = current.y + off.y;
-        const key = `${nx},${ny}`;
-        if (visited.has(key)) continue;
-        visited.add(key);
-        const tile = dungeon.tiles[ny]?.[nx];
-        if (tile === undefined || tile === TileType.Wall) continue;
-        if (!this.explored.has(key)) return { x: nx, y: ny };
-        queue.push({ x: nx, y: ny });
-      }
-    }
-    return null;
   }
 }

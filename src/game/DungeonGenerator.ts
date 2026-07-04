@@ -23,7 +23,8 @@ import { findSpawnExit, generateLayer2SpawnExit } from './dungeon/layer2-spawnex
 import { generateLayer3SpawnRooms } from './dungeon/layer3-spawnrooms';
 import { connectIslands } from './dungeon/layer4-connect';
 import { computeGoldenPath } from './dungeon/layer5-goldenpath';
-import { computeCeilingHeights } from './dungeon/layer6-heights';
+import { computeHeightFields } from './dungeon/layer6-heights';
+import { placePillars } from './dungeon/layer45-pillars';
 
 // ── Config ──
 
@@ -114,17 +115,23 @@ export function generateDungeon(opts: GenerateOpts): DungeonData {
   // ── Layer 4: Connect disconnected islands ──
   connectIslands(tiles, rooms, entrance, GRID_TILES, CELL_TILE_SIZE);
 
+  // ── Layer 4.5: Pillars in built biomes (before golden path, so it routes around them) ──
+  placePillars(tiles, entrance, exit, GRID_TILES, CELL_TILE_SIZE, seed + floor * 1000);
+
   // ── Layer 5: Golden path ──
   computeGoldenPath(tiles, entrance, exit, GRID_TILES);
 
-  // ── Layer 6: Ceiling heights ──
-  const ceilingHeights = computeCeilingHeights(tiles, GRID_TILES, CELL_TILE_SIZE, seed + floor * 1000);
+  // ── Layer 6: Height fields ──
+  const { floor: floorHeights, ceiling: ceilingHeights } = computeHeightFields(
+    tiles, GRID_TILES, CELL_TILE_SIZE, seed + floor * 1000,
+  );
 
   // ── Output ──
   return {
     width: GRID_TILES,
     height: GRID_TILES,
     tiles,
+    floorHeights,
     ceilingHeights,
     rooms,
     entrance,
