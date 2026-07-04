@@ -6,11 +6,7 @@ import type { GameState } from '../store/gameStore';
 
 export enum BotState {
   Explore = 'explore',
-  Navigate = 'navigate',
-  Fight = 'fight',
-  Heal = 'heal',
   UseExit = 'useExit',
-  Dead = 'dead',
 }
 
 export class DungeonBot {
@@ -55,12 +51,6 @@ export class DungeonBot {
 
     this.explored.add(`${state.playerPos.x},${state.playerPos.y}`);
 
-    if (state.playerHp <= 0) {
-      this.currentState = BotState.Dead;
-      this.input.clearMovementOverride();
-      return;
-    }
-
     // Stuck detection — if we haven't moved 0.3 units in 1.5 seconds, repath
     const pos = this.camera.position;
     const movedDist = Math.sqrt((pos.x - this.lastX) ** 2 + (pos.z - this.lastZ) ** 2);
@@ -77,33 +67,6 @@ export class DungeonBot {
     }
     this.lastX = pos.x;
     this.lastZ = pos.z;
-
-    // Heal if low
-    if (state.playerHp < state.playerMaxHp * 0.35) {
-      const potionSlot = state.hotbar.findIndex(
-        (item) => item?.kind === 'consumable' && item.type === 'health_potion',
-      );
-      if (potionSlot >= 0) {
-        this.pushAction(`useItem${potionSlot + 1}` as InputAction);
-      }
-    }
-
-    // Adjacent enemy -> fight
-    const adjacentEnemy = this.findAdjacentEnemy(state);
-    if (adjacentEnemy) {
-      this.currentState = BotState.Fight;
-      this.faceTarget(adjacentEnemy);
-      this.input.clearMovementOverride();
-      this.pushAction('attack');
-      return;
-    }
-
-    // Nearby enemy -> path toward it
-    const nearbyEnemy = this.findNearestEnemy(state);
-    if (nearbyEnemy && state.dungeon && this.path.length === 0) {
-      this.currentState = BotState.Navigate;
-      this.path = this.findPath(state.playerPos, nearbyEnemy.position, state.dungeon);
-    }
 
     // On stairs -> use
     const tile = state.dungeon?.tiles[state.playerPos.y]?.[state.playerPos.x];
@@ -140,13 +103,6 @@ export class DungeonBot {
     this.input.clearMovementOverride();
   }
 
-  private faceTarget(target: GridPos): void {
-    const pos = this.camera.position;
-    const tx = target.x * TILE_SIZE + TILE_SIZE / 2;
-    const tz = target.y * TILE_SIZE + TILE_SIZE / 2;
-    this.camera.yaw = Math.atan2(-(tx - pos.x), -(tz - pos.z));
-  }
-
   private followPath(): void {
     const next = this.path[0];
     if (!next) {
@@ -175,34 +131,6 @@ export class DungeonBot {
     // Face toward the NEXT waypoint only
     this.camera.yaw = Math.atan2(-dx, -dz);
     this.input.setMovementOverride(1, 0);
-  }
-
-  private findAdjacentEnemy(state: GameState): GridPos | null {
-    const pos = this.camera.position;
-    for (const e of state.enemies) {
-      if (e.state === 'dead') continue;
-      const dx = e.worldX - pos.x;
-      const dz = e.worldZ - pos.z;
-      if (dx * dx + dz * dz < 3.5 * 3.5) {
-        return e.position;
-      }
-    }
-    return null;
-  }
-
-  private findNearestEnemy(state: GameState): { position: GridPos } | null {
-    const { playerPos, enemies } = state;
-    let nearest: { position: GridPos } | null = null;
-    let minDist = Infinity;
-    for (const e of enemies) {
-      if (e.state === 'dead') continue;
-      const dist = Math.abs(e.position.x - playerPos.x) + Math.abs(e.position.y - playerPos.y);
-      if (dist < minDist && dist <= 8) {
-        minDist = dist;
-        nearest = e;
-      }
-    }
-    return nearest;
   }
 
   private findPath(from: GridPos, to: GridPos, dungeon: DungeonData): GridPos[] {

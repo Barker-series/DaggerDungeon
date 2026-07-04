@@ -1,7 +1,7 @@
 import { useGameStore } from '../store/gameStore';
 
 export function MainMenu() {
-  const setScreen = useGameStore((s) => s.setScreen);
+  const startRun = useGameStore((s) => s.startRun);
   const seed = useGameStore((s) => s.seed);
   const setSeed = useGameStore((s) => s.setSeed);
 
@@ -15,9 +15,9 @@ export function MainMenu() {
         <div className="menu-buttons">
           <button
             className="menu-btn menu-btn-primary"
-            onClick={() => setScreen('classSelect')}
+            onClick={() => startRun()}
           >
-            New Run
+            Explore
           </button>
         </div>
         <div className="seed-input">
@@ -33,7 +33,7 @@ export function MainMenu() {
           </button>
         </div>
         <div className="menu-footer">
-          <span>LMB attack | WASD move | E interact | P auto-play</span>
+          <span>WASD move | E interact | P auto-play</span>
         </div>
       </div>
     </div>

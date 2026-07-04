@@ -6,7 +6,7 @@ interface MobileControlsProps {
 
 /**
  * Touch D-pad overlay for mobile play.
- * Renders directional buttons + attack + interact.
+ * Renders directional buttons + interact.
  */
 export function MobileControls({ onAction }: MobileControlsProps) {
   const btn = useCallback(
@@ -45,7 +45,6 @@ export function MobileControls({ onAction }: MobileControlsProps) {
           {btn('turnRight', '\u21B7', 'mobile-btn-turn')}
         </div>
         <div className="mobile-dpad-row">
-          {btn('attack', '\u2694', 'mobile-btn-attack')}
           {btn('interact', 'F', 'mobile-btn-interact')}
         </div>
       </div>

@@ -5,43 +5,28 @@ export type InputAction =
   | 'strafeRight'
   | 'turnLeft'
   | 'turnRight'
-  | 'attack'
-  | 'block'
   | 'interact'
-  | 'useItem1'
-  | 'useItem2'
-  | 'useItem3'
-  | 'quickHeal'
   | 'toggleAutoPlay';
 
 /**
  * FPS input manager — Skyrim/Fallout 4 style controls.
  *
- * LMB attack, RMB block, WASD move, E interact,
- * Q quick heal, 1-3 hotbar, Shift sprint, Space jump.
+ * WASD move, E interact, Shift sprint, Space jump, P auto-play.
  */
 export class KeyboardInput {
   private keysDown = new Set<string>();
   private actionQueue: InputAction[] = [];
   private disposed = false;
 
-  // Mouse buttons (tracked separately since they come from pointer lock)
-  private mouseLeft = false;
-  private mouseRight = false;
-
   constructor() {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
-    window.addEventListener('mousedown', this.onMouseDown);
-    window.addEventListener('mouseup', this.onMouseUp);
   }
 
   dispose(): void {
     this.disposed = true;
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
-    window.removeEventListener('mousedown', this.onMouseDown);
-    window.removeEventListener('mouseup', this.onMouseUp);
   }
 
   /**
@@ -71,16 +56,6 @@ export class KeyboardInput {
 
   isSprinting(): boolean {
     return this.keysDown.has('ShiftLeft') || this.keysDown.has('ShiftRight');
-  }
-
-  /** Is the player holding LMB (continuous attack / held swing) */
-  isAttacking(): boolean {
-    return this.mouseLeft;
-  }
-
-  /** Is the player holding RMB (block) */
-  isBlocking(): boolean {
-    return this.mouseRight;
   }
 
   /** Did the player just press Space (jump)? Consumed on read. */
@@ -131,18 +106,6 @@ export class KeyboardInput {
         case 'KeyE':
           this.actionQueue.push('interact');
           break;
-        case 'KeyQ':
-          this.actionQueue.push('quickHeal');
-          break;
-        case 'Digit1':
-          this.actionQueue.push('useItem1');
-          break;
-        case 'Digit2':
-          this.actionQueue.push('useItem2');
-          break;
-        case 'Digit3':
-          this.actionQueue.push('useItem3');
-          break;
         case 'KeyP':
           this.actionQueue.push('toggleAutoPlay');
           break;
@@ -154,30 +117,11 @@ export class KeyboardInput {
     this.keysDown.delete(e.code);
   };
 
-  // ── Mouse (only fires when pointer is locked) ──
-
-  private onMouseDown = (e: MouseEvent): void => {
-    if (!document.pointerLockElement) return;
-    if (e.button === 0) {
-      this.mouseLeft = true;
-      this.actionQueue.push('attack');
-    }
-    if (e.button === 2) {
-      this.mouseRight = true;
-    }
-  };
-
-  private onMouseUp = (e: MouseEvent): void => {
-    if (e.button === 0) this.mouseLeft = false;
-    if (e.button === 2) this.mouseRight = false;
-  };
-
   private isGameKey(code: string): boolean {
     return [
-      'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyP',
+      'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyP',
       'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-      'Space', 'Digit1', 'Digit2', 'Digit3',
-      'ShiftLeft', 'ShiftRight',
+      'Space', 'ShiftLeft', 'ShiftRight',
     ].includes(code);
   }
 }

@@ -2,11 +2,9 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { GameEngine } from '../engine/GameEngine';
 import { useGameStore } from '../store/gameStore';
 import { HUD } from './HUD';
-import { Hotbar } from './Hotbar';
 import { Minimap } from './Minimap';
 import { MobileControls } from './MobileControls';
 import { AutoPlayPanel } from './AutoPlayPanel';
-import { CombatFeedback } from './CombatFeedback';
 import { DebugMap } from './DebugMap';
 import type { InputAction } from '../engine/InputManager';
 
@@ -61,15 +59,13 @@ export function GameScreen() {
         </div>
       )}
 
-      <CombatFeedback />
       <HUD />
-      <Hotbar />
       <Minimap />
       <MobileControls onAction={handleMobileAction} />
       <AutoPlayPanel />
       <DebugMap />
       <div className="controls-hint">
-        LMB attack | WASD move | E interact | Q heal | P auto | ` debug map
+        WASD move | E interact | P auto | ` debug map
       </div>
     </div>
   );
