@@ -63,20 +63,20 @@ export function buildCornerField(
 }
 
 /**
- * Sample a corner field at a world position with smoothstep interpolation —
- * transitions curve into rounded shoulders instead of creasing at tile
- * lines. The surface still passes exactly through every corner value, so
- * coarse (1-quad) tiles and tessellated tiles stay seam-consistent.
+ * Sample a corner field at a world position — plain BILINEAR. Along any
+ * tile edge the surface is exactly the linear blend of its two corner
+ * values, which is precisely how wall faces interpolate their bounds: the
+ * floor you walk and the wall bottoms it meets agree by construction.
+ * (No smoothstep: a curved edge sags away from the linear face bound and
+ * opens slivers at wall bases.)
  */
 export function sampleCornerField(corners: number[][], wx: number, wz: number): number {
   const fx = wx / TILE_SIZE;
   const fz = wz / TILE_SIZE;
   const x0 = Math.max(0, Math.min(corners[0]!.length - 2, Math.floor(fx)));
   const z0 = Math.max(0, Math.min(corners.length - 2, Math.floor(fz)));
-  let u = Math.max(0, Math.min(1, fx - x0));
-  let v = Math.max(0, Math.min(1, fz - z0));
-  u = u * u * (3 - 2 * u);
-  v = v * v * (3 - 2 * v);
+  const u = Math.max(0, Math.min(1, fx - x0));
+  const v = Math.max(0, Math.min(1, fz - z0));
 
   const h00 = corners[z0]![x0]!;
   const h10 = corners[z0]![x0 + 1]!;

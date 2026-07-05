@@ -87,15 +87,40 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
       byTile.set(key, list);
     }
     list.push(seg);
-    // A wall tile touched by any contour segment is CONTOURED: the
-    // segments are its real surface (collision), the chamfer cuts its
-    // corner (render), and it needs apron backing. One predicate for all
-    // three — built walls at organic transitions included, or the
-    // chamfer pockets cut into them become roofless, floorless holes.
-    if (dungeon.tiles[tz]![tx] === TileType.Wall) {
-      softWalls.add(key);
-    }
   };
+
+  // ── Soft (contoured) walls — the one predicate the chamfer render,
+  // the apron backing, and the soft collision all share. A wall tile is
+  // soft ONLY if every corner group of it that touches walkable space
+  // can produce a contour segment (has an organic tile). A partially
+  // contourable wall (hallway meeting an organic boundary) must stay
+  // HARD: going soft would strip square collision from sides the contour
+  // never covers — a rendered wall you can walk through. ──
+  for (let tz = 0; tz < h; tz++) {
+    for (let tx = 0; tx < w; tx++) {
+      if (dungeon.tiles[tz]![tx] !== TileType.Wall) continue;
+      let touchesContour = false;
+      let fullyCovered = true;
+      for (const [gx, gz] of [[tx - 1, tz - 1], [tx, tz - 1], [tx - 1, tz], [tx, tz]]) {
+        let hasWalk = false;
+        let hasOrg = false;
+        for (const [ox, oz] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+          const nx = gx! + ox!;
+          const nz = gz! + oz!;
+          if (nx < 0 || nz < 0 || nx >= w || nz >= h) continue;
+          if (dungeon.tiles[nz]![nx] !== TileType.Wall) hasWalk = true;
+          if (isOrganicTile(nx, nz)) hasOrg = true;
+        }
+        if (hasWalk) {
+          if (hasOrg) touchesContour = true;
+          else fullyCovered = false;
+        }
+      }
+      if (touchesContour && fullyCovered) {
+        softWalls.add(tz * w + tx);
+      }
+    }
+  }
 
   for (let tz = 0; tz < h; tz++) {
     for (let tx = 0; tx < w; tx++) {

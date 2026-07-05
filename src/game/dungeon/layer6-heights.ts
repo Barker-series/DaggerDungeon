@@ -102,6 +102,20 @@ export function computePitMask(
   for (let tz = 0; tz < gridTiles; tz++) {
     for (let tx = 0; tx < gridTiles; tx++) {
       if (tiles[tz]![tx] === TileType.Wall || locked[tz]![tx] || pitBan[tz]![tx]) continue;
+      // BUFFER: a hole never touches a wall (diagonals included) — every
+      // pit is ringed by walkable rim floor before any wall starts, so
+      // wall geometry and pit geometry never meet edge-on. That contact
+      // line is where every seam bug has bred; make it ungeneratable.
+      let wallNear = false;
+      for (let dz = -1; dz <= 1 && !wallNear; dz++) {
+        for (let dx = -1; dx <= 1 && !wallNear; dx++) {
+          const nx = tx + dx;
+          const nz = tz + dz;
+          if (nx < 0 || nz < 0 || nx >= gridTiles || nz >= gridTiles) wallNear = true;
+          else if (tiles[nz]![nx] === TileType.Wall) wallNear = true;
+        }
+      }
+      if (wallNear) continue;
       const cell = getCell(Math.floor(tx / cellTileSize), Math.floor(tz / cellTileSize));
       const biome = cell?.active ? cell.biome : null;
       if (!biome) continue;
