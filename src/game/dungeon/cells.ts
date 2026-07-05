@@ -95,3 +95,28 @@ export function resetCells(): void {
 export function getAllCells(): DungeonCell[] {
   return [...cellMap.values()];
 }
+
+// ── Per-level biome snapshots ──
+// The cell map is a generation-time singleton: it only ever holds the level
+// currently being generated. Anything that runs after generation (renderer,
+// contour collision, lighting) reads a snapshot carried on the level data.
+
+export const CELL_TILE_SIZE = 14;
+
+/** Capture the current cell map's biomes as a plain grid (null = inactive). */
+export function snapshotCellBiomes(cellGridSize: number): (BiomeType | null)[][] {
+  const grid: (BiomeType | null)[][] = Array.from({ length: cellGridSize }, () =>
+    Array.from({ length: cellGridSize }, () => null),
+  );
+  for (const cell of getAllCells()) {
+    if (cell.cx >= 0 && cell.cz >= 0 && cell.cx < cellGridSize && cell.cz < cellGridSize) {
+      grid[cell.cz]![cell.cx] = cell.active ? cell.biome : null;
+    }
+  }
+  return grid;
+}
+
+/** Biome of the cell containing a tile, from a snapshot. */
+export function tileBiome(cellBiomes: (BiomeType | null)[][], tx: number, tz: number): BiomeType | null {
+  return cellBiomes[Math.floor(tz / CELL_TILE_SIZE)]?.[Math.floor(tx / CELL_TILE_SIZE)] ?? null;
+}

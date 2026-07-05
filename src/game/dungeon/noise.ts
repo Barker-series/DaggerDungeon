@@ -68,3 +68,36 @@ function hashPoint(x: number, z: number, seed: number): number {
   const rng = mulberry32(s);
   return rng();
 }
+
+/**
+ * Seeded 3D value noise — the megastructure's volumetric mask. The y axis
+ * runs across stacked levels, so a single field decides where voids align
+ * vertically (shafts, atria, bottomless pits) and where slabs stay solid.
+ *
+ * Coordinates are pre-scaled by the caller: one unit ≈ one noise feature.
+ * Returns 0-1.
+ */
+export function sampleNoise3D(x: number, y: number, z: number, worldSeed: number): number {
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const z0 = Math.floor(z);
+  const fx = x - x0;
+  const fy = y - y0;
+  const fz = z - z0;
+
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  const uz = fz * fz * (3 - 2 * fz);
+
+  const h = (dx: number, dy: number, dz: number): number =>
+    hashPoint(x0 + dx, z0 + dz, worldSeed + (y0 + dy) * 7919);
+
+  const c00 = h(0, 0, 0) * (1 - ux) + h(1, 0, 0) * ux;
+  const c10 = h(0, 0, 1) * (1 - ux) + h(1, 0, 1) * ux;
+  const c01 = h(0, 1, 0) * (1 - ux) + h(1, 1, 0) * ux;
+  const c11 = h(0, 1, 1) * (1 - ux) + h(1, 1, 1) * ux;
+
+  const bottom = c00 * (1 - uz) + c10 * uz;
+  const top = c01 * (1 - uz) + c11 * uz;
+  return bottom * (1 - uy) + top * uy;
+}

@@ -25,7 +25,7 @@ export function GameScreen() {
     }
 
     const seed = useGameStore.getState().seed;
-    engine.loadFloor(1, seed);
+    engine.loadStack(1, seed);
     engine.start();
 
     // Track pointer lock state for the overlay

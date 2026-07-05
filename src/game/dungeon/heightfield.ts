@@ -11,8 +11,10 @@
 import { TileType, TILE_SIZE } from '../types';
 
 /** Floor values at or below this are pit voids — they never blend with
- *  grade, and the UI maps render them as holes */
-export const PIT_LEVEL = -15;
+ *  grade, and the UI maps render them as holes. Deep enough that real
+ *  geometry (stairwell ramps descending a full LEVEL_HEIGHT) never
+ *  crosses it. */
+export const PIT_LEVEL = -900;
 
 /**
  * Average the (up to 4) floor-tile values touching each grid corner.

@@ -26,6 +26,10 @@ export function generateLayer3SpawnRooms(
   cellTileSize: number,
   gridTiles: number,
   layerNum: number = 3,
+  /** Bottom level only — upper levels descend by stairwell, not stairs */
+  placeStairs: boolean = true,
+  /** Skeleton-owned tiles connections must never carve through */
+  locked?: boolean[][],
 ): void {
   if (cell.layer >= layerNum) return;
   if (cell.layer < layerNum - 1) return;
@@ -49,9 +53,9 @@ export function generateLayer3SpawnRooms(
         type: RoomType.Entrance,
         doors: [],
       });
-      const nearest = findNearestFloor(tiles, centerX, centerZ, gridTiles);
+      const nearest = findNearestFloor(tiles, centerX, centerZ, gridTiles, locked);
       if (nearest) {
-        carvePathThrough(tiles, centerX, centerZ, nearest.x, nearest.y, gridTiles);
+        carvePathThrough(tiles, centerX, centerZ, nearest.x, nearest.y, gridTiles, locked);
       }
     }
     // If cell is active, Layer 1 already carved the full cell as floor.
@@ -79,14 +83,14 @@ export function generateLayer3SpawnRooms(
         type: RoomType.Boss,
         doors: [],
       });
-      const nearest = findNearestFloor(tiles, centerX, centerZ, gridTiles);
+      const nearest = findNearestFloor(tiles, centerX, centerZ, gridTiles, locked);
       if (nearest) {
-        carvePathThrough(tiles, centerX, centerZ, nearest.x, nearest.y, gridTiles);
+        carvePathThrough(tiles, centerX, centerZ, nearest.x, nearest.y, gridTiles, locked);
       }
     }
 
     // Place stairs
-    if (centerX >= 0 && centerZ >= 0 && centerX < gridTiles && centerZ < gridTiles) {
+    if (placeStairs && centerX >= 0 && centerZ >= 0 && centerX < gridTiles && centerZ < gridTiles) {
       tiles[centerZ]![centerX] = TileType.StairsDown;
     }
   }
@@ -109,7 +113,7 @@ function carveRoom(tiles: TileType[][], cx: number, cz: number, size: number, gr
 }
 
 /** Find the nearest existing floor tile to (cx, cz) using BFS */
-function findNearestFloor(tiles: TileType[][], cx: number, cz: number, gridTiles: number): GridPos | null {
+function findNearestFloor(tiles: TileType[][], cx: number, cz: number, gridTiles: number, blocked?: boolean[][]): GridPos | null {
   const visited = new Set<string>();
   const queue: GridPos[] = [{ x: cx, y: cz }];
   visited.add(`${cx},${cz}`);
@@ -122,7 +126,8 @@ function findNearestFloor(tiles: TileType[][], cx: number, cz: number, gridTiles
     const dz = Math.abs(cur.y - cz);
     if (dx > 3 || dz > 3) {
       // Far enough from center — check if this is an existing floor tile
-      if (tiles[cur.y]?.[cur.x] === TileType.Floor) {
+      // (never skeleton structure or a void)
+      if (tiles[cur.y]?.[cur.x] === TileType.Floor && !blocked?.[cur.y]?.[cur.x]) {
         return cur;
       }
     }
@@ -152,9 +157,10 @@ function carvePathThrough(
   x1: number, z1: number,
   x2: number, z2: number,
   gridTiles: number,
+  locked?: boolean[][],
 ): void {
   const passable = (x: number, y: number): boolean => {
-    return x >= 1 && y >= 1 && x < gridTiles - 1 && y < gridTiles - 1;
+    return x >= 1 && y >= 1 && x < gridTiles - 1 && y < gridTiles - 1 && !locked?.[y]?.[x];
   };
 
   // Use ROT.js A* — it finds the path, we carve floor along it

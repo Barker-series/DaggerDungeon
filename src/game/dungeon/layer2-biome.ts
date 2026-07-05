@@ -19,27 +19,39 @@
  */
 
 import { getAllCells } from './cells';
-import { sampleNoise } from './noise';
+import { sampleNoise3D } from './noise';
 
 const WILDNESS_SCALE = 3; // cells per region feature
 const DEPTH_SCALE = 4;
+/** Level-to-level drift of the biome fields — regions persist a couple of
+ *  levels before morphing, so descending a shaft feels like moving through
+ *  strata rather than into a random new map */
+const LEVEL_Y_STEP = 0.45;
 const ORGANIC_THRESHOLD = 0.52; // above = cave/ember/outside
 const OUTSIDE_THRESHOLD = 0.72; // wildness beyond this breaks the surface
 const CRYPT_THRESHOLD = 0.62; // built cells above this depth = crypt
 const EMBER_THRESHOLD = 0.66; // organic cells above this depth = ember
 
-export function assignBiomes(_cellTileSize: number, worldSeed: number): void {
-  const wildSeed = worldSeed + 1313;
-  const depthSeed = worldSeed + 2626;
+/**
+ * Assign biomes from two 3D noise fields sampled at this level's depth.
+ * `stackSeed` is shared by every level of a stack so the fields are
+ * vertically continuous. Only the top level may be `outside` — below it
+ * there is always structure overhead, so surface-break wildness becomes
+ * cave instead.
+ */
+export function assignBiomes(_cellTileSize: number, stackSeed: number, level: number): void {
+  const wildSeed = stackSeed + 1313;
+  const depthSeed = stackSeed + 2626;
+  const y = level * LEVEL_Y_STEP;
 
   for (const cell of getAllCells()) {
     if (!cell.active) continue;
 
-    const wildness = sampleNoise(cell.cx, cell.cz, wildSeed, WILDNESS_SCALE);
-    const depth = sampleNoise(cell.cx, cell.cz, depthSeed, DEPTH_SCALE);
+    const wildness = sampleNoise3D(cell.cx / WILDNESS_SCALE, y, cell.cz / WILDNESS_SCALE, wildSeed);
+    const depth = sampleNoise3D(cell.cx / DEPTH_SCALE, y, cell.cz / DEPTH_SCALE, depthSeed);
 
     if (wildness > OUTSIDE_THRESHOLD) {
-      cell.biome = 'outside';
+      cell.biome = level === 0 ? 'outside' : 'cave';
     } else if (wildness > ORGANIC_THRESHOLD) {
       cell.biome = depth > EMBER_THRESHOLD ? 'ember' : 'cave';
     } else {

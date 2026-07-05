@@ -11,9 +11,7 @@
  */
 
 import { TileType, TILE_SIZE, type DungeonData } from '../types';
-import { getCell, isOrganicBiome } from './cells';
-
-const CELL_TILE_SIZE = 14;
+import { tileBiome, isOrganicBiome, type BiomeType } from './cells';
 
 export interface ContourSegment {
   x0: number;
@@ -59,15 +57,17 @@ const MS_TABLE: number[][][] = [
   [],                // 15: all floor
 ];
 
-export function isOrganicTile(tx: number, tz: number): boolean {
-  const cell = getCell(Math.floor(tx / CELL_TILE_SIZE), Math.floor(tz / CELL_TILE_SIZE));
-  return cell ? isOrganicBiome(cell.biome) : false;
+/** Is the tile in an organic-biome cell, per a level's biome snapshot */
+export function isOrganicTileIn(cellBiomes: (BiomeType | null)[][], tx: number, tz: number): boolean {
+  const biome = tileBiome(cellBiomes, tx, tz);
+  return biome ? isOrganicBiome(biome) : false;
 }
 
 export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
   const s = TILE_SIZE;
   const w = dungeon.width;
   const h = dungeon.height;
+  const isOrganicTile = (tx: number, tz: number): boolean => isOrganicTileIn(dungeon.cellBiomes, tx, tz);
 
   const segments: ContourSegment[] = [];
   const byTile = new Map<number, ContourSegment[]>();

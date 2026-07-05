@@ -56,6 +56,8 @@ export function generateLayer2SpawnExit(
   cellTileSize: number,
   gridTiles: number,
   layerNum: number = 2,
+  /** Bottom level only — upper levels descend by stairwell, not stairs */
+  placeStairs: boolean = true,
 ): { entrance: GridPos | null; exit: GridPos | null } {
   if (cell.layer >= layerNum) return { entrance: null, exit: null };
   if (cell.layer < layerNum - 1) return { entrance: null, exit: null };
@@ -88,7 +90,7 @@ export function generateLayer2SpawnExit(
     if (room) room.type = RoomType.Entrance;
   }
 
-  if (cell.cx === exitCx && cell.cz === exitCz) {
+  if (placeStairs && cell.cx === exitCx && cell.cz === exitCz) {
     const tileX = cell.cx * cellTileSize + Math.floor(cellTileSize / 2);
     const tileZ = cell.cz * cellTileSize + Math.floor(cellTileSize / 2);
     if (tileX >= 0 && tileZ >= 0 && tileX < gridTiles && tileZ < gridTiles) {

@@ -29,6 +29,7 @@ export function placePillars(
   gridTiles: number,
   cellTileSize: number,
   worldSeed: number = 0,
+  locked?: boolean[][],
 ): void {
   const cellCount = Math.ceil(gridTiles / cellTileSize);
 
@@ -48,6 +49,7 @@ export function placePillars(
       for (let tz = baseZ + 2; tz < baseZ + cellTileSize - 1; tz += spacing) {
         for (let tx = baseX + 2; tx < baseX + cellTileSize - 1; tx += spacing) {
           if (rng() < JITTER_CHANCE) continue;
+          if (locked?.[tz]?.[tx]) continue; // skeleton space stays clear
           if (!canPlacePillar(tiles, tx, tz, entrance, exit, gridTiles)) continue;
           tiles[tz]![tx] = TileType.Wall;
         }

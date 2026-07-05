@@ -1,9 +1,9 @@
 import * as THREE from 'three';
-import { TileType, TILE_SIZE } from '../game/types';
-import type { DungeonData } from '../game/types';
-import { getCell, type BiomeType } from '../game/dungeon/cells';
+import { TileType, TILE_SIZE, SKY_CEIL, ABYSS_FLOOR } from '../game/types';
+import type { DungeonData, WorldData, ColumnSpan } from '../game/types';
+import { tileBiome, type BiomeType } from '../game/dungeon/cells';
 import { buildCornerField, sampleCornerField, PIT_LEVEL } from '../game/dungeon/heightfield';
-import { buildOrganicContour, isOrganicTile } from '../game/dungeon/organiccontour';
+import { buildOrganicContour, isOrganicTileIn } from '../game/dungeon/organiccontour';
 
 const loader = new THREE.TextureLoader();
 
@@ -47,6 +47,14 @@ const REGION_EMISSIVE: Partial<Record<RegionKey, number>> = {
   ember: 0x2a0d04,
 };
 
+/** How high canyon walls render into an open sky span */
+const RENDER_SKY_TOP = 44;
+/** How deep a bottomless pit's walls render below the lowest level */
+const RENDER_ABYSS_DROP = 24;
+/** A face bound within this of a span surface snaps to the smooth
+ *  corner-field surface instead of staying flat */
+const SURFACE_SNAP = 0.6;
+
 interface MeshBuffers {
   verts: number[];
   idxs: number[];
@@ -65,11 +73,21 @@ interface RegionBuffers {
   caveWall: MeshBuffers;
 }
 
+interface RegionMaterials {
+  wall: THREE.Material;
+  floor: THREE.Material;
+  ceil: THREE.Material;
+}
+
+interface Marker {
+  mesh: THREE.Mesh;
+  baseY: number; // local to the level group
+}
+
 export class DungeonRenderer {
   private scene: THREE.Scene;
   private meshGroup: THREE.Group;
-  private exitMarker: THREE.Mesh | null = null;
-  private exitMarkerBaseY = 0;
+  private markers: Marker[] = [];
   private markerTime = 0;
 
   constructor(scene: THREE.Scene) {
@@ -80,40 +98,88 @@ export class DungeonRenderer {
 
   clear(): void {
     // Dispose all children (textures are shared module-level, kept alive)
+    const seenMats = new Set<THREE.Material>();
     this.meshGroup.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.geometry.dispose();
-        if (Array.isArray(child.material)) {
-          child.material.forEach((m) => m.dispose());
-        } else {
-          child.material.dispose();
+        for (const m of Array.isArray(child.material) ? child.material : [child.material]) {
+          if (!seenMats.has(m)) {
+            seenMats.add(m);
+            m.dispose();
+          }
         }
       }
     });
     this.meshGroup.clear();
-    this.exitMarker = null;
+    this.markers = [];
   }
 
   /** Animate the exit marker (slow spin + bob). Call every frame. */
   update(dt: number): void {
-    if (!this.exitMarker) return;
+    if (this.markers.length === 0) return;
     this.markerTime += dt;
-    this.exitMarker.rotation.y += dt * 1.2;
-    this.exitMarker.position.y = this.exitMarkerBaseY + Math.sin(this.markerTime * 2) * 0.15;
+    for (const m of this.markers) {
+      m.mesh.rotation.y += dt * 1.2;
+      m.mesh.position.y = m.baseY + Math.sin(this.markerTime * 2) * 0.15;
+    }
   }
 
-  build(dungeon: DungeonData): void {
-    // Floor and ceiling heights are averaged at tile corners so each forms
-    // one continuous surface; walls span the exact same corner heights, so
-    // everything seals with no transition patches.
-    const cornerFloor = buildCornerField(dungeon.tiles, dungeon.floorHeights, dungeon.width, dungeon.height, 0);
-    const cornerCeil = buildCornerField(dungeon.tiles, dungeon.ceilingHeights, dungeon.width, dungeon.height, 3);
+  /**
+   * Build the whole stack. Horizontal surfaces (floors, ceilings) come
+   * from each level's height fields, gated by the column model; ALL
+   * vertical faces are derived in one pass from span differences between
+   * adjacent columns — a face exists exactly where air meets solid.
+   */
+  build(world: WorldData): void {
+    const cornerFloors = world.levels.map((l) =>
+      buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0));
+    const cornerCeils = world.levels.map((l) =>
+      buildCornerField(l.tiles, l.ceilingHeights, l.width, l.height, 3));
 
-    const CELL_TILE_SIZE = 14;
-    const regionOf = (tx: number, tz: number): RegionKey => {
-      const cell = getCell(Math.floor(tx / CELL_TILE_SIZE), Math.floor(tz / CELL_TILE_SIZE));
-      return cell?.active ? cell.biome : 'tunnel';
+    const materials = new Map<RegionKey, RegionMaterials>();
+    const materialsFor = (key: RegionKey): RegionMaterials => {
+      let m = materials.get(key);
+      if (!m) {
+        const tint = REGION_TINTS[key];
+        const emissive = REGION_EMISSIVE[key] ?? 0x000000;
+        m = {
+          wall: new THREE.MeshStandardMaterial({ map: WALL_TEX, color: tint, emissive, roughness: 0.85, side: THREE.DoubleSide }),
+          floor: new THREE.MeshStandardMaterial({ map: FLOOR_TEX, color: tint, emissive, roughness: 0.9, side: THREE.DoubleSide }),
+          ceil: new THREE.MeshStandardMaterial({ map: CEIL_TEX, color: tint, emissive, roughness: 0.95, side: THREE.DoubleSide }),
+        };
+        materials.set(key, m);
+      }
+      return m;
     };
+
+    for (let li = 0; li < world.levels.length; li++) {
+      this.buildLevelSurfaces(world, li, cornerFloors[li]!, cornerCeils[li]!, materialsFor);
+    }
+    this.buildWalls(world, cornerFloors, cornerCeils, materialsFor);
+  }
+
+  /** Floors, ceilings, aprons, contour walls, stairs and markers of one
+   *  level — everything horizontal or decorative. No axis walls here. */
+  private buildLevelSurfaces(
+    world: WorldData,
+    li: number,
+    cornerFloor: number[][],
+    cornerCeil: number[][],
+    materialsFor: (key: RegionKey) => RegionMaterials,
+  ): void {
+    const dungeon = world.levels[li]!;
+    const w = dungeon.width;
+    const isBottom = li === world.levels.length - 1;
+
+    const group = new THREE.Group();
+    group.position.y = dungeon.baseY;
+    this.meshGroup.add(group);
+
+    const isOrganicTile = (tx: number, tz: number): boolean =>
+      isOrganicTileIn(dungeon.cellBiomes, tx, tz);
+    const regionOf = (tx: number, tz: number): RegionKey =>
+      tileBiome(dungeon.cellBiomes, tx, tz) ?? 'tunnel';
+
     const regions = new Map<RegionKey, RegionBuffers>();
     const regionBuffers = (key: RegionKey): RegionBuffers => {
       let b = regions.get(key);
@@ -125,6 +191,12 @@ export class DungeonRenderer {
     };
     const stairs = newBuffers();
 
+    // Column-model gates: does this level own a floor / a ceiling here?
+    const ownsFloor = (x: number, y: number): boolean =>
+      world.columns[y * w + x]!.some((s) => s.owner === li);
+    const ownsCeil = (x: number, y: number): boolean =>
+      world.columns[y * w + x]!.some((s) => s.ceilOwner === li);
+
     const hasFloorNeighbor = (x: number, y: number): boolean => {
       for (let dz = -1; dz <= 1; dz++) {
         for (let dx = -1; dx <= 1; dx++) {
@@ -135,8 +207,8 @@ export class DungeonRenderer {
       return false;
     };
 
-    // A tile whose 3x3 neighborhood spans a pit boundary renders at higher
-    // tessellation — the plunge geometry earns real curvature
+    // A tile whose 3x3 neighborhood spans a hole boundary renders at
+    // higher tessellation — rim curvature is earned there
     const nearPitEdge = (x: number, y: number): boolean => {
       let hasPit = false;
       let hasGrade = false;
@@ -150,64 +222,21 @@ export class DungeonRenderer {
       return hasPit && hasGrade;
     };
 
-    // Wall direction and per-half tangents for each face side
-    const FACE_DIRS = {
-      north: { w: [0, -1], tA: [-1, 0], tB: [1, 0] },
-      south: { w: [0, 1], tA: [-1, 0], tB: [1, 0] },
-      west: { w: [-1, 0], tA: [0, -1], tB: [0, 1] },
-      east: { w: [1, 0], tA: [0, -1], tB: [0, 1] },
-    } as const;
-
-    const emitFace = (
-      buf: MeshBuffers,
-      x: number, y: number,
-      side: WallSide,
-      fA: number, fB: number,
-      hA: number, hB: number,
-    ): void => {
-      const d = FACE_DIRS[side];
-      const wxT = x + d.w[0];
-      const wyT = y + d.w[1];
-      if (!isWall(dungeon, wxT, wyT)) return; // no wall on that side
-
-      const halfOpen = (t: readonly [number, number]): boolean => {
-        const dxT = wxT + t[0];
-        const dyT = wyT + t[1];
-        if (isWall(dungeon, dxT, dyT)) return false; // diagonal is wall -> face half stays
-        // Chamfer only exists where the contour runs — any organic tile in
-        // the corner's 2x2 group
-        return (
-          isOrganicTile(x, y) || isOrganicTile(wxT, wyT) ||
-          isOrganicTile(dxT, dyT) || isOrganicTile(x + t[0], y + t[1])
-        );
-      };
-
-      const wx = x * TILE_SIZE;
-      const wz = y * TILE_SIZE;
-      const openA = halfOpen(d.tA);
-      const openB = halfOpen(d.tB);
-      if (!openA && !openB) {
-        addWallQuad(buf, wx, wz, side, fA, fB, hA, hB);
-      } else {
-        if (!openA) addWallQuad(buf, wx, wz, side, fA, fB, hA, hB, 0, 0.5);
-        if (!openB) addWallQuad(buf, wx, wz, side, fA, fB, hA, hB, 0.5, 1);
-      }
-    };
-
     for (let y = 0; y < dungeon.height; y++) {
       for (let x = 0; x < dungeon.width; x++) {
         const tile = dungeon.tiles[y]![x]!;
+        const region = regionOf(x, y);
+
         if (tile === TileType.Wall) {
           // Organic wall tiles bordering floor get "apron" floor + ceiling
-          // quads: the contour chamfers cut across them, exposing their
-          // corners, so there must be surface behind the smooth wall
+          // quads behind the contour chamfers
           if (isOrganicTile(x, y) && hasFloorNeighbor(x, y)) {
             const wx = x * TILE_SIZE;
             const wz = y * TILE_SIZE;
-            const region = regionOf(x, y);
             const buf = regionBuffers(region);
-            addHorizontalQuad(buf.floor, wx, wz, cornerFloor[y]![x]!, cornerFloor[y]![x + 1]!, cornerFloor[y + 1]![x]!, cornerFloor[y + 1]![x + 1]!, true);
-            if (region !== 'outside') {
+            const ap = (v: number): number => Math.max(v, -3);
+            addHorizontalQuad(buf.floor, wx, wz, ap(cornerFloor[y]![x]!), ap(cornerFloor[y]![x + 1]!), ap(cornerFloor[y + 1]![x]!), ap(cornerFloor[y + 1]![x + 1]!), true);
+            if (!dungeon.openUp[y]![x]) {
               addHorizontalQuad(buf.ceil, wx, wz, cornerCeil[y]![x]!, cornerCeil[y]![x + 1]!, cornerCeil[y + 1]![x]!, cornerCeil[y + 1]![x + 1]!, false);
             }
           }
@@ -216,49 +245,35 @@ export class DungeonRenderer {
 
         const wx = x * TILE_SIZE;
         const wz = y * TILE_SIZE;
-        const region = regionOf(x, y);
         const buf = regionBuffers(region);
 
-        const f00 = cornerFloor[y]![x]!;
-        const f10 = cornerFloor[y]![x + 1]!;
-        const f01 = cornerFloor[y + 1]![x]!;
-        const f11 = cornerFloor[y + 1]![x + 1]!;
-        const h00 = cornerCeil[y]![x]!;
-        const h10 = cornerCeil[y]![x + 1]!;
-        const h01 = cornerCeil[y + 1]![x]!;
-        const h11 = cornerCeil[y + 1]![x + 1]!;
-
-        const floorBuf = tile === TileType.StairsDown ? stairs : buf.floor;
-        if (nearPitEdge(x, y)) {
-          addTessellatedFloor(floorBuf, wx, wz, cornerFloor, PIT_TESS);
-        } else {
-          addHorizontalQuad(floorBuf, wx, wz, f00, f10, f01, f11, true);
+        if (ownsFloor(x, y)) {
+          const floorBuf = tile === TileType.StairsDown ? stairs : buf.floor;
+          if (nearPitEdge(x, y)) {
+            addTessellatedFloor(floorBuf, wx, wz, cornerFloor, PIT_TESS);
+          } else {
+            addHorizontalQuad(
+              floorBuf, wx, wz,
+              cornerFloor[y]![x]!, cornerFloor[y]![x + 1]!,
+              cornerFloor[y + 1]![x]!, cornerFloor[y + 1]![x + 1]!,
+              true,
+            );
+          }
         }
-        // Outside is open to the sky — no ceiling at all
-        if (region !== 'outside') {
-          addHorizontalQuad(buf.ceil, wx, wz, h00, h10, h01, h11, false);
+        if (ownsCeil(x, y)) {
+          addHorizontalQuad(
+            buf.ceil, wx, wz,
+            cornerCeil[y]![x]!, cornerCeil[y]![x + 1]!,
+            cornerCeil[y + 1]![x]!, cornerCeil[y + 1]![x + 1]!,
+            false,
+          );
         }
-
-        // Walls span from the floor corners to the ceiling corners.
-        // In organic regions each face is emitted in halves: where the
-        // contour chamfers the wall corner, that half of the axis face
-        // sits inside the walkable pocket and must NOT render (it's the
-        // "clip through the corner" wall). The half toward a corner is
-        // open exactly when the diagonal tile at that corner is floor.
-        emitFace(buf.wall, x, y, 'north', f00, f10, h00, h10);
-        emitFace(buf.wall, x, y, 'south', f01, f11, h01, h11);
-        emitFace(buf.wall, x, y, 'west', f00, f01, h00, h01);
-        emitFace(buf.wall, x, y, 'east', f10, f11, h10, h11);
       }
     }
 
-    // ── Organic contour walls ──
-    // The same segments the collision system uses (single source of truth),
-    // extruded from floor to ceiling. They overlay the axis-aligned quads,
-    // inset a hair toward the open side to avoid z-fighting on straight runs.
+    // ── Organic contour walls (decorative surface over the axis faces) ──
     const INSET = 0.03;
     for (const seg of buildOrganicContour(dungeon).segments) {
-      // Bucket by the first organic tile of the segment's group
       let rx = seg.gx;
       let rz = seg.gz;
       for (const [ox, oz] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
@@ -270,16 +285,24 @@ export class DungeonRenderer {
       }
       const buf = regionBuffers(regionOf(rx, rz)).caveWall;
 
-      const bottom = Math.min(
-        sampleCornerField(cornerFloor, seg.x0, seg.z0),
-        sampleCornerField(cornerFloor, seg.x1, seg.z1),
-      ) - 0.4; // deep skirt: rolling floors must never peek under the wall
-      const top = Math.max(
+      const bottom = Math.max(
+        Math.min(
+          sampleCornerField(cornerFloor, seg.x0, seg.z0),
+          sampleCornerField(cornerFloor, seg.x1, seg.z1),
+        ) - 0.4,
+        -3,
+      );
+      let top = Math.max(
         sampleCornerField(cornerCeil, seg.x0, seg.z0),
         sampleCornerField(cornerCeil, seg.x1, seg.z1),
       ) + 0.05;
+      for (const [ox, oz] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+        if (dungeon.openUp[seg.gz + oz!]?.[seg.gx + ox!]) {
+          top = Math.max(top, 18.2);
+          break;
+        }
+      }
 
-      // Normal points toward the open (floor) side per table winding
       const dx = seg.x1 - seg.x0;
       const dz = seg.z1 - seg.z0;
       const len = Math.sqrt(dx * dx + dz * dz) || 1;
@@ -301,43 +324,232 @@ export class DungeonRenderer {
       buf.norms.push(nx, 0, nz, nx, 0, nz, nx, 0, nz, nx, 0, nz);
     }
 
-    // Build one mesh set per region with tinted materials
     for (const [key, buf] of regions) {
-      const tint = REGION_TINTS[key];
-      const emissive = REGION_EMISSIVE[key] ?? 0x000000;
-      const wallMat = new THREE.MeshStandardMaterial({ map: WALL_TEX, color: tint, emissive, roughness: 0.85, side: THREE.DoubleSide });
-      const floorMat = new THREE.MeshStandardMaterial({ map: FLOOR_TEX, color: tint, emissive, roughness: 0.9, side: THREE.DoubleSide });
-      const ceilMat = new THREE.MeshStandardMaterial({ map: CEIL_TEX, color: tint, emissive, roughness: 0.95, side: THREE.DoubleSide });
-
-      this.addMesh(buf.floor, floorMat);
-      this.addMesh(buf.ceil, ceilMat);
-      this.addMesh(buf.wall, wallMat);
-      this.addMesh(buf.caveWall, wallMat);
+      const mats = materialsFor(key);
+      this.addMesh(group, buf.floor, mats.floor);
+      this.addMesh(group, buf.ceil, mats.ceil);
+      this.addMesh(group, buf.caveWall, mats.wall);
     }
 
-    const stairsMat = new THREE.MeshStandardMaterial({ map: STAIRS_TEX, roughness: 0.7, emissive: 0x1a3a2a, emissiveIntensity: 0.15, side: THREE.DoubleSide });
-    this.addMesh(stairs, stairsMat);
+    if (stairs.verts.length > 0) {
+      const stairsMat = new THREE.MeshStandardMaterial({ map: STAIRS_TEX, roughness: 0.7, emissive: 0x1a3a2a, emissiveIntensity: 0.15, side: THREE.DoubleSide });
+      this.addMesh(group, stairs, stairsMat);
+    }
 
-    // Exit marker — a glowing cube floating over the stairs so the exit
-    // reads from across a hall, not just when you look at the floor
-    const exitX = dungeon.exit.x * TILE_SIZE + TILE_SIZE / 2;
-    const exitZ = dungeon.exit.y * TILE_SIZE + TILE_SIZE / 2;
-    const exitFloor = dungeon.floorHeights[dungeon.exit.y]?.[dungeon.exit.x] ?? 0;
-    this.exitMarkerBaseY = exitFloor + 1.5;
-    const markerGeom = new THREE.BoxGeometry(1.1, 1.1, 1.1);
-    const markerMat = new THREE.MeshStandardMaterial({
-      color: 0x0a2a1a,
-      emissive: 0x22ff88,
-      emissiveIntensity: 0.9,
-      roughness: 0.4,
-    });
-    this.exitMarker = new THREE.Mesh(markerGeom, markerMat);
-    this.exitMarker.position.set(exitX, this.exitMarkerBaseY, exitZ);
-    this.exitMarker.rotation.set(Math.PI / 5, Math.PI / 4, 0); // corner-up crystal look
-    this.meshGroup.add(this.exitMarker);
+    // Exit crystal — only where the way out really is: the bottom stairs
+    if (isBottom) {
+      const exitX = dungeon.exit.x * TILE_SIZE + TILE_SIZE / 2;
+      const exitZ = dungeon.exit.y * TILE_SIZE + TILE_SIZE / 2;
+      const exitFloor = dungeon.floorHeights[dungeon.exit.y]?.[dungeon.exit.x] ?? 0;
+      const markerGeom = new THREE.BoxGeometry(1.1, 1.1, 1.1);
+      const markerMat = new THREE.MeshStandardMaterial({
+        color: 0x0a2a1a,
+        emissive: 0x22ff88,
+        emissiveIntensity: 0.9,
+        roughness: 0.4,
+      });
+      const marker = new THREE.Mesh(markerGeom, markerMat);
+      const markerBaseY = exitFloor + 1.5;
+      marker.position.set(exitX, markerBaseY, exitZ);
+      marker.rotation.set(Math.PI / 5, Math.PI / 4, 0);
+      group.add(marker);
+      this.markers.push({ mesh: marker, baseY: markerBaseY });
+    }
   }
 
-  private addMesh(buf: MeshBuffers, material: THREE.Material): void {
+  /**
+   * ALL vertical faces, in one pass, from the column model: for every
+   * pair of adjacent columns, every Y-range where exactly one side is air
+   * gets a wall face. Gaps are unrepresentable — if air touches solid,
+   * the face is here. Face bounds that coincide with a span's floor or
+   * ceiling snap to the smooth corner-field surface, so cliff rims and
+   * rolling terrain seal exactly against their walls.
+   */
+  private buildWalls(
+    world: WorldData,
+    cornerFloors: number[][][],
+    cornerCeils: number[][][],
+    materialsFor: (key: RegionKey) => RegionMaterials,
+  ): void {
+    const w = world.levels[0]!.width;
+    const h = world.levels[0]!.height;
+    const worldBottom = world.levels[world.levels.length - 1]!.baseY - RENDER_ABYSS_DROP;
+
+    const group = new THREE.Group();
+    this.meshGroup.add(group);
+
+    const buffers = new Map<RegionKey, MeshBuffers>();
+    const rockFloors = newBuffers();
+    const bufferFor = (key: RegionKey): MeshBuffers => {
+      let b = buffers.get(key);
+      if (!b) {
+        b = newBuffers();
+        buffers.set(key, b);
+      }
+      return b;
+    };
+
+    const clipY = (y: number): number =>
+      y >= SKY_CEIL ? RENDER_SKY_TOP : (y <= ABYSS_FLOOR ? worldBottom : y);
+
+    /** World-space height of a face bound at a grid corner: snapped to
+     *  the smooth surface it belongs to, else flat. */
+    const refine = (
+      y: number,
+      spansA: ColumnSpan[], spansB: ColumnSpan[],
+      cx: number, cz: number,
+    ): number => {
+      for (const spans of [spansA, spansB]) {
+        for (const s of spans) {
+          if (s.owner >= 0 && Math.abs(s.floor - y) < SURFACE_SNAP) {
+            const v = cornerFloors[s.owner]![cz]?.[cx];
+            if (v !== undefined && v > PIT_LEVEL) return world.levels[s.owner]!.baseY + v;
+          }
+          if (s.ceilOwner >= 0 && Math.abs(s.ceil - y) < SURFACE_SNAP) {
+            const v = cornerCeils[s.ceilOwner]![cz]?.[cx];
+            if (v !== undefined) return world.levels[s.ceilOwner]!.baseY + v;
+          }
+        }
+      }
+      return y;
+    };
+
+    /** Region (material) for a face: the biome of the air side's owner */
+    const faceRegion = (spans: ColumnSpan[], lo: number, hi: number, x: number, z: number): RegionKey => {
+      for (const s of spans) {
+        if (s.owner >= 0 && s.floor <= hi + 0.1 && s.ceil >= lo - 0.1) {
+          return tileBiome(world.levels[s.owner]!.cellBiomes, x, z) ?? 'tunnel';
+        }
+      }
+      return 'tunnel';
+    };
+
+    // Merge a column's spans into clipped [lo, hi] air ranges
+    const airRanges = (spans: ColumnSpan[]): [number, number][] =>
+      spans.map((s) => [clipY(s.floor), clipY(s.ceil)] as [number, number]);
+
+    for (let z = 0; z < h; z++) {
+      for (let x = 0; x < w; x++) {
+        const a = world.columns[z * w + x]!;
+
+        // Structural rock floors (a shaft ending on the slab below)
+        for (const s of a) {
+          if (s.owner === -1 && s.floor > ABYSS_FLOOR) {
+            addHorizontalQuad(rockFloors, x * TILE_SIZE, z * TILE_SIZE, s.floor, s.floor, s.floor, s.floor, true);
+          }
+        }
+
+        // Two directed boundaries per column: east and south
+        for (const [dx, dz] of [[1, 0], [0, 1]] as const) {
+          const nx = x + dx;
+          const nz = z + dz;
+          const b = nx < w && nz < h ? world.columns[nz * w + nx]! : [];
+
+          const ra = airRanges(a);
+          const rb = airRanges(b);
+          // XOR sweep over breakpoints
+          const cuts = [...ra.flat(), ...rb.flat()].sort((p, q) => p - q);
+          for (let i = 0; i + 1 < cuts.length; i++) {
+            const lo = cuts[i]!;
+            const hi = cuts[i + 1]!;
+            if (hi - lo < 0.02) continue;
+            const mid = (lo + hi) / 2;
+            const inA = ra.some(([f, c]) => f <= mid && mid <= c);
+            const inB = rb.some(([f, c]) => f <= mid && mid <= c);
+            if (inA === inB) continue; // both air (open) or both solid
+
+            const airSpans = inA ? a : b;
+            const otherSpans = inA ? b : a;
+            // shared edge corners: for east faces, corners (x+1, z) & (x+1, z+1);
+            // for south faces, corners (x, z+1) & (x+1, z+1)
+            const c0 = dx === 1 ? { cx: x + 1, cz: z } : { cx: x, cz: z + 1 };
+            const c1 = { cx: x + 1, cz: z + 1 };
+            const lo0 = refine(lo, airSpans, otherSpans, c0.cx, c0.cz);
+            const lo1 = refine(lo, airSpans, otherSpans, c1.cx, c1.cz);
+            const hi0 = refine(hi, airSpans, otherSpans, c0.cx, c0.cz);
+            const hi1 = refine(hi, airSpans, otherSpans, c1.cx, c1.cz);
+            if (hi0 - lo0 < 0.02 && hi1 - lo1 < 0.02) continue;
+
+            const airX = inA ? x : nx;
+            const airZ = inA ? z : nz;
+            const solidX = inA ? nx : x;
+            const solidZ = inA ? nz : z;
+
+            // Organic chamfer: within a level's own band, when the solid
+            // side is that level's organic wall tile, the contour cuts the
+            // corner — omit the face half whose diagonal is open floor
+            // (the old emitFace rule, ported: it prevents axis faces from
+            // crossing walkable chamfer pockets).
+            let halves: [number, number][] = [[0, 1]];
+            const ownSpan = airSpans.find((s) =>
+              s.owner >= 0 && clipY(s.floor) <= mid && mid <= clipY(s.ceil));
+            if (ownSpan && lo >= clipY(ownSpan.floor) - 0.7 && hi <= clipY(ownSpan.ceil) + 0.7) {
+              const L = world.levels[ownSpan.owner]!;
+              const wallAt = (tx: number, tz: number): boolean =>
+                tx < 0 || tz < 0 || tx >= w || tz >= h || L.tiles[tz]![tx] === TileType.Wall;
+              if (wallAt(solidX, solidZ)) {
+                const org = (tx: number, tz: number): boolean =>
+                  isOrganicTileIn(L.cellBiomes, tx, tz);
+                const tangents: [number, number][] = dx === 1
+                  ? [[0, -1], [0, 1]]
+                  : [[-1, 0], [1, 0]];
+                const openHalf = (t: [number, number]): boolean => {
+                  const dxT = solidX + t[0];
+                  const dzT = solidZ + t[1];
+                  if (wallAt(dxT, dzT)) return false;
+                  return org(airX, airZ) || org(solidX, solidZ) || org(dxT, dzT) || org(airX + t[0], airZ + t[1]);
+                };
+                const o0 = openHalf(tangents[0]!);
+                const o1 = openHalf(tangents[1]!);
+                if (o0 || o1) {
+                  halves = [];
+                  if (!o0) halves.push([0, 0.5]);
+                  if (!o1) halves.push([0.5, 1]);
+                }
+              }
+            }
+            if (halves.length === 0) continue;
+
+            const region = faceRegion(airSpans, lo, hi, airX, airZ);
+            const buf = bufferFor(region);
+            const ex0 = c0.cx * TILE_SIZE;
+            const ez0 = c0.cz * TILE_SIZE;
+            const ex1 = c1.cx * TILE_SIZE;
+            const ez1 = c1.cz * TILE_SIZE;
+            // normal toward the air side
+            const nrmX = dx === 1 ? (inA ? -1 : 1) : 0;
+            const nrmZ = dz === 1 ? (inA ? -1 : 1) : 0;
+
+            for (const [s0, s1] of halves) {
+              const lerp = (p: number, q: number, t: number): number => p + (q - p) * t;
+              const vi = buf.verts.length / 3;
+              buf.verts.push(
+                lerp(ex0, ex1, s0), lerp(lo0, lo1, s0), lerp(ez0, ez1, s0),
+                lerp(ex0, ex1, s1), lerp(lo0, lo1, s1), lerp(ez0, ez1, s1),
+                lerp(ex0, ex1, s1), lerp(hi0, hi1, s1), lerp(ez0, ez1, s1),
+                lerp(ex0, ex1, s0), lerp(hi0, hi1, s0), lerp(ez0, ez1, s0),
+              );
+              for (let k = 0; k < 4; k++) buf.norms.push(nrmX, 0, nrmZ);
+              buf.uvs.push(
+                s0, lerp(lo0, lo1, s0) / TILE_SIZE,
+                s1, lerp(lo0, lo1, s1) / TILE_SIZE,
+                s1, lerp(hi0, hi1, s1) / TILE_SIZE,
+                s0, lerp(hi0, hi1, s0) / TILE_SIZE,
+              );
+              buf.idxs.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+            }
+          }
+        }
+      }
+    }
+
+    for (const [key, buf] of buffers) {
+      this.addMesh(group, buf, materialsFor(key).wall);
+    }
+    this.addMesh(group, rockFloors, materialsFor('tunnel').floor);
+  }
+
+  private addMesh(parent: THREE.Group, buf: MeshBuffers, material: THREE.Material): void {
     if (buf.verts.length === 0) return;
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(buf.verts, 3));
@@ -345,7 +557,7 @@ export class DungeonRenderer {
     geom.setAttribute('normal', new THREE.Float32BufferAttribute(buf.norms, 3));
     geom.setIndex(buf.idxs);
     const mesh = new THREE.Mesh(geom, material);
-    this.meshGroup.add(mesh);
+    parent.add(mesh);
   }
 }
 
@@ -360,14 +572,9 @@ const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
 const _n = new THREE.Vector3();
 
-/** Tessellation for floor tiles at pit boundaries — the plunge and its
- *  shoulder get real curvature instead of one giant facet */
+/** Tessellation for floor tiles at hole boundaries */
 const PIT_TESS = 4;
 
-/**
- * One sub-quad of a tessellated floor patch. Heights are sampled from the
- * corner field (smoothstep), UVs span the tile so the texture is unchanged.
- */
 function addFloorPatch(
   buf: MeshBuffers,
   x0: number, z0: number, x1: number, z1: number,
@@ -389,7 +596,6 @@ function addFloorPatch(
   for (let k = 0; k < 4; k++) buf.norms.push(_n.x, _n.y, _n.z);
 }
 
-/** Tessellated floor tile sampled from the corner field. */
 function addTessellatedFloor(
   buf: MeshBuffers,
   wx: number, wz: number,
@@ -416,10 +622,6 @@ function addTessellatedFloor(
   }
 }
 
-/**
- * Sloped horizontal quad through four corner heights.
- * facingUp=true for floors, false for ceilings.
- */
 function addHorizontalQuad(
   buf: MeshBuffers,
   wx: number, wz: number,
@@ -444,59 +646,10 @@ function addHorizontalQuad(
   }
   buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
 
-  // One averaged normal for the (possibly non-planar) quad, from its diagonals
-  _a.set(s, h11 - h00, s); // (x,z) -> (x+s,z+s)
-  _b.set(-s, h01 - h10, s); // (x+s,z) -> (x,z+s)
+  _a.set(s, h11 - h00, s);
+  _b.set(-s, h01 - h10, s);
   _n.crossVectors(_a, _b).normalize();
   if (facingUp && _n.y < 0) _n.negate();
   if (!facingUp && _n.y > 0) _n.negate();
   for (let k = 0; k < 4; k++) buf.norms.push(_n.x, _n.y, _n.z);
 }
-
-const SIDE_DEF = {
-  north: { ax: 0, az: 0, bx: 1, bz: 0, nx: 0, nz: 1 },
-  south: { ax: 0, az: 1, bx: 1, bz: 1, nx: 0, nz: -1 },
-  west: { ax: 0, az: 0, bx: 0, bz: 1, nx: 1, nz: 0 },
-  east: { ax: 1, az: 0, bx: 1, bz: 1, nx: -1, nz: 0 },
-} as const;
-
-export type WallSide = keyof typeof SIDE_DEF;
-
-/**
- * Vertical wall quad spanning floor corner heights (fA, fB) to ceiling
- * corner heights (hA, hB) along the [s0, s1] span of the face (0..1 from
- * corner A to corner B). Material is double-sided, so winding is uniform;
- * texture tiles once per TILE_SIZE both ways.
- */
-function addWallQuad(
-  buf: MeshBuffers,
-  wx: number, wz: number,
-  side: WallSide,
-  fA: number, fB: number,
-  hA: number, hB: number,
-  s0 = 0, s1 = 1,
-): void {
-  const s = TILE_SIZE;
-  const d = SIDE_DEF[side];
-  const i = buf.verts.length / 3;
-
-  const ax = wx + d.ax * s;
-  const az = wz + d.az * s;
-  const bx = wx + d.bx * s;
-  const bz = wz + d.bz * s;
-
-  const x0 = ax + (bx - ax) * s0;
-  const z0 = az + (bz - az) * s0;
-  const x1 = ax + (bx - ax) * s1;
-  const z1 = az + (bz - az) * s1;
-  const f0 = fA + (fB - fA) * s0;
-  const f1 = fA + (fB - fA) * s1;
-  const h0 = hA + (hB - hA) * s0;
-  const h1 = hA + (hB - hA) * s1;
-
-  buf.verts.push(x0, f0, z0, x1, f1, z1, x1, h1, z1, x0, h0, z0);
-  for (let k = 0; k < 4; k++) buf.norms.push(d.nx, 0, d.nz);
-  buf.uvs.push(s0, f0 / s, s1, f1 / s, s1, h1 / s, s0, h0 / s);
-  buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
-}
-

@@ -1,5 +1,6 @@
-import { TileType, TILE_SIZE, type GridPos } from '../game/types';
-import { findPath } from '../game/pathfinding';
+import { TileType, TILE_SIZE } from '../game/types';
+import { spanAt } from '../game/dungeon/columns';
+import { findWorldPath, startLevelFor, type WorldStep } from '../game/pathfinding';
 import type { InputAction, KeyboardInput } from '../engine/InputManager';
 import type { GridCamera } from '../engine/Camera';
 import type { GameState } from '../store/gameStore';
@@ -11,6 +12,9 @@ export enum BotState {
 
 const ARRIVE_RADIUS = 0.9; // world units to a waypoint before advancing
 const TURN_RATE = 10; // yaw damping factor — higher turns faster
+// A fall (or anything else that teleports us off-route) leaves the next
+// waypoint far away — drop the path and replan from where we actually are
+const OFF_ROUTE_TILES = 6;
 
 /** Shortest-arc angle from a to b, in (-PI, PI] */
 function angleDelta(a: number, b: number): number {
@@ -18,12 +22,13 @@ function angleDelta(a: number, b: number): number {
 }
 
 /**
- * Speedrunner bot: sprints the fastest route to the exit, then stops and
- * hands control back — descending is the player's call.
+ * Speedrunner bot: sprints the fastest walkable route down the whole
+ * stack — through rooms, down stairwell ramps, level after level — to the
+ * bottom stairs, then stops and hands control back.
  */
 export class DungeonBot {
   currentState = BotState.ToExit;
-  private path: GridPos[] = [];
+  private path: WorldStep[] = [];
   private tickAccumulator = 0;
   private readonly TICK_RATE = 0.12;
 
@@ -116,6 +121,33 @@ export class DungeonBot {
     const blend = 1 - Math.exp(-TURN_RATE * dt);
     this.camera.yaw += angleDelta(this.camera.yaw, desiredYaw) * blend;
 
+    // Cliff sense — the route never crosses a drop, but the smooth curve
+    // can carry the BODY over one. Check the column a body-length ahead
+    // along the actual heading; over a drop, turn in place until the
+    // heading points back at the (safe) waypoint.
+    const state = this.getState();
+    const world = state.world;
+    if (world) {
+      const fx = pos.x - Math.sin(this.camera.yaw) * 1.2;
+      const fz = pos.z - Math.cos(this.camera.yaw) * 1.2;
+      const ftx = Math.floor(fx / TILE_SIZE);
+      const ftz = Math.floor(fz / TILE_SIZE);
+      const w = world.levels[0]!.width;
+      const spans = ftx >= 0 && ftz >= 0 && ftx < w && ftz < w
+        ? world.columns[ftz * w + ftx]
+        : undefined;
+      const ahead = spans ? spanAt(spans, state.playerY + 1) : null;
+      const dropAhead = !ahead || ahead.floor < state.playerY - 3.0;
+      if (dropAhead) {
+        // NEVER advance toward a drop — even an on-course heading can be
+        // a corner-cut across a hole the route went around. Turn in place;
+        // if the heading can't clear, the stuck detector replans.
+        this.input.clearMovementOverride();
+        this.input.setSprintOverride(false);
+        return;
+      }
+    }
+
     this.input.setMovementOverride(1, 0);
     this.input.setSprintOverride(true);
   }
@@ -138,7 +170,16 @@ export class DungeonBot {
     this.lastX = pos.x;
     this.lastZ = pos.z;
 
-    // On stairs -> arrived: release the controls and switch auto off
+    // Fell (or otherwise ended up) far from the route — replan from here
+    const next = this.path[0];
+    if (next && (
+      Math.abs(next.x - state.playerPos.x) > OFF_ROUTE_TILES ||
+      Math.abs(next.y - state.playerPos.y) > OFF_ROUTE_TILES
+    )) {
+      this.path = [];
+    }
+
+    // On the bottom stairs -> arrived: release controls and switch auto off
     const tile = state.dungeon?.tiles[state.playerPos.y]?.[state.playerPos.x];
     if (tile === TileType.StairsDown) {
       this.currentState = BotState.Arrived;
@@ -151,10 +192,24 @@ export class DungeonBot {
       return;
     }
 
-    // No path -> route straight to the exit
-    if (this.path.length === 0 && state.dungeon) {
+    // Fell into the abyss — do what a player would: respawn and retry
+    if (state.world && state.playerY < state.world.levels[state.world.levels.length - 1]!.baseY - 25) {
+      this.pushAction('respawn');
+      this.path = [];
+      return;
+    }
+
+    // No path -> route across the whole stack to the bottom stairs
+    if (this.path.length === 0 && state.world) {
       this.currentState = BotState.ToExit;
-      this.path = findPath(state.dungeon, state.playerPos, state.dungeon.exit);
+      const li = startLevelFor(state.world, state.playerPos, state.playerY);
+      if (li === null) return; // over a void — wait for the landing
+      const bottom = state.world.levels[state.world.levels.length - 1]!;
+      this.path = findWorldPath(
+        state.world,
+        { level: li, x: state.playerPos.x, y: state.playerPos.y },
+        { level: bottom.level, x: bottom.exit.x, y: bottom.exit.y },
+      );
     }
   }
 }

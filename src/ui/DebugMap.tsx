@@ -1,10 +1,10 @@
 import { useRef, useEffect, useState } from 'react';
 import { useGameStore } from '../store/gameStore';
-import { getAllCells, type DungeonCell } from '../game/dungeon/cells';
+import { getAllCells, tileBiome, type DungeonCell } from '../game/dungeon/cells';
 import { hallwayCells } from '../game/dungeon/layer4-connect';
-import { goldenPath } from '../game/dungeon/layer5-goldenpath';
 import { PIT_LEVEL } from '../game/dungeon/heightfield';
-import { findPathToExit } from '../game/pathfinding';
+import { findWorldPathToExit, startLevelFor } from '../game/pathfinding';
+import { WORLD_LEVELS } from '../game/types';
 
 const PIT_COLOR = '#601525';
 
@@ -26,7 +26,10 @@ export function DebugMap() {
   const [visible, setVisible] = useState(false);
   const [mode, setMode] = useState<ViewMode>('tiles');
   const dungeon = useGameStore((s) => s.dungeon);
+  const world = useGameStore((s) => s.world);
   const playerPos = useGameStore((s) => s.playerPos);
+  const playerY = useGameStore((s) => s.playerY);
+  const currentLevel = useGameStore((s) => s.currentLevel);
 
   // Toggle with backtick key
   useEffect(() => {
@@ -100,10 +103,7 @@ export function DebugMap() {
             } else if (tile === 3) {
               ctx.fillStyle = '#2a8a2a';
             } else {
-              const cellX = Math.floor(tx / cellTileSize);
-              const cellZ = Math.floor(tz / cellTileSize);
-              const biomeCell = cellMap.get(`${cellX},${cellZ}`);
-              const biome = biomeCell?.biome ?? 'dungeon';
+              const biome = tileBiome(dungeon.cellBiomes, tx, tz) ?? 'dungeon';
               ctx.fillStyle = BIOME_COLORS[biome] ?? '#2a5a8a';
             }
           } else if (isPit) {
@@ -133,30 +133,53 @@ export function DebugMap() {
         ctx.beginPath(); ctx.moveTo(0, z); ctx.lineTo(dungeon.width * tilePx, z); ctx.stroke();
       }
 
-      // Golden path — yellow line from spawn to exit
-      if (goldenPath.length > 1) {
+      // Golden path — yellow line from spawn to exit (this level's own)
+      const golden = dungeon.goldenPath;
+      if (golden.length > 1) {
         ctx.strokeStyle = '#ff0';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(goldenPath[0]!.x * tilePx + tilePx / 2, goldenPath[0]!.y * tilePx + tilePx / 2);
-        for (let i = 1; i < goldenPath.length; i++) {
-          ctx.lineTo(goldenPath[i]!.x * tilePx + tilePx / 2, goldenPath[i]!.y * tilePx + tilePx / 2);
+        ctx.moveTo(golden[0]!.x * tilePx + tilePx / 2, golden[0]!.y * tilePx + tilePx / 2);
+        for (let i = 1; i < golden.length; i++) {
+          ctx.lineTo(golden[i]!.x * tilePx + tilePx / 2, golden[i]!.y * tilePx + tilePx / 2);
         }
         ctx.stroke();
       }
 
-      // Live route — green line from the player to the exit (what the compass follows)
-      if (playerPos) {
-        const route = findPathToExit(dungeon, playerPos);
+      // Live route — green line from the player toward the stack exit
+      // (what the compass follows); only this level's segment is drawn
+      if (playerPos && world) {
+        const li = startLevelFor(world, playerPos, playerY) ?? currentLevel;
+        const route = findWorldPathToExit(world, { level: li, x: playerPos.x, y: playerPos.y });
         if (route.length > 0) {
           ctx.strokeStyle = '#3dd68c';
           ctx.lineWidth = 2;
           ctx.beginPath();
           ctx.moveTo(playerPos.x * tilePx + tilePx / 2, playerPos.y * tilePx + tilePx / 2);
           for (const p of route) {
+            if (p.level !== currentLevel) break; // continues on the next level
             ctx.lineTo(p.x * tilePx + tilePx / 2, p.y * tilePx + tilePx / 2);
           }
           ctx.stroke();
+        }
+      }
+
+      // Stairwell doorways on this level — blue diamonds
+      if (world) {
+        ctx.fillStyle = '#5599ff';
+        for (const link of world.links) {
+          for (const end of [link.a, link.b]) {
+            if (end.level !== currentLevel) continue;
+            const px = end.x * tilePx + tilePx / 2;
+            const pz = end.y * tilePx + tilePx / 2;
+            ctx.beginPath();
+            ctx.moveTo(px, pz - 5);
+            ctx.lineTo(px + 5, pz);
+            ctx.lineTo(px, pz + 5);
+            ctx.lineTo(px - 5, pz);
+            ctx.closePath();
+            ctx.fill();
+          }
         }
       }
 
@@ -187,13 +210,14 @@ export function DebugMap() {
       // Legend
       const legendX = dungeon.width * tilePx + 10;
       ctx.fillStyle = '#ccc'; ctx.font = '12px monospace';
-      ctx.fillText(`Mode: ${mode}`, legendX, 20);
-      ctx.fillText('` toggle map', legendX, 40);
-      ctx.fillText('Tab cycle mode', legendX, 55);
-      let ly = 80;
+      ctx.fillText(`Level ${currentLevel + 1}/${WORLD_LEVELS}`, legendX, 20);
+      ctx.fillText(`Mode: ${mode}`, legendX, 38);
+      ctx.fillText('` toggle map', legendX, 56);
+      ctx.fillText('Tab cycle mode', legendX, 71);
+      let ly = 94;
       const legendItems = mode === 'biome'
-        ? [['#1a1a1a', 'Wall'], [BIOME_COLORS.dungeon, 'Dungeon'], [BIOME_COLORS.cave, 'Cave'], [BIOME_COLORS.crypt, 'Crypt'], [BIOME_COLORS.ember, 'Ember'], [BIOME_COLORS.outside, 'Outside'], [PIT_COLOR, 'Pit'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const
-        : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], [PIT_COLOR, 'Pit'], ['#2a8a2a', 'Stairs'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const;
+        ? [['#1a1a1a', 'Wall'], [BIOME_COLORS.dungeon, 'Dungeon'], [BIOME_COLORS.cave, 'Cave'], [BIOME_COLORS.crypt, 'Crypt'], [BIOME_COLORS.ember, 'Ember'], [BIOME_COLORS.outside, 'Outside'], [PIT_COLOR, 'Hole'], ['#2a8a2a', 'Stairs'], ['#5599ff', 'Stairwell'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const
+        : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], [PIT_COLOR, 'Hole'], ['#2a8a2a', 'Stairs'], ['#5599ff', 'Stairwell'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const;
       for (const [c, text] of legendItems) {
         ctx.fillStyle = c; ctx.fillRect(legendX, ly - 8, 12, 12);
         ctx.fillStyle = '#ccc'; ctx.fillText(text, legendX + 18, ly + 2);
@@ -354,7 +378,7 @@ export function DebugMap() {
       ctx.fillText(`${key}: ${val}`, legendX, ly);
       ly += 16;
     }
-  }, [visible, mode, dungeon, playerPos]);
+  }, [visible, mode, dungeon, world, playerPos, playerY, currentLevel]);
 
   if (!visible) return null;
 

@@ -15,6 +15,7 @@
  */
 
 import { TileType, RoomType, type GridPos, type RoomData } from '../types';
+import { Path } from 'rot-js';
 
 const HALLWAY_HALF_WIDTH = 1; // tiles from center — total width = 3: tight
 // passages make the open biomes hit harder when they arrive
@@ -28,17 +29,20 @@ export function connectIslands(
   entrance: GridPos,
   gridTiles: number,
   cellTileSize: number,
+  /** Skeleton-owned tiles hallways must never carve through */
+  locked?: boolean[][],
 ): void {
   hallwayCells.clear();
 
   for (let safety = 0; safety < 20; safety++) {
     const spawnIsland = floodFill(tiles, entrance, gridTiles);
 
-    // Find all floor tiles NOT in the spawn island
+    // Find all floor tiles NOT in the spawn island. Skeleton voids are
+    // never targets — carving "to" open air connects nothing.
     const unreached: GridPos[] = [];
     for (let z = 0; z < gridTiles; z++) {
       for (let x = 0; x < gridTiles; x++) {
-        if (tiles[z]![x] !== TileType.Wall && !spawnIsland.has(`${x},${z}`)) {
+        if (tiles[z]![x] !== TileType.Wall && !spawnIsland.has(`${x},${z}`) && !locked?.[z]?.[x]) {
           unreached.push({ x, y: z });
         }
       }
@@ -46,12 +50,14 @@ export function connectIslands(
 
     if (unreached.length === 0) break;
 
-    // Find border tiles of spawn island (adjacent to wall)
+    // Find border tiles of spawn island (adjacent to wall). Skeleton voids
+    // can't start a carve — a hallway can't begin over open air.
     const border: GridPos[] = [];
     for (const key of spawnIsland) {
       const parts = key.split(',');
       const x = parseInt(parts[0]!, 10);
       const z = parseInt(parts[1]!, 10);
+      if (locked?.[z]?.[x]) continue;
       for (const off of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
         const nx = x + off[0]!;
         const nz = z + off[1]!;
@@ -83,7 +89,7 @@ export function connectIslands(
     if (!bestFrom || !bestTo) break;
 
     // Carve hallway between them and register as rooms
-    carveHallway(tiles, rooms, bestFrom.x, bestFrom.y, bestTo.x, bestTo.y, gridTiles, cellTileSize);
+    carveHallway(tiles, rooms, bestFrom.x, bestFrom.y, bestTo.x, bestTo.y, gridTiles, cellTileSize, locked);
   }
 }
 
@@ -95,6 +101,7 @@ function carveHallway(
   x2: number, z2: number,
   gridTiles: number,
   cellTileSize: number,
+  locked?: boolean[][],
 ): void {
   // Track the bounding box of the hallway for room registration
   let minX = Math.min(x1, x2);
@@ -102,30 +109,23 @@ function carveHallway(
   let minZ = Math.min(z1, z2);
   let maxZ = Math.max(z1, z2);
 
-  let x = x1;
-  let z = z1;
+  // Route with A* so the hallway goes AROUND skeleton structure (stairwell
+  // galleries, atrium wells) instead of stopping dead against it
+  const passable = (x: number, z: number): boolean =>
+    x >= 1 && z >= 1 && x < gridTiles - 1 && z < gridTiles - 1 && !locked?.[z]?.[x];
+  const astar = new Path.AStar(x2, z2, passable, { topology: 4 });
+  const route: GridPos[] = [];
+  astar.compute(x1, z1, (x, z) => route.push({ x, y: z }));
+  if (route.length === 0) return; // fully sealed off — leave the island be
 
-  while (x !== x2 || z !== z2) {
-    carveSpot(tiles, x, z, gridTiles);
-
-    const cx = Math.floor(x / cellTileSize);
-    const cz = Math.floor(z / cellTileSize);
-    hallwayCells.add(`${cx},${cz}`);
-
-    const dx = x2 - x;
-    const dz = z2 - z;
-
-    if (Math.abs(dx) > Math.abs(dz)) {
-      x += Math.sign(dx);
-    } else if (Math.abs(dz) > 0) {
-      z += Math.sign(dz);
-    } else {
-      x += Math.sign(dx);
-    }
+  for (const p of route) {
+    carveSpot(tiles, p.x, p.y, gridTiles, locked);
+    hallwayCells.add(`${Math.floor(p.x / cellTileSize)},${Math.floor(p.y / cellTileSize)}`);
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minZ = Math.min(minZ, p.y);
+    maxZ = Math.max(maxZ, p.y);
   }
-
-  carveSpot(tiles, x2, z2, gridTiles);
-  hallwayCells.add(`${Math.floor(x2 / cellTileSize)},${Math.floor(z2 / cellTileSize)}`);
 
   // Register hallway as a room so the renderer gives it proper ceiling height
   minX -= HALLWAY_HALF_WIDTH;
@@ -150,7 +150,7 @@ function carveHallway(
 }
 
 /** Carve a circular-ish area around a point for hallway width */
-function carveSpot(tiles: TileType[][], cx: number, cz: number, gridTiles: number): void {
+function carveSpot(tiles: TileType[][], cx: number, cz: number, gridTiles: number, locked?: boolean[][]): void {
   for (let dz = -HALLWAY_HALF_WIDTH; dz <= HALLWAY_HALF_WIDTH; dz++) {
     for (let dx = -HALLWAY_HALF_WIDTH; dx <= HALLWAY_HALF_WIDTH; dx++) {
       // Circle shape — skip corners for rounded hallway
@@ -159,6 +159,7 @@ function carveSpot(tiles: TileType[][], cx: number, cz: number, gridTiles: numbe
       const tx = cx + dx;
       const tz = cz + dz;
       if (tx >= 1 && tz >= 1 && tx < gridTiles - 1 && tz < gridTiles - 1) {
+        if (locked?.[tz]?.[tx]) continue; // never breach skeleton structure
         tiles[tz]![tx] = TileType.Floor;
       }
     }

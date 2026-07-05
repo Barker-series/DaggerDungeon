@@ -1,25 +1,35 @@
 import { useGameStore } from '../store/gameStore';
-import { findPathToExit } from '../game/pathfinding';
+import { findWorldPathToExit, startLevelFor } from '../game/pathfinding';
 
 /** How many steps ahead along the route to aim at. Pointing a little ahead
  *  guides around corners instead of straight through walls. */
 const LOOKAHEAD = 7;
 
 export function Compass() {
-  const dungeon = useGameStore((s) => s.dungeon);
+  const world = useGameStore((s) => s.world);
+  const currentLevel = useGameStore((s) => s.currentLevel);
   const playerPos = useGameStore((s) => s.playerPos);
+  const playerY = useGameStore((s) => s.playerY);
   const playerYaw = useGameStore((s) => s.playerYaw);
 
-  if (!dungeon) return null;
+  if (!world) return null;
+  const bottom = world.levels[world.levels.length - 1]!;
 
-  // Fastest route from the player's tile to the exit (memoized per tile)
-  const path = findPathToExit(dungeon, playerPos);
+  // Fastest walkable route down the whole stack to the bottom stairs
+  // (memoized per tile). Mid-ramp, the position belongs to the level that
+  // owns the ramp, not the band it passes through.
+  const li = startLevelFor(world, playerPos, playerY) ?? currentLevel;
+  const path = findWorldPathToExit(world, { level: li, x: playerPos.x, y: playerPos.y });
   const stepsLeft = path.length;
-  const onExit = stepsLeft === 0 && playerPos.x === dungeon.exit.x && playerPos.y === dungeon.exit.y;
+  const onExit =
+    stepsLeft === 0 &&
+    currentLevel === bottom.level &&
+    playerPos.x === bottom.exit.x &&
+    playerPos.y === bottom.exit.y;
 
   // Aim a few steps along the route; fall back to the exit itself if the
   // route is empty (on the exit, or somehow unreachable)
-  const target = path[Math.min(LOOKAHEAD - 1, path.length - 1)] ?? dungeon.exit;
+  const target = path[Math.min(LOOKAHEAD - 1, path.length - 1)] ?? bottom.exit;
   const dx = target.x - playerPos.x;
   const dz = target.y - playerPos.y;
 
@@ -30,7 +40,7 @@ export function Compass() {
   const rotationDeg = (-(targetYaw - playerYaw) * 180) / Math.PI;
 
   return (
-    <div className="compass" title="Fastest route to exit">
+    <div className="compass" title="Fastest route to the stack exit">
       <svg
         className="compass-arrow"
         viewBox="0 0 24 24"

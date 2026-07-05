@@ -11,7 +11,6 @@ export function MainMenu() {
     <div className="menu-screen">
       <div className="menu-content">
         <h1 className="menu-title">DAGGER DUNGEON</h1>
-        <p className="menu-subtitle">A Daggerfall-Inspired Roguelite</p>
         <div className="menu-buttons">
           <button
             className="menu-btn menu-btn-primary"

@@ -4,13 +4,14 @@ import { GridCamera } from './Camera';
 import { LightingSystem } from './LightingSystem';
 import { SpriteManager } from './SpriteManager';
 import { KeyboardInput, type InputAction } from './InputManager';
-import { generateDungeon } from '../game/DungeonGenerator';
+import { generateWorld } from '../game/DungeonGenerator';
 import { buildCornerField, sampleCornerField } from '../game/dungeon/heightfield';
+import { spanAt } from '../game/dungeon/columns';
 import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
 import { DungeonBot } from '../bot/DungeonBot';
 import { useGameStore } from '../store/gameStore';
-import { TileType, Direction, TILE_SIZE, EYE_HEIGHT } from '../game/types';
-import type { DungeonData } from '../game/types';
+import { TileType, Direction, TILE_SIZE, EYE_HEIGHT, ABYSS_FLOOR } from '../game/types';
+import type { DungeonData, WorldData } from '../game/types';
 
 const MOVE_SPEED = 7;
 const SPRINT_MULT = 1.6;
@@ -23,11 +24,18 @@ const CROUCH_BLEND_RATE = 12; // how fast the crouch transition settles
 const GRAVITY = 15;
 const JUMP_VELOCITY = 5.6; // peak ~1.05: enough to mantle a 1-unit ledge
 // Slope limit (rise per unit of horizontal run). All grade-level rolling
-// terrain stays comfortably under this — you glide up every hill without
-// jumping. Only pit walls (slope ~10+) exceed it.
-const MAX_SLOPE = 0.85;
+// terrain stays comfortably under this, and stairwell ramps peak at ~1.0
+// mid-tile (smoothstep steepens their 0.67 average) — you glide up every
+// hill and every ramp without jumping. Only shaft walls (slope ~10+)
+// exceed it.
+const MAX_SLOPE = 1.1;
 const AIR_STEP = 0.05; // while airborne, can move onto ground at most this far above the feet
 const FALL_DROP = 0.5; // ground falling away further than this puts you airborne
+// Ground queries look at most this far above the feet — enough for any
+// walkable rise, never far enough to grab the level overhead
+const CLIMB_HEADROOM = 1.0;
+// How close (world units) the player must be to the stairs to use them
+const INTERACT_RADIUS = TILE_SIZE * 1.6;
 
 const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
@@ -48,9 +56,11 @@ export class GameEngine {
   private input: KeyboardInput;
   private bot: DungeonBot;
 
-  private dungeon: DungeonData | null = null;
-  private cornerFloor: number[][] | null = null;
-  private contour: OrganicContour | null = null;
+  private world: WorldData | null = null;
+  /** Per-level corner-averaged floor fields — physics samples the exact
+   *  surfaces the renderer draws */
+  private cornerFloors: number[][][] = [];
+  private contours: OrganicContour[] = [];
   private seed = 0;
   private bobPhase = 0;
   private vy = 0; // vertical velocity; gridCamera.position.y is the feet
@@ -68,7 +78,8 @@ export class GameEngine {
 
     this.scene = new THREE.Scene();
 
-    this.threeCamera = new THREE.PerspectiveCamera(75, 1, 0.1, 50);
+    // Far plane covers a full look down (or up) a multi-level shaft
+    this.threeCamera = new THREE.PerspectiveCamera(75, 1, 0.1, 160);
     this.gridCamera = new GridCamera(this.threeCamera);
     this.gridCamera.attach(canvas);
 
@@ -98,33 +109,38 @@ export class GameEngine {
     this.threeCamera.updateProjectionMatrix();
   };
 
-  loadFloor(floor: number, seed: number): void {
+  /** Generate and enter a megastructure stack — WORLD_LEVELS levels that
+   *  physically coexist; the player spawns on the top one. */
+  loadStack(stack: number, seed: number): void {
     this.seed = seed;
     this.dungeonRenderer.clear();
     this.lighting.clear();
     this.sprites.clear();
     this.bot.reset();
 
-    this.dungeon = generateDungeon({ seed, floor });
-    this.cornerFloor = buildCornerField(
-      this.dungeon.tiles, this.dungeon.floorHeights,
-      this.dungeon.width, this.dungeon.height, 0,
-    );
-    this.contour = buildOrganicContour(this.dungeon);
-    this.dungeonRenderer.build(this.dungeon);
-    this.lighting.setup(this.dungeon);
+    this.world = generateWorld({ seed, stack });
+    this.cornerFloors = this.world.levels.map((l) =>
+      buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0));
+    this.contours = this.world.levels.map((l) => buildOrganicContour(l));
+    this.dungeonRenderer.build(this.world);
+    this.lighting.setup(this.world);
 
     const store = useGameStore.getState();
-    store.setDungeon(this.dungeon);
-    store.setCurrentFloor(floor);
+    store.setWorld(this.world);
+    store.setCurrentFloor(stack);
 
-    const spawnX = this.dungeon.entrance.x * TILE_SIZE + TILE_SIZE / 2;
-    const spawnZ = this.dungeon.entrance.y * TILE_SIZE + TILE_SIZE / 2;
-    this.gridCamera.setPosition(spawnX, sampleCornerField(this.cornerFloor, spawnX, spawnZ), spawnZ);
+    const top = this.world.levels[0]!;
+    const spawnX = top.entrance.x * TILE_SIZE + TILE_SIZE / 2;
+    const spawnZ = top.entrance.y * TILE_SIZE + TILE_SIZE / 2;
+    this.gridCamera.setPosition(
+      spawnX,
+      top.baseY + sampleCornerField(this.cornerFloors[0]!, spawnX, spawnZ),
+      spawnZ,
+    );
     this.vy = 0;
     this.isGrounded = true;
     this.gridCamera.setFacingDirection(Direction.North);
-    store.setPlayerPos(this.dungeon.entrance);
+    store.setPlayerPos(top.entrance);
     store.setPlayerFacing(Direction.North);
   }
 
@@ -163,9 +179,13 @@ export class GameEngine {
     // applying it earlier gets overwritten and never shows
     this.threeCamera.position.y += this.bobOffset;
 
-    // Sprites + animated dungeon elements (exit marker)
+    // Sprites + animated dungeon elements (exit markers)
     this.sprites.update(dt, this.threeCamera);
     this.dungeonRenderer.update(dt);
+
+    // Nearest-K light culling follows the player
+    const pos = this.gridCamera.position;
+    this.lighting.update(pos.x, pos.y, pos.z);
 
     // Bot
     if (store.autoPlay) {
@@ -176,12 +196,57 @@ export class GameEngine {
     this.processActions();
   }
 
+  // ── Column-model world queries — the ONE authority on solid vs air ──
+
+  /** Air spans of the column containing a world position */
+  private columnAt(x: number, z: number) {
+    if (!this.world) return undefined;
+    const tx = Math.floor(x / TILE_SIZE);
+    const tz = Math.floor(z / TILE_SIZE);
+    if (tx < 0 || tz < 0 || tx >= this.world.levels[0]!.width || tz >= this.world.levels[0]!.height) {
+      return undefined;
+    }
+    return this.world.columns[tz * this.world.levels[0]!.width + tx];
+  }
+
+  /** Level whose surface the player currently stands in/over (-1 = rock).
+   *  Generous slack: a span's floor is its TILE value, and the smoothed
+   *  walk surface (ramps especially) dips up to ~1 below it mid-tile. */
+  private currentOwner(): number {
+    const pos = this.gridCamera.position;
+    const spans = this.columnAt(pos.x, pos.z);
+    const s = spans ? spanAt(spans, pos.y, 1.6) : null;
+    return s ? s.owner : -1;
+  }
+
+  /** The level the player currently occupies (for UI/interact) */
+  private currentLevel(): DungeonData | null {
+    const owner = this.currentOwner();
+    return this.world?.levels[owner >= 0 ? owner : useGameStore.getState().currentLevel] ?? null;
+  }
+
+  /**
+   * Ground at (x, z) at or below limitY: the floor of the air span there.
+   * Smooth surfaces sample their owner level's corner field; structural
+   * rock is flat; the abyss returns -Infinity (fall forever, R respawns).
+   */
+  private worldGround(x: number, z: number, limitY: number): number {
+    const spans = this.columnAt(x, z);
+    if (!spans) return -Infinity;
+    const s = spanAt(spans, limitY, 0.6);
+    if (!s || s.floor === ABYSS_FLOOR) return -Infinity;
+    if (s.owner < 0) return s.floor;
+    const level = this.world!.levels[s.owner]!;
+    return level.baseY + sampleCornerField(this.cornerFloors[s.owner]!, x, z);
+  }
+
   // ── Player Movement ──
 
   private processMovement(dt: number): void {
-    if (!this.dungeon || !this.cornerFloor) return;
+    if (!this.world) return;
     const pos = this.gridCamera.position;
-    const groundAt = (x: number, z: number): number => sampleCornerField(this.cornerFloor!, x, z);
+    const groundAt = (x: number, z: number): number =>
+      this.worldGround(x, z, pos.y + CLIMB_HEADROOM);
 
     if (this.isGrounded && this.input.consumeJump()) {
       this.vy = JUMP_VELOCITY;
@@ -237,7 +302,7 @@ export class GameEngine {
     const ground = groundAt(pos.x, pos.z);
     if (this.isGrounded) {
       if (ground < pos.y - FALL_DROP) {
-        // Walked off an edge
+        // Walked off an edge — over a shaft this is the whole descent
         this.isGrounded = false;
         this.vy = 0;
       } else {
@@ -258,31 +323,52 @@ export class GameEngine {
   }
 
   private collidesAt(x: number, z: number): boolean {
-    if (!this.dungeon) return true;
+    if (!this.world) return true;
+    const feetY = this.gridCamera.position.y;
+    const owner = this.currentOwner();
+    const contour = owner >= 0 ? this.contours[owner] : undefined;
+    const dungeon = owner >= 0 ? this.world.levels[owner] : undefined;
+    const w = this.world.levels[0]!.width;
     const r = PLAYER_RADIUS;
-    const w = this.dungeon.width;
     const cx = Math.floor(x / TILE_SIZE);
     const cz = Math.floor(z / TILE_SIZE);
     const seen = new Set<unknown>();
     for (let tz = cz - 1; tz <= cz + 1; tz++) {
       for (let tx = cx - 1; tx <= cx + 1; tx++) {
-        const tile = this.dungeon.tiles[tz]?.[tx];
-        // Wall tiles in organic cells collide via the contour segments
-        // below (the wall you see), not their tile box
-        const soft = tile !== undefined && this.contour?.softWalls.has(tz * w + tx);
-        if ((tile === undefined || tile === TileType.Wall) && !soft) {
-          const tMinX = tx * TILE_SIZE;
-          const tMaxX = tMinX + TILE_SIZE;
-          const tMinZ = tz * TILE_SIZE;
-          const tMaxZ = tMinZ + TILE_SIZE;
-          const closestX = Math.max(tMinX, Math.min(x, tMaxX));
-          const closestZ = Math.max(tMinZ, Math.min(z, tMaxZ));
-          const ddx = x - closestX;
-          const ddz = z - closestZ;
-          if (ddx * ddx + ddz * ddz < r * r) return true;
+        // Solidity comes from the column model: a column blocks the body
+        // unless some air span overlaps the torso. (Organic wall tiles are
+        // "soft": their pockets are walkable, the contour segments below
+        // are their real surface.)
+        const spans = tx >= 0 && tz >= 0 && tx < w && tz < w
+          ? this.world.columns[tz * w + tx]
+          : undefined;
+        const soft = dungeon !== undefined
+          && dungeon.tiles[tz]?.[tx] === TileType.Wall
+          && contour?.softWalls.has(tz * w + tx);
+        if (!soft) {
+          let open = false;
+          if (spans) {
+            for (const s of spans) {
+              if (s.floor < feetY + 1.5 && s.ceil > feetY + 1.2) {
+                open = true;
+                break;
+              }
+            }
+          }
+          if (!open) {
+            const tMinX = tx * TILE_SIZE;
+            const tMaxX = tMinX + TILE_SIZE;
+            const tMinZ = tz * TILE_SIZE;
+            const tMaxZ = tMinZ + TILE_SIZE;
+            const closestX = Math.max(tMinX, Math.min(x, tMaxX));
+            const closestZ = Math.max(tMinZ, Math.min(z, tMaxZ));
+            const ddx = x - closestX;
+            const ddz = z - closestZ;
+            if (ddx * ddx + ddz * ddz < r * r) return true;
+          }
         }
         // Contour segments registered to this tile (exact visual walls)
-        const segs = this.contour?.byTile.get(tz * w + tx);
+        const segs = contour?.byTile.get(tz * w + tx);
         if (segs) {
           for (const seg of segs) {
             if (seen.has(seg)) continue;
@@ -301,6 +387,14 @@ export class GameEngine {
     const gz = Math.floor(pos.z / TILE_SIZE);
     if (gx !== store.playerPos.x || gz !== store.playerPos.y) {
       store.setPlayerPos({ x: gx, y: gz });
+    }
+    if (Math.abs(pos.y - store.playerY) > 0.2) {
+      store.setPlayerY(pos.y);
+    }
+    const owner = this.currentOwner();
+    if (owner >= 0 && owner !== store.currentLevel) {
+      store.setCurrentLevel(owner);
+      this.lighting.setActiveLevel(owner);
     }
     const facing = this.gridCamera.getFacingDirection();
     if (facing !== store.playerFacing) {
@@ -349,20 +443,27 @@ export class GameEngine {
     }
   }
 
-  /** Return to the current floor's entrance (pit fall, or R to unstick) */
+  /** Return to the stack's entrance on the top level (R to unstick, or the
+   *  only way back from a bottomless fall) */
   private respawn(): void {
-    if (!this.dungeon) return;
-    this.teleport(this.dungeon.entrance.x, this.dungeon.entrance.y);
+    if (!this.world) return;
+    this.teleport(this.world.levels[0]!.entrance.x, this.world.levels[0]!.entrance.y, undefined, 0);
     this.bot.reset();
   }
 
   private tryInteract(): void {
-    if (!this.dungeon) return;
-    const store = useGameStore.getState();
-    const { x, y } = store.playerPos;
-    const tile = this.dungeon.tiles[y]?.[x];
-    if (tile === TileType.StairsDown) {
-      this.loadFloor(store.currentFloor + 1, this.seed);
+    const dungeon = this.currentLevel();
+    if (!dungeon || !this.world) return;
+    // Stairs down exist only on the bottom level — upper levels descend by
+    // shaft. Radius-based: standing anywhere by the stairs works, no need
+    // to be on the exact tile.
+    if (dungeon.level !== this.world.levels.length - 1) return;
+    if (dungeon.tiles[dungeon.exit.y]?.[dungeon.exit.x] !== TileType.StairsDown) return;
+    const pos = this.gridCamera.position;
+    const ex = dungeon.exit.x * TILE_SIZE + TILE_SIZE / 2;
+    const ez = dungeon.exit.y * TILE_SIZE + TILE_SIZE / 2;
+    if ((pos.x - ex) ** 2 + (pos.z - ez) ** 2 <= INTERACT_RADIUS ** 2) {
+      this.loadStack(useGameStore.getState().currentFloor + 1, this.seed);
     }
   }
 
@@ -385,7 +486,7 @@ export class GameEngine {
     const targetX = (Math.floor(pos.x / TILE_SIZE) + dx) * TILE_SIZE + TILE_SIZE / 2;
     const targetZ = (Math.floor(pos.z / TILE_SIZE) + dz) * TILE_SIZE + TILE_SIZE / 2;
     if (!this.collidesAt(targetX, targetZ)) {
-      this.gridCamera.setPosition(targetX, 0, targetZ);
+      this.gridCamera.setPosition(targetX, pos.y, targetZ);
     }
   }
 
@@ -393,22 +494,31 @@ export class GameEngine {
     this.input.pushAction(action);
   }
 
-  /** Dev/debug helper: place the player at a tile, optionally facing a yaw. */
-  teleport(tileX: number, tileY: number, yaw?: number): void {
+  /** Dev/debug helper: place the player at a tile, optionally facing a
+   *  yaw/pitch. `level` defaults to the level currently occupied. */
+  teleport(tileX: number, tileY: number, yaw?: number, level?: number, pitch?: number): void {
+    if (!this.world) return;
+    const li = level ?? Math.max(0, this.currentOwner());
     const x = tileX * TILE_SIZE + TILE_SIZE / 2;
     const z = tileY * TILE_SIZE + TILE_SIZE / 2;
-    const y = this.cornerFloor ? sampleCornerField(this.cornerFloor, x, z) : 0;
+    const base = this.world.levels[li]!.baseY;
+    const y = base + sampleCornerField(this.cornerFloors[li]!, x, z);
     this.gridCamera.setPosition(x, y, z);
     this.vy = 0;
     this.isGrounded = true;
     if (yaw !== undefined) this.gridCamera.yaw = yaw;
+    if (pitch !== undefined) this.gridCamera.pitch = pitch;
   }
 
   getCamera(): THREE.PerspectiveCamera {
     return this.threeCamera;
   }
 
+  getWorld(): WorldData | null {
+    return this.world;
+  }
+
   getDungeon(): DungeonData | null {
-    return this.dungeon;
+    return this.currentLevel();
   }
 }
