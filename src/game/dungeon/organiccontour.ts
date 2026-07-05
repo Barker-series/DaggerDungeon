@@ -87,14 +87,18 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
       byTile.set(key, list);
     }
     list.push(seg);
+    // A wall tile touched by any contour segment is CONTOURED: the
+    // segments are its real surface (collision), the chamfer cuts its
+    // corner (render), and it needs apron backing. One predicate for all
+    // three — built walls at organic transitions included, or the
+    // chamfer pockets cut into them become roofless, floorless holes.
+    if (dungeon.tiles[tz]![tx] === TileType.Wall) {
+      softWalls.add(key);
+    }
   };
 
   for (let tz = 0; tz < h; tz++) {
     for (let tx = 0; tx < w; tx++) {
-      if (dungeon.tiles[tz]![tx] === TileType.Wall && isOrganicTile(tx, tz)) {
-        softWalls.add(tz * w + tx);
-      }
-
       // 2x2 group of tile centers: (tx,tz) .. (tx+1,tz+1)
       if (!isOrganicTile(tx, tz) && !isOrganicTile(tx + 1, tz) && !isOrganicTile(tx, tz + 1) && !isOrganicTile(tx + 1, tz + 1)) continue;
 

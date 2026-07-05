@@ -209,11 +209,30 @@ export class GameEngine {
     return this.world.columns[tz * this.world.levels[0]!.width + tx];
   }
 
+  /** Apron ground at a chamfer pocket (contoured wall column) for a
+   *  level, or null. Pockets are standable space the renderer backs with
+   *  apron floors — physics must agree. */
+  private pocketGround(li: number, tx: number, tz: number, x: number, z: number): number | null {
+    const level = this.world!.levels[li]!;
+    if (level.tiles[tz]?.[tx] !== TileType.Wall) return null;
+    if (!this.contours[li]?.softWalls.has(tz * level.width + tx)) return null;
+    return level.baseY + sampleCornerField(this.cornerFloors[li]!, x, z);
+  }
+
   /** Level whose surface the player currently stands in/over (-1 = rock).
-   *  Generous slack: a span's floor is its TILE value, and the smoothed
-   *  walk surface (ramps especially) dips up to ~1 below it mid-tile. */
+   *  Chamfer pockets (no span of their own) attribute by apron height;
+   *  otherwise generous span slack: a span's floor is its TILE value, and
+   *  the smoothed walk surface (ramps especially) dips ~1 below it. */
   private currentOwner(): number {
     const pos = this.gridCamera.position;
+    if (this.world) {
+      const tx = Math.floor(pos.x / TILE_SIZE);
+      const tz = Math.floor(pos.z / TILE_SIZE);
+      for (let li = 0; li < this.world.levels.length; li++) {
+        const g = this.pocketGround(li, tx, tz, pos.x, pos.z);
+        if (g !== null && Math.abs(g - pos.y) <= 2) return li;
+      }
+    }
     const spans = this.columnAt(pos.x, pos.z);
     const s = spans ? spanAt(spans, pos.y, 1.6) : null;
     return s ? s.owner : -1;
@@ -233,11 +252,23 @@ export class GameEngine {
   private worldGround(x: number, z: number, limitY: number): number {
     const spans = this.columnAt(x, z);
     if (!spans) return -Infinity;
+    let best = -Infinity;
     const s = spanAt(spans, limitY, 0.6);
-    if (!s || s.floor === ABYSS_FLOOR) return -Infinity;
-    if (s.owner < 0) return s.floor;
-    const level = this.world!.levels[s.owner]!;
-    return level.baseY + sampleCornerField(this.cornerFloors[s.owner]!, x, z);
+    if (s && s.floor !== ABYSS_FLOOR) {
+      best = s.owner < 0
+        ? s.floor
+        : this.world!.levels[s.owner]!.baseY + sampleCornerField(this.cornerFloors[s.owner]!, x, z);
+    }
+    // Chamfer pockets: contoured wall columns carry their apron floor —
+    // the drawn surface behind the diagonal wall is real ground, never a
+    // gap into the level below
+    const tx = Math.floor(x / TILE_SIZE);
+    const tz = Math.floor(z / TILE_SIZE);
+    for (let li = 0; li < this.world!.levels.length; li++) {
+      const g = this.pocketGround(li, tx, tz, x, z);
+      if (g !== null && g <= limitY + 0.6 && g > best) best = g;
+    }
+    return best;
   }
 
   // ── Player Movement ──

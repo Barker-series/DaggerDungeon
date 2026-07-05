@@ -191,6 +191,11 @@ export class DungeonRenderer {
     };
     const stairs = newBuffers();
 
+    // The contour decides which wall tiles are chamfered — those need
+    // apron backing (floor + ceiling behind the cut), whatever biome
+    // cell they belong to. Built walls at cave transitions included.
+    const contour = buildOrganicContour(dungeon);
+
     // Column-model gates: does this level own a floor / a ceiling here?
     const ownsFloor = (x: number, y: number): boolean =>
       world.columns[y * w + x]!.some((s) => s.owner === li);
@@ -228,9 +233,9 @@ export class DungeonRenderer {
         const region = regionOf(x, y);
 
         if (tile === TileType.Wall) {
-          // Organic wall tiles bordering floor get "apron" floor + ceiling
-          // quads behind the contour chamfers
-          if (isOrganicTile(x, y) && hasFloorNeighbor(x, y)) {
+          // Contoured wall tiles get "apron" floor + ceiling quads behind
+          // the chamfers — without them every chamfer pocket is a hole
+          if (contour.softWalls.has(y * w + x) && hasFloorNeighbor(x, y)) {
             const wx = x * TILE_SIZE;
             const wz = y * TILE_SIZE;
             const buf = regionBuffers(region);
@@ -273,7 +278,7 @@ export class DungeonRenderer {
 
     // ── Organic contour walls (decorative surface over the axis faces) ──
     const INSET = 0.03;
-    for (const seg of buildOrganicContour(dungeon).segments) {
+    for (const seg of contour.segments) {
       let rx = seg.gx;
       let rz = seg.gz;
       for (const [ox, oz] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
@@ -285,17 +290,25 @@ export class DungeonRenderer {
       }
       const buf = regionBuffers(regionOf(rx, rz)).caveWall;
 
+      // The chamfer must reach the ceiling's highest and the floor's
+      // lowest point ANYWHERE over its 2x2 group — at biome transitions
+      // ceilings slope steeply across the corner, and a top taken only at
+      // the segment endpoints leaves an open wedge above the chamfer.
+      let groupCeil = -Infinity;
+      let groupFloor = Infinity;
+      for (let oz = 0; oz <= 2; oz++) {
+        for (let ox = 0; ox <= 2; ox++) {
+          const cc = cornerCeil[seg.gz + oz]?.[seg.gx + ox];
+          if (cc !== undefined) groupCeil = Math.max(groupCeil, cc);
+          const cf = cornerFloor[seg.gz + oz]?.[seg.gx + ox];
+          if (cf !== undefined && cf > PIT_LEVEL) groupFloor = Math.min(groupFloor, cf);
+        }
+      }
       const bottom = Math.max(
-        Math.min(
-          sampleCornerField(cornerFloor, seg.x0, seg.z0),
-          sampleCornerField(cornerFloor, seg.x1, seg.z1),
-        ) - 0.4,
+        (groupFloor === Infinity ? 0 : groupFloor) - 0.4,
         -3,
       );
-      let top = Math.max(
-        sampleCornerField(cornerCeil, seg.x0, seg.z0),
-        sampleCornerField(cornerCeil, seg.x1, seg.z1),
-      ) + 0.05;
+      let top = (groupCeil === -Infinity ? 3 : groupCeil) + 0.05;
       for (const [ox, oz] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
         if (dungeon.openUp[seg.gz + oz!]?.[seg.gx + ox!]) {
           top = Math.max(top, 18.2);
@@ -439,11 +452,15 @@ export class DungeonRenderer {
           }
         }
 
-        // Two directed boundaries per column: east and south
-        for (const [dx, dz] of [[1, 0], [0, 1]] as const) {
+        // Two directed boundaries per column (east, south) — plus the
+        // west/north edges of the map itself, which no pair loop visits
+        const sides: [number, number][] = [[1, 0], [0, 1]];
+        if (x === 0) sides.push([-1, 0]);
+        if (z === 0) sides.push([0, -1]);
+        for (const [dx, dz] of sides) {
           const nx = x + dx;
           const nz = z + dz;
-          const b = nx < w && nz < h ? world.columns[nz * w + nx]! : [];
+          const b = nx >= 0 && nz >= 0 && nx < w && nz < h ? world.columns[nz * w + nx]! : [];
 
           const ra = airRanges(a);
           const rb = airRanges(b);
@@ -460,10 +477,14 @@ export class DungeonRenderer {
 
             const airSpans = inA ? a : b;
             const otherSpans = inA ? b : a;
-            // shared edge corners: for east faces, corners (x+1, z) & (x+1, z+1);
-            // for south faces, corners (x, z+1) & (x+1, z+1)
-            const c0 = dx === 1 ? { cx: x + 1, cz: z } : { cx: x, cz: z + 1 };
-            const c1 = { cx: x + 1, cz: z + 1 };
+            // shared edge corners per side: east (x+1,z)-(x+1,z+1),
+            // west (x,z)-(x,z+1), south (x,z+1)-(x+1,z+1), north (x,z)-(x+1,z)
+            const c0 = dx !== 0
+              ? { cx: dx === 1 ? x + 1 : x, cz: z }
+              : { cx: x, cz: dz === 1 ? z + 1 : z };
+            const c1 = dx !== 0
+              ? { cx: dx === 1 ? x + 1 : x, cz: z + 1 }
+              : { cx: x + 1, cz: dz === 1 ? z + 1 : z };
             const lo0 = refine(lo, airSpans, otherSpans, c0.cx, c0.cz);
             const lo1 = refine(lo, airSpans, otherSpans, c1.cx, c1.cz);
             const hi0 = refine(hi, airSpans, otherSpans, c0.cx, c0.cz);
@@ -517,8 +538,8 @@ export class DungeonRenderer {
             const ex1 = c1.cx * TILE_SIZE;
             const ez1 = c1.cz * TILE_SIZE;
             // normal toward the air side
-            const nrmX = dx === 1 ? (inA ? -1 : 1) : 0;
-            const nrmZ = dz === 1 ? (inA ? -1 : 1) : 0;
+            const nrmX = dx === 0 ? 0 : (dx === 1 ? (inA ? -1 : 1) : (inA ? 1 : -1));
+            const nrmZ = dz === 0 ? 0 : (dz === 1 ? (inA ? -1 : 1) : (inA ? 1 : -1));
 
             for (const [s0, s1] of halves) {
               const lerp = (p: number, q: number, t: number): number => p + (q - p) * t;
