@@ -59,13 +59,15 @@ interface BiomeHeightProfile {
   clearMax: number;
 }
 
+// One tall floor: clearances carry the verticality that stacked levels
+// used to. Kebab pillar content will live inside this airspace.
 const PROFILES: Record<BiomeType, BiomeHeightProfile> = {
   // Even built floors breach occasionally — the structure is failing
-  dungeon: { rollAmp: 0, pitThreshold: 0.1, clearMin: 5, clearMax: 8.5 },
-  crypt: { rollAmp: 0, pitThreshold: 0.08, clearMin: 3.8, clearMax: 5 },
-  cave: { rollAmp: 1.2, pitThreshold: 0.22, clearMin: 4, clearMax: 13 },
+  dungeon: { rollAmp: 0, pitThreshold: 0.1, clearMin: 12, clearMax: 20 },
+  crypt: { rollAmp: 0, pitThreshold: 0.08, clearMin: 8, clearMax: 12 },
+  cave: { rollAmp: 1.2, pitThreshold: 0.22, clearMin: 10, clearMax: 28 },
   // Ember is hole country
-  ember: { rollAmp: 1.2, pitThreshold: 0.34, clearMin: 8, clearMax: 15.5 },
+  ember: { rollAmp: 1.2, pitThreshold: 0.34, clearMin: 16, clearMax: 34 },
   outside: { rollAmp: 1.6, pitThreshold: 0.25, clearMin: 34, clearMax: 40 },
 };
 

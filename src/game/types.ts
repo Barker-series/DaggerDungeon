@@ -136,8 +136,10 @@ export const TILE_SIZE = 3;
 export const WALL_HEIGHT = 3;
 /** Vertical distance between stacked level grades */
 export const LEVEL_HEIGHT = 18;
-/** Levels per megastructure stack */
-export const WORLD_LEVELS = 4;
+/** Levels per megastructure stack — flattened to one tall floor; vertical
+ *  variety now comes from ceiling clearance, pits, and (next) pillar
+ *  kebab content rather than stacked generation levels. */
+export const WORLD_LEVELS = 1;
 export const EYE_HEIGHT = 1.6;
 export const MOVE_DURATION = 0.18; // seconds
 export const TURN_DURATION = 0.12; // seconds

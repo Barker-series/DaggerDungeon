@@ -186,7 +186,11 @@ function generateLevel(
   let exit: GridPos;
 
   if (level === 0) {
-    const anchor = { cx: stairDown!.cx, cz: stairDown!.cz };
+    // Single-level worlds have no stairwell to anchor against — measure
+    // spawn distance from the grid center instead
+    const anchor = stairDown
+      ? { cx: stairDown.cx, cz: stairDown.cz }
+      : { cx: Math.floor(CELL_GRID_SIZE / 2), cz: Math.floor(CELL_GRID_SIZE / 2) };
     const spawnCell = pickFarthestCell(anchor.cx, anchor.cz, skel.usedCells);
     spawnCx = spawnCell.cx;
     spawnCz = spawnCell.cz;
