@@ -18,8 +18,8 @@ const BIOME_COLORS = {
   outside: '#3a7a3a',
 } as const;
 
-type ViewMode = 'tiles' | 'biome' | 'noise' | 'content';
-const VIEW_MODES: ViewMode[] = ['tiles', 'biome', 'noise', 'content'];
+type ViewMode = 'tiles' | 'biome' | 'noise' | 'content' | 'pillars';
+const VIEW_MODES: ViewMode[] = ['tiles', 'biome', 'noise', 'content', 'pillars'];
 
 export function DebugMap() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -265,6 +265,19 @@ export function DebugMap() {
             }
             break;
           }
+          case 'pillars': {
+            const spec = world?.pillars.get(`${cx},${cz}`);
+            if (!spec) {
+              color = '#14101c';
+              label = '';
+            } else {
+              // Brightness tracks kebab height — tall districts glow
+              const t = Math.min(1, spec.totalHeight / 64);
+              color = `rgb(${Math.floor(40 + t * 60)}, ${Math.floor(30 + t * 120)}, ${Math.floor(70 + t * 150)})`;
+              label = `${spec.chunks.length}·${Math.round(spec.totalHeight)}`;
+            }
+            break;
+          }
         }
 
         ctx.fillStyle = color;
@@ -298,6 +311,23 @@ export function DebugMap() {
         ctx.font = '9px monospace';
         ctx.fillText(label, px + 2, pz + CELL_PX - 4);
 
+        // Pillar bridge sockets — ticks on the face they open from,
+        // positioned along the edge by height (low → corner, high → far)
+        if (mode === 'pillars') {
+          const spec = world?.pillars.get(`${cx},${cz}`);
+          if (spec) {
+            ctx.fillStyle = '#ffd24a';
+            for (const s of spec.sockets) {
+              if (s.kind !== 'bridge') continue;
+              const frac = Math.min(1, s.yAbs / spec.totalHeight);
+              const o = 3 + frac * (CELL_PX - 10);
+              if (s.face === 'north') ctx.fillRect(px + o, pz, 4, 3);
+              else if (s.face === 'south') ctx.fillRect(px + o, pz + CELL_PX - 5, 4, 3);
+              else if (s.face === 'west') ctx.fillRect(px, pz + o, 3, 4);
+              else if (s.face === 'east') ctx.fillRect(px + CELL_PX - 5, pz + o, 3, 4);
+            }
+          }
+        }
       }
     }
 
@@ -353,7 +383,9 @@ export function DebugMap() {
 
     const legendItems: Array<[string, string]> = mode === 'content'
       ? [['#2a3a2a', 'Active'], ['#4a3a1a', 'Hallway'], ['#1a1a1a', 'Void'], ['#0f0', 'Spawn (S)'], ['#f00', 'Exit (X)'], ['#fff', 'Player']]
-      : [['#0f0', 'High noise'], ['#300', 'Low noise'], ['#fff', 'Player']];
+      : mode === 'pillars'
+        ? [['#8ac6dc', 'Tall pillar'], ['#38326a', 'Short pillar'], ['#14101c', 'Void (no pillar)'], ['#ffd24a', 'Bridge socket'], ['#fff', 'Player']]
+        : [['#0f0', 'High noise'], ['#300', 'Low noise'], ['#fff', 'Player']];
 
     let ly = 80;
     for (const [c, text] of legendItems) {
@@ -366,11 +398,16 @@ export function DebugMap() {
 
     // Stats
     ly += 10;
+    const pillarSpecs = world ? [...world.pillars.values()] : [];
     const stats = {
       total: cells.length,
       active: cells.filter((c) => c.active).length,
       waypoints: cells.filter((c) => c.isWaypoint).length,
       hallways: hallwayCells.size,
+      pillars: pillarSpecs.length,
+      avgHeight: pillarSpecs.length
+        ? (pillarSpecs.reduce((s, p) => s + p.totalHeight, 0) / pillarSpecs.length).toFixed(1)
+        : '0',
     };
     ctx.fillStyle = '#aaa';
     ctx.font = '11px monospace';

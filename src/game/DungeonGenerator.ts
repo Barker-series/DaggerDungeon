@@ -43,10 +43,11 @@ import { computeGoldenPath, goldenPath } from './dungeon/layer5-goldenpath';
 import { computeHeightFields, computePitMask, PIT_FLOOR } from './dungeon/layer6-heights';
 import { PIT_LEVEL } from './dungeon/heightfield';
 import { placePillars } from './dungeon/layer45-pillars';
+import { buildPillarField } from './dungeon/pillar-layer';
 
 // ── Config ──
 
-const CELL_GRID_SIZE = 8;
+const CELL_GRID_SIZE = 16;
 const CELL_TILE_SIZE = 14;
 const GRID_TILES = CELL_GRID_SIZE * CELL_TILE_SIZE;
 
@@ -114,7 +115,12 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     console.error(`[generateWorld] column model invariant violations (seed ${seed}, stack ${stack}):`, errs);
   }
 
-  return { seed, stack, levels, links: skel.stairwells.map((s) => s.link), columns };
+  // ── Pillar kebabs (Phase 1: data only) — a bounded window over the
+  // cell-local pillar function; an infinite world evaluates the same
+  // function lazily instead ──
+  const pillars = buildPillarField(stackSeed, 0, 0, CELL_GRID_SIZE, CELL_GRID_SIZE);
+
+  return { seed, stack, levels, links: skel.stairwells.map((s) => s.link), columns, pillars };
 }
 
 // ── Per-level pipeline ──

@@ -1,6 +1,7 @@
 // ── Dungeon Grid ──
 
 import type { BiomeType } from './dungeon/cells';
+import type { PillarSpec } from './dungeon/pillar-layer';
 
 export enum TileType {
   Wall = 0,
@@ -128,6 +129,10 @@ export interface WorldData {
    *  sorted bottom-up. Built once after ALL generation mutations; nothing
    *  may modify the world after it exists. */
   columns: ColumnSpan[][];
+  /** Pillar kebab specs, keyed "cx,cz" — the bounded window over the
+   *  cell-local pillar function (see pillar-layer.ts). Data-only in
+   *  Phase 1: drives the debug map; geometry/bridges come next. */
+  pillars: Map<string, PillarSpec>;
 }
 
 // ── Constants ──
