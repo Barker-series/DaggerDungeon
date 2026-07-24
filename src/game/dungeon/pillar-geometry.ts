@@ -1,0 +1,255 @@
+/**
+ * Pillar geometry — turns a PillarSpec into tiles and column spans.
+ *
+ * v2 scale: a pillar cell is 56 tiles (168 world units); the pillar
+ * occupies the central 30x30 tiles (90 units) — a monument, not a post.
+ *
+ * A pillar's footprint tiles are marked WALL in the tile grid early (so
+ * connectivity, the golden path, and pathfinding route around it), and
+ * after the column model is built those columns get the pillar's own
+ * AIR spans carved in: the winding ramp, terrace plazas, gallery
+ * interiors, the crown rooftop. Everything downstream — wall faces,
+ * floors, collision, ground queries — derives from the spans exactly
+ * as for every other column. Graybox: all surfaces are flat structural
+ * rock (span owner -1).
+ *
+ * Pre-rotation layout within the 56-tile pillar cell:
+ *   ring (max extent)   tiles 13..42
+ *   full core           tiles 16..39
+ *   slim core           tiles 20..35
+ *   ramp band           z 13..15, x 13..42 on the NORTH face, ascending
+ *                       west→east; rotation k turns everything clockwise
+ * The assembler advances k per chunk, so ramp exits meet the next
+ * ramp's entry at the shared corner — the spiral is continuous.
+ */
+
+import type { PillarSpec, PlacedChunk } from './pillar-layer';
+
+/** Below the deepest rendered abyss — pillars never float */
+const FOUNDATION_BOTTOM = -40;
+/** Air gaps thinner than this merge back into solid (uncrawlable) */
+const MIN_AIR = 1.5;
+/** Standing room over the crown rooftop */
+const CROWN_HEADROOM = 4;
+const SLAB = 0.5;
+/** Ramp slabs are chunky — thin floating stairs read as jank */
+const RAMP_SLAB = 1;
+/** Guaranteed headroom over every ramp surface */
+const RAMP_CLEARANCE = 3;
+
+const CELL = 56;
+
+// One tile of margin to the dungeon-cell boundary: tiles 14..41 touch
+// only the middle 2x2 of the pillar cell's 4x4 dungeon cells, so the
+// outer ring of cells stays free for rooms, spawn, and exit
+const RING = { lo: 14, hi: 41 };
+const FULL = { lo: 17, hi: 38 };
+const SLIM = { lo: 21, hi: 34 };
+/** Doorway tiles along a wall (pre-rotation x range) */
+const DOOR = { lo: 26, hi: 29 };
+const DOOR_HEIGHT = 4;
+
+/** Rotate a local tile coordinate a quarter-turn clockwise, k times */
+function rot(lx: number, lz: number, k: number): [number, number] {
+  let x = lx, z = lz;
+  for (let i = 0; i < (k & 3); i++) {
+    const nx = CELL - 1 - z;
+    z = x;
+    x = nx;
+  }
+  return [x, z];
+}
+
+const key = (lx: number, lz: number): string => `${lx},${lz}`;
+
+interface TileSolids {
+  intervals: [number, number][];
+  /** Guaranteed-open intervals — subtracted from the solids AFTER
+   *  merging. Ramp headroom punches through whatever hangs overhead
+   *  (plaza slabs, roof plates): the opening it cuts in the floor above
+   *  is the stair opening. */
+  clear: [number, number][];
+}
+
+function eachTile(lo: number, hi: number, fn: (lx: number, lz: number) => void): void {
+  for (let lz = lo; lz <= hi; lz++) {
+    for (let lx = lo; lx <= hi; lx++) fn(lx, lz);
+  }
+}
+
+function tileAt(solids: Map<string, TileSolids>, lx: number, lz: number, k: number): TileSolids {
+  const [x, z] = rot(lx, lz, k);
+  let t = solids.get(key(x, z));
+  if (!t) {
+    t = { intervals: [], clear: [] };
+    solids.set(key(x, z), t);
+  }
+  return t;
+}
+
+function addSolid(
+  solids: Map<string, TileSolids>,
+  lx: number, lz: number, k: number,
+  lo: number, hi: number,
+): void {
+  tileAt(solids, lx, lz, k).intervals.push([lo, hi]);
+}
+
+function addClear(
+  solids: Map<string, TileSolids>,
+  lx: number, lz: number, k: number,
+  lo: number, hi: number,
+): void {
+  tileAt(solids, lx, lz, k).clear.push([lo, hi]);
+}
+
+/**
+ * The winding ramp: every chunk carries one on its rotation face.
+ * The first and last 3 tiles are FLAT LANDINGS at the chunk's base and
+ * top. Adjacent chunks' bands overlap in the 3x3 corner squares; with
+ * landings, chunk i's exit landing (at its top) and chunk i+1's entry
+ * landing (at its base — the same height) merge into one flat platform
+ * instead of a mismatched step. The spiral chains corner to corner.
+ */
+function rampSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void {
+  const b = placed.baseY;
+  const h = placed.def.height;
+  const k = placed.rotation;
+  const run = RING.hi - RING.lo; // 29 steps across the band
+  for (let i = 0; i <= run; i++) {
+    const t = Math.max(0, Math.min(1, (i - 2.5) / (run - 5)));
+    const surface = b + h * t;
+    for (let z = RING.lo; z <= RING.lo + 2; z++) {
+      addSolid(solids, RING.lo + i, z, k, surface - RAMP_SLAB, surface);
+      addClear(solids, RING.lo + i, z, k, surface, surface + RAMP_CLEARANCE);
+    }
+  }
+}
+
+function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void {
+  const b = placed.baseY;
+  const k = placed.rotation;
+  const top = b + placed.def.height;
+
+  rampSolids(placed, solids);
+
+  switch (placed.def.id) {
+    case 'terrace':
+      // Slim waist inside a broad flat plaza — the bridge landing
+      eachTile(SLIM.lo, SLIM.hi, (x, z) => addSolid(solids, x, z, k, b, top));
+      eachTile(RING.lo, RING.hi, (x, z) => {
+        const inCore = x >= SLIM.lo && x <= SLIM.hi && z >= SLIM.lo && z <= SLIM.hi;
+        if (!inCore) addSolid(solids, x, z, k, b, b + SLAB);
+      });
+      break;
+
+    case 'gallery':
+      // Hollow hall: full-core walls, floor + ceiling slabs, doorway on
+      // the face opposite the ramp (pre-rotation: ramp north, door south)
+      eachTile(FULL.lo, FULL.hi, (x, z) => {
+        const perimeter = x === FULL.lo || x === FULL.hi || z === FULL.lo || z === FULL.hi;
+        if (!perimeter) {
+          addSolid(solids, x, z, k, b, b + SLAB);
+          addSolid(solids, x, z, k, top - 1, top);
+          return;
+        }
+        const doorway = z === FULL.hi && x >= DOOR.lo && x <= DOOR.hi;
+        if (doorway) {
+          addSolid(solids, x, z, k, b, b + SLAB);
+          addSolid(solids, x, z, k, b + SLAB + DOOR_HEIGHT, top);
+        } else {
+          addSolid(solids, x, z, k, b, top);
+        }
+      });
+      // Landing apron outside the doorway so a bridge has footing
+      for (let z = FULL.hi + 1; z <= RING.hi; z++) {
+        for (let x = DOOR.lo - 1; x <= DOOR.hi + 1; x++) {
+          addSolid(solids, x, z, k, b, b + SLAB);
+        }
+      }
+      break;
+
+    case 'crown':
+      // Solid cap — its top face is the rooftop
+      eachTile(FULL.lo, FULL.hi, (x, z) => addSolid(solids, x, z, k, b, top));
+      break;
+
+    default: // 'plain' and anything unknown: the full core
+      eachTile(FULL.lo, FULL.hi, (x, z) => addSolid(solids, x, z, k, b, top));
+      break;
+  }
+}
+
+function collectSolids(spec: PillarSpec): Map<string, TileSolids> {
+  const solids = new Map<string, TileSolids>();
+  for (const placed of spec.chunks) chunkSolids(placed, solids);
+  return solids;
+}
+
+/**
+ * All local tiles any chunk of this pillar touches — the tiles to mark
+ * WALL in the tile grid so 2D generation routes around the pillar.
+ */
+export function pillarFootprint(spec: PillarSpec): [number, number][] {
+  return [...collectSolids(spec).keys()].map((s) => {
+    const [x, z] = s.split(',').map(Number);
+    return [x!, z!] as [number, number];
+  });
+}
+
+export interface AirSpanLite {
+  floor: number;
+  ceil: number;
+}
+
+/**
+ * Per-tile AIR spans of the pillar, keyed by local "lx,lz". A footprint
+ * tile's column is otherwise solid from the foundation to above the
+ * crown; these are the habitable gaps (ramps, plazas, interiors,
+ * rooftop).
+ */
+export function pillarAirSpans(spec: PillarSpec): Map<string, AirSpanLite[]> {
+  const out = new Map<string, AirSpanLite[]>();
+  const capTop = spec.totalHeight + CROWN_HEADROOM;
+  for (const [k, t] of collectSolids(spec)) {
+    // Every footprint tile is founded to below the abyss — the pillar
+    // stands on a plinth, never floats. Air is the complement of the
+    // solids within [foundation, capTop]; above capTop stays solid.
+    const intervals: [number, number][] = [
+      [FOUNDATION_BOTTOM, 0],
+      ...t.intervals,
+    ];
+    intervals.sort((a, b) => a[0] - b[0]);
+
+    // Merge solids…
+    let merged: [number, number][] = [];
+    for (const [lo, up] of intervals) {
+      const prev = merged[merged.length - 1];
+      if (prev && lo <= prev[1]) prev[1] = Math.max(prev[1], up);
+      else merged.push([lo, up]);
+    }
+    // …then punch the guaranteed clearances through them
+    for (const [clo, chi] of t.clear) {
+      const next: [number, number][] = [];
+      for (const [lo, up] of merged) {
+        if (chi <= lo || clo >= up) {
+          next.push([lo, up]);
+          continue;
+        }
+        if (lo < clo) next.push([lo, clo]);
+        if (up > chi) next.push([chi, up]);
+      }
+      merged = next;
+    }
+
+    const air: AirSpanLite[] = [];
+    let hi = FOUNDATION_BOTTOM;
+    for (const [lo, up] of merged) {
+      if (lo > hi && lo - hi >= MIN_AIR) air.push({ floor: hi, ceil: lo });
+      hi = Math.max(hi, up);
+    }
+    if (capTop - hi >= MIN_AIR) air.push({ floor: hi, ceil: capTop });
+    out.set(k, air);
+  }
+  return out;
+}

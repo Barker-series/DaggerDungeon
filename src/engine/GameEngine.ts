@@ -29,6 +29,11 @@ const JUMP_VELOCITY = 5.6; // peak ~1.05: enough to mantle a 1-unit ledge
 // hill and every ramp without jumping. Only shaft walls (slope ~10+)
 // exceed it.
 const MAX_SLOPE = 1.1;
+/** Grounded auto-step: lips and stair risers up to this height are
+ *  walked over without jumping. Substeps are ~0.25 units of run, so the
+ *  slope test alone caps a single riser at ~0.28 — too strict for slab
+ *  edges (0.5) and bridge/ramp steps. */
+const STEP_UP = 0.65;
 const AIR_STEP = 0.05; // while airborne, can move onto ground at most this far above the feet
 const FALL_DROP = 0.5; // ground falling away further than this puts you airborne
 // Ground queries look at most this far above the feet — enough for any
@@ -64,6 +69,10 @@ export class GameEngine {
   private seed = 0;
   private bobPhase = 0;
   private vy = 0; // vertical velocity; gridCamera.position.y is the feet
+  /** Camera-only smoothed feet height. Physics snaps up stair risers
+   *  tile by tile; the EYE eases onto each new level instead of popping
+   *  with it — stairs read as a glide, not a jackhammer. */
+  private smoothFeetY = 0;
   private isGrounded = true;
   private crouchAmount = 0; // 0 = standing, 1 = fully crouched
   private bobOffset = 0;
@@ -175,9 +184,20 @@ export class GameEngine {
     this.processMovement(dt);
     this.syncGridPos(store);
     this.gridCamera.update();
+    // Vertical camera smoothing: while grounded, the eye eases toward
+    // the feet (stair steps become a glide); airborne it tracks tightly
+    // so falls and jumps stay 1:1. Large jumps (respawn, teleport) snap.
+    const feetY = this.gridCamera.position.y;
+    const diff = feetY - this.smoothFeetY;
+    if (Math.abs(diff) > 3) {
+      this.smoothFeetY = feetY;
+    } else {
+      const rate = this.isGrounded ? 14 : 40;
+      this.smoothFeetY += diff * (1 - Math.exp(-rate * dt));
+    }
     // Head-bob goes on AFTER the camera writes its position —
     // applying it earlier gets overwritten and never shows
-    this.threeCamera.position.y += this.bobOffset;
+    this.threeCamera.position.y += (this.smoothFeetY - feetY) + this.bobOffset;
 
     // Sprites + animated dungeon elements (exit markers)
     this.sprites.update(dt, this.threeCamera);
@@ -308,7 +328,9 @@ export class GameEngine {
       // ground at most a hair above the feet is enterable (ledge mantling).
       const canStand = (x: number, z: number, run: number): boolean => {
         const g = groundAt(x, z);
-        return this.isGrounded ? g - pos.y <= MAX_SLOPE * run : g <= pos.y + AIR_STEP;
+        return this.isGrounded
+          ? g - pos.y <= Math.max(MAX_SLOPE * run, STEP_UP)
+          : g <= pos.y + AIR_STEP;
       };
       const steps = Math.max(1, Math.ceil(Math.max(Math.abs(velX), Math.abs(velZ)) / 0.25));
       for (let i = 0; i < steps; i++) {

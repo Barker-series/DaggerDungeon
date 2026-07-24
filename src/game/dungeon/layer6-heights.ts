@@ -60,15 +60,18 @@ interface BiomeHeightProfile {
 }
 
 // One tall floor: clearances carry the verticality that stacked levels
-// used to. Kebab pillar content will live inside this airspace.
+// used to. Kebab pillar content lives inside this airspace, and the
+// ground is FAILING under it — generous pit thresholds make grade
+// terrain islands and causeways around pillar bases, with the golden
+// path and forced bridges as the guaranteed crossings.
 const PROFILES: Record<BiomeType, BiomeHeightProfile> = {
-  // Even built floors breach occasionally — the structure is failing
-  dungeon: { rollAmp: 0, pitThreshold: 0.1, clearMin: 12, clearMax: 20 },
-  crypt: { rollAmp: 0, pitThreshold: 0.08, clearMin: 8, clearMax: 12 },
-  cave: { rollAmp: 1.2, pitThreshold: 0.22, clearMin: 10, clearMax: 28 },
+  // Even built floors breach — the structure is failing
+  dungeon: { rollAmp: 0, pitThreshold: 0.2, clearMin: 12, clearMax: 20 },
+  crypt: { rollAmp: 0, pitThreshold: 0.14, clearMin: 8, clearMax: 12 },
+  cave: { rollAmp: 1.2, pitThreshold: 0.36, clearMin: 10, clearMax: 28 },
   // Ember is hole country
-  ember: { rollAmp: 1.2, pitThreshold: 0.34, clearMin: 16, clearMax: 34 },
-  outside: { rollAmp: 1.6, pitThreshold: 0.25, clearMin: 34, clearMax: 40 },
+  ember: { rollAmp: 1.2, pitThreshold: 0.48, clearMin: 16, clearMax: 34 },
+  outside: { rollAmp: 1.6, pitThreshold: 0.38, clearMin: 34, clearMax: 40 },
 };
 
 export interface HeightFields {

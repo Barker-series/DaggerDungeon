@@ -78,6 +78,12 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
     return dungeon.tiles[tz]![tx] !== TileType.Wall ? 1 : 0;
   };
 
+  // Pillar footprints are STRUCTURAL: never contoured, never soft. Their
+  // real shape (ramps, plazas, doorways) lives in the column spans; a
+  // contour fence here would wall off the pillar's own stairs.
+  const isPillar = (tx: number, tz: number): boolean =>
+    dungeon.pillarWall?.[tz]?.[tx] ?? false;
+
   const register = (tx: number, tz: number, seg: ContourSegment): void => {
     if (tx < 0 || tz < 0 || tx >= w || tz >= h) return;
     const key = tz * w + tx;
@@ -99,21 +105,26 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
   for (let tz = 0; tz < h; tz++) {
     for (let tx = 0; tx < w; tx++) {
       if (dungeon.tiles[tz]![tx] !== TileType.Wall) continue;
+      if (isPillar(tx, tz)) continue; // structural — always hard
       let touchesContour = false;
       let fullyCovered = true;
       for (const [gx, gz] of [[tx - 1, tz - 1], [tx, tz - 1], [tx - 1, tz], [tx, tz]]) {
         let hasWalk = false;
         let hasOrg = false;
+        let hasPillar = false;
         for (const [ox, oz] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
           const nx = gx! + ox!;
           const nz = gz! + oz!;
           if (nx < 0 || nz < 0 || nx >= w || nz >= h) continue;
           if (dungeon.tiles[nz]![nx] !== TileType.Wall) hasWalk = true;
           if (isOrganicTile(nx, nz)) hasOrg = true;
+          if (isPillar(nx, nz)) hasPillar = true;
         }
         if (hasWalk) {
-          if (hasOrg) touchesContour = true;
-          else fullyCovered = false;
+          // Groups touching a pillar produce no contour (see below), so a
+          // wall bordering one must stay hard or that side loses collision
+          if (hasOrg && !hasPillar) touchesContour = true;
+          else if (!hasOrg || hasPillar) fullyCovered = false;
         }
       }
       if (touchesContour && fullyCovered) {
@@ -126,6 +137,9 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
     for (let tx = 0; tx < w; tx++) {
       // 2x2 group of tile centers: (tx,tz) .. (tx+1,tz+1)
       if (!isOrganicTile(tx, tz) && !isOrganicTile(tx + 1, tz) && !isOrganicTile(tx, tz + 1) && !isOrganicTile(tx + 1, tz + 1)) continue;
+      // Groups touching a pillar produce no contour — the pillar's edge
+      // is span-derived geometry, and a fence here would seal its stairs
+      if (isPillar(tx, tz) || isPillar(tx + 1, tz) || isPillar(tx, tz + 1) || isPillar(tx + 1, tz + 1)) continue;
 
       const tl = getTile(tx, tz);
       const tr = getTile(tx + 1, tz);

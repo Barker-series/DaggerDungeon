@@ -1,18 +1,26 @@
 /**
- * Pillar layer — assembles one kebab per cell.
+ * Pillar layer — assembles one kebab per PILLAR cell.
+ *
+ * This is a proper LayerProcGen coarse layer: pillars live on their own
+ * grid, one pillar cell = PILLAR_FACTOR x PILLAR_FACTOR dungeon cells.
+ * The dungeon layers below read the pillar layer's output (footprints)
+ * the way LayerProcGen fine layers read coarse ones.
  *
  * INFINITE-WORLD DISCIPLINE (non-negotiable for everything added here
  * and downstream of here):
- *   - A pillar is a PURE FUNCTION of (worldSeed, cx, cz). No grid
- *     bounds, no global scans, no "farthest cell", no shared mutable
- *     state. Negative coordinates are first-class.
- *   - Cross-pillar logic (bridges, next phase) may read a bounded
- *     neighbor radius only.
+ *   - A pillar is a PURE FUNCTION of (worldSeed, pcx, pcz). No grid
+ *     bounds, no global scans, no shared mutable state. Negative
+ *     coordinates are first-class.
+ *   - Cross-pillar logic (bridges) may read a bounded neighbor radius
+ *     only.
  * A bounded world is just this function evaluated over a window; an
  * infinite world evaluates it lazily around the player. Same function.
  *
- * Phase 1 is DATA ONLY: specs feed the debug map. Geometry, column
- * spans, and bridges consume the same specs in later phases.
+ * CLIMBABILITY BY CONSTRUCTION: every chunk carries a ramp up one face,
+ * and the ramp face advances one quarter-turn (clockwise) per chunk.
+ * Chunk i's ramp ends at the corner where chunk i+1's ramp begins, so
+ * the spiral from grade to crown is continuous — never verified,
+ * simply unbreakable.
  */
 
 import { cellSeed, mulberry32 } from './rng';
@@ -22,15 +30,22 @@ import {
   type ChunkSocket, type PillarChunkDef, type SocketFace,
 } from './pillar-chunks';
 
+// ── The coarse grid ──
+
+/** Dungeon cells per pillar cell (per axis) */
+export const PILLAR_FACTOR = 4;
+/** Tiles per pillar cell (= PILLAR_FACTOR * dungeon CELL_TILE_SIZE) */
+export const PILLAR_CELL_TILES = 56;
+
 // ── Tuning ──
 
-/** Fraction of cells (roughly) that carry no pillar — open void gaps */
-const VOID_THRESHOLD = 0.3;
-/** Cells per pillar-height noise feature — neighbors trend together so
- *  the skyline rolls instead of strobing */
-const HEIGHT_NOISE_SCALE = 5;
-const MIN_HEIGHT = 24;
-const MAX_HEIGHT = 64;
+/** Fraction of pillar cells (roughly) with no pillar — void gaps */
+const VOID_THRESHOLD = 0.18;
+/** Pillar cells per height-noise feature */
+const HEIGHT_NOISE_SCALE = 3;
+const MIN_HEIGHT = 36;
+const MAX_HEIGHT = 80;
+const PILLAR_SALT = 4141;
 
 // ── Output ──
 
@@ -38,11 +53,12 @@ export interface PlacedChunk {
   def: PillarChunkDef;
   /** Chunk base height above the pillar base (pillar base = 0) */
   baseY: number;
-  /** Quarter-turns applied to the def's socket faces (0-3, clockwise) */
+  /** Which face carries this chunk's ramp (quarter-turns clockwise
+   *  from north); features rotate with it */
   rotation: number;
 }
 
-/** A def socket resolved into pillar-local space */
+/** A socket resolved into pillar-local space */
 export interface ResolvedSocket extends ChunkSocket {
   /** Absolute height above the pillar base */
   yAbs: number;
@@ -50,6 +66,7 @@ export interface ResolvedSocket extends ChunkSocket {
 }
 
 export interface PillarSpec {
+  /** PILLAR-grid coordinates */
   cx: number;
   cz: number;
   totalHeight: number;
@@ -57,30 +74,51 @@ export interface PillarSpec {
   sockets: ResolvedSocket[];
 }
 
-// ── The pure function ──
-
-const PILLAR_SALT = 4141;
-
 const FACE_ORDER: readonly SocketFace[] = ['north', 'east', 'south', 'west'];
 
-function rotateFace(face: SocketFace, quarterTurns: number): SocketFace {
+export function rotateFace(face: SocketFace, quarterTurns: number): SocketFace {
   if (face === 'interior') return face;
   const i = FACE_ORDER.indexOf(face);
   return FACE_ORDER[(i + quarterTurns) % 4]!;
 }
 
+/** Sockets a placed chunk exposes, in chunk-local heights */
+function chunkSockets(placed: PlacedChunk): ChunkSocket[] {
+  const k = placed.rotation;
+  switch (placed.def.id) {
+    case 'terrace':
+      // The plaza ring: bridges and footing on all four faces
+      return FACE_ORDER.flatMap((face) => [
+        { face, y: 0.5, kind: 'bridge' as const },
+        { face, y: 0.5, kind: 'ledge' as const },
+      ]);
+    case 'gallery':
+      // Doorway on the face opposite the ramp
+      return [
+        { face: rotateFace('north', k + 2), y: 0.5, kind: 'bridge' },
+        { face: 'interior', y: 0.5, kind: 'ledge' },
+      ];
+    case 'crown':
+      return FACE_ORDER.map((face) => (
+        { face, y: placed.def.height, kind: 'ledge' as const }
+      ));
+    default:
+      return [];
+  }
+}
+
 /**
  * The kebab assembler. Returns null for void cells (no pillar).
- * Deterministic in (worldSeed, cx, cz) and nothing else.
+ * Deterministic in (worldSeed, pcx, pcz) and nothing else.
  */
-export function assemblePillar(worldSeed: number, cx: number, cz: number): PillarSpec | null {
-  // Density and height come from smooth noise so neighborhoods read as
-  // districts; everything else comes from the cell's own RNG stream.
-  const density = sampleNoise(cx, cz, worldSeed + 707, HEIGHT_NOISE_SCALE);
+export function assemblePillar(worldSeed: number, pcx: number, pcz: number): PillarSpec | null {
+  // Density and height come from smooth noise so districts read
+  // coherently; composition comes from the cell's own RNG stream.
+  const density = sampleNoise(pcx, pcz, worldSeed + 707, HEIGHT_NOISE_SCALE);
   if (density < VOID_THRESHOLD) return null;
 
-  const rng = mulberry32(cellSeed(cx, cz, worldSeed, PILLAR_SALT));
-  const heightNoise = sampleNoise(cx, cz, worldSeed + 909, HEIGHT_NOISE_SCALE);
+  const rng = mulberry32(cellSeed(pcx, pcz, worldSeed, PILLAR_SALT));
+  const heightNoise = sampleNoise(pcx, pcz, worldSeed + 909, HEIGHT_NOISE_SCALE);
   const targetHeight = MIN_HEIGHT + heightNoise * (MAX_HEIGHT - MIN_HEIGHT);
 
   const crown = CHUNK_BY_ID.get('crown')!;
@@ -97,36 +135,31 @@ export function assemblePillar(worldSeed: number, cx: number, cz: number): Pilla
 
   const chunks: PlacedChunk[] = [];
   let y = 0;
-  let prevId = '';
+  // The spiral: ramp face starts anywhere, advances clockwise per chunk
+  let face = Math.floor(rng() * 4);
   while (y + crown.height < targetHeight) {
-    let def = pick();
-    // No two identical featureless shafts in a row — kebabs stay varied
-    if (def.id === prevId && def.id === 'shaft') def = pick();
-    chunks.push({ def, baseY: y, rotation: Math.floor(rng() * 4) });
+    const def = pick();
+    chunks.push({ def, baseY: y, rotation: face });
     y += def.height;
-    prevId = def.id;
+    face = (face + 1) % 4;
   }
-  chunks.push({ def: crown, baseY: y, rotation: Math.floor(rng() * 4) });
+  chunks.push({ def: crown, baseY: y, rotation: face });
   y += crown.height;
 
   const sockets: ResolvedSocket[] = [];
   chunks.forEach((placed, chunkIndex) => {
-    for (const s of placed.def.sockets) {
-      sockets.push({
-        ...s,
-        face: rotateFace(s.face, placed.rotation),
-        yAbs: placed.baseY + s.y,
-        chunkIndex,
-      });
+    for (const s of chunkSockets(placed)) {
+      sockets.push({ ...s, yAbs: placed.baseY + s.y, chunkIndex });
     }
   });
 
-  return { cx, cz, totalHeight: y, chunks, sockets };
+  return { cx: pcx, cz: pcz, totalHeight: y, chunks, sockets };
 }
 
 /**
- * Evaluate the pillar function over a rectangular window — how a bounded
- * world (or a streaming frontier) materializes specs. Keyed "cx,cz".
+ * Evaluate the pillar function over a rectangular window of PILLAR
+ * cells — how a bounded world (or a streaming frontier) materializes
+ * specs. Keyed "pcx,pcz".
  */
 export function buildPillarField(
   worldSeed: number,

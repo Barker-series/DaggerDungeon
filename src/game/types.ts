@@ -2,6 +2,7 @@
 
 import type { BiomeType } from './dungeon/cells';
 import type { PillarSpec } from './dungeon/pillar-layer';
+import type { BridgeSpec } from './dungeon/pillar-bridges';
 
 export enum TileType {
   Wall = 0,
@@ -85,6 +86,11 @@ export interface DungeonData {
   /** Atrium interior: the hole's edge renders as a thin slab fascia
    *  instead of a deep shaft collar. */
   fascia: boolean[][];
+  /** Pillar footprint tiles. Wall in `tiles`, but STRUCTURAL, not
+   *  organic: the contour system must never chamfer or fence them —
+   *  their real shape (ramps, plazas, interiors) lives in the column
+   *  spans, and collision must come from spans alone. */
+  pillarWall: boolean[][];
 }
 
 /** A walkable connection between two levels (stairwell doorway). */
@@ -133,6 +139,8 @@ export interface WorldData {
    *  cell-local pillar function (see pillar-layer.ts). Data-only in
    *  Phase 1: drives the debug map; geometry/bridges come next. */
   pillars: Map<string, PillarSpec>;
+  /** Planned pillar-to-pillar walkways (carved into `columns`) */
+  bridges: BridgeSpec[];
 }
 
 // ── Constants ──

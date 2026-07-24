@@ -28,8 +28,8 @@
  * level learns where its ceiling opens to the space above.
  */
 
-import { TileType, LEVEL_HEIGHT, WORLD_LEVELS, type DungeonData, type WorldData, type RoomData, type GridPos } from './types';
-import { getOrCreateCell, getCell, getAllCells, resetCells, snapshotCellBiomes } from './dungeon/cells';
+import { TileType, LEVEL_HEIGHT, WORLD_LEVELS, SKY_CEIL, type DungeonData, type WorldData, type RoomData, type GridPos } from './types';
+import { getOrCreateCell, getCell, getAllCells, resetCells, snapshotCellBiomes, tileBiome } from './dungeon/cells';
 import { buildColumns, validateColumns } from './dungeon/columns';
 import { buildSkeleton, imprintSkeleton, type WorldSkeleton } from './dungeon/layer00-skeleton';
 import { generateLayer0 } from './dungeon/layer0-noise';
@@ -43,7 +43,9 @@ import { computeGoldenPath, goldenPath } from './dungeon/layer5-goldenpath';
 import { computeHeightFields, computePitMask, PIT_FLOOR } from './dungeon/layer6-heights';
 import { PIT_LEVEL } from './dungeon/heightfield';
 import { placePillars } from './dungeon/layer45-pillars';
-import { buildPillarField } from './dungeon/pillar-layer';
+import { buildPillarField, PILLAR_CELL_TILES, type PillarSpec } from './dungeon/pillar-layer';
+import { pillarFootprint, pillarAirSpans } from './dungeon/pillar-geometry';
+import { planOwnedBridges, bridgeTiles, carveBridgeIntoColumn, type BridgeSpec } from './dungeon/pillar-bridges';
 
 // ── Config ──
 
@@ -66,9 +68,31 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   // ── Layer 00: the stack's shared vertical skeleton ──
   const skel = buildSkeleton(stackSeed, WORLD_LEVELS, CELL_GRID_SIZE, CELL_TILE_SIZE, GRID_TILES);
 
+  // ── Pillar kebabs — the coarse pillar layer's pure function over
+  // this window (one pillar cell = 4x4 dungeon cells) ──
+  const pillarGrid = Math.floor(GRID_TILES / PILLAR_CELL_TILES);
+  const pillars = buildPillarField(stackSeed, 0, 0, pillarGrid, pillarGrid);
+
+  // Footprint tiles are WALL in every level's grid: connectivity, the
+  // golden path, and pathfinding route around pillars by construction.
+  // Dungeon cells a pillar touches are also barred from hosting the
+  // spawn/exit rooms.
+  const pillarWall: boolean[][] = Array.from({ length: GRID_TILES }, () =>
+    Array.from({ length: GRID_TILES }, () => false),
+  );
+  const pillarCells = new Set<string>();
+  for (const spec of pillars.values()) {
+    for (const [lx, lz] of pillarFootprint(spec)) {
+      const tx = spec.cx * PILLAR_CELL_TILES + lx;
+      const tz = spec.cz * PILLAR_CELL_TILES + lz;
+      pillarWall[tz]![tx] = true;
+      pillarCells.add(`${Math.floor(tx / CELL_TILE_SIZE)},${Math.floor(tz / CELL_TILE_SIZE)}`);
+    }
+  }
+
   const levels: DungeonData[] = [];
   for (let level = 0; level < WORLD_LEVELS; level++) {
-    levels.push(generateLevel(seed, stack, level, stackSeed, skel));
+    levels.push(generateLevel(seed, stack, level, stackSeed, skel, pillarCells, pillarWall));
   }
 
   // ── Decay holes carve downward until they find open space ──
@@ -109,18 +133,50 @@ export function generateWorld(opts: GenerateOpts): WorldData {
 
   // ── The column model — built LAST; nothing mutates the world after ──
   const columns = buildColumns(levels);
+
+  // Pillar columns: footprint tiles are Wall (no spans); the pillar's
+  // own air spans — ledges, platforms, gallery interiors, crown attic —
+  // replace them. Faces, floors, and collision derive as usual.
+  const topBiomes = levels[0]!.cellBiomes;
+  for (const spec of pillars.values()) {
+    for (const [k, air] of pillarAirSpans(spec)) {
+      const [lx, lz] = k.split(',').map(Number);
+      const gx = spec.cx * PILLAR_CELL_TILES + lx!;
+      const gz = spec.cz * PILLAR_CELL_TILES + lz!;
+      const spans = air.map((s) => ({
+        floor: s.floor, ceil: s.ceil, owner: -1, ceilOwner: -1,
+      }));
+      // Under open sky the pillar's top is a real rooftop, not an attic
+      // carved into rock — the highest air continues into the sky
+      if (spans.length > 0 && tileBiome(topBiomes, gx, gz) === 'outside') {
+        spans[spans.length - 1]!.ceil = SKY_CEIL;
+      }
+      columns[gz * GRID_TILES + gx] = spans;
+    }
+  }
+
+  // ── Bridges: the neighbor-pair pass with the local degree guarantee.
+  // Each cell owns its east and south pairs, so every pair is planned
+  // exactly once — and identically from either side in a streamed world. ──
+  const specAt = (cx: number, cz: number): PillarSpec | null => pillars.get(`${cx},${cz}`) ?? null;
+  const bridges: BridgeSpec[] = [];
+  for (const spec of pillars.values()) {
+    bridges.push(...planOwnedBridges(stackSeed, spec.cx, spec.cz, specAt));
+  }
+  for (const br of bridges) {
+    for (const { tx, tz, h } of bridgeTiles(br)) {
+      if (tx < 0 || tz < 0 || tx >= GRID_TILES || tz >= GRID_TILES) continue;
+      columns[tz * GRID_TILES + tx] = carveBridgeIntoColumn(columns[tz * GRID_TILES + tx]!, h);
+    }
+  }
+
   const errs = validateColumns(columns, GRID_TILES, GRID_TILES);
   if (errs.length > 0) {
     // A violation is a generation bug, never something to ship silently
     console.error(`[generateWorld] column model invariant violations (seed ${seed}, stack ${stack}):`, errs);
   }
 
-  // ── Pillar kebabs (Phase 1: data only) — a bounded window over the
-  // cell-local pillar function; an infinite world evaluates the same
-  // function lazily instead ──
-  const pillars = buildPillarField(stackSeed, 0, 0, CELL_GRID_SIZE, CELL_GRID_SIZE);
-
-  return { seed, stack, levels, links: skel.stairwells.map((s) => s.link), columns, pillars };
+  return { seed, stack, levels, links: skel.stairwells.map((s) => s.link), columns, pillars, bridges };
 }
 
 // ── Per-level pipeline ──
@@ -131,6 +187,8 @@ function generateLevel(
   level: number,
   stackSeed: number,
   skel: WorldSkeleton,
+  pillarCells: Set<string>,
+  pillarWall: boolean[][],
 ): DungeonData {
   const levelSeed = stackSeed + level * 1000;
   const isBottom = level === WORLD_LEVELS - 1;
@@ -170,14 +228,26 @@ function generateLevel(
   // ── Layer 00 imprint: the skeleton overrides everything under it ──
   const imprint = imprintSkeleton(skel, level, tiles, rooms, GRID_TILES, CELL_TILE_SIZE);
 
+  // ── Pillar footprints: solid wall in the 2D grid. The column model
+  // carves the pillar's real interior later; here they are obstacles
+  // that everything routes around. ──
+  for (let tz = 0; tz < GRID_TILES; tz++) {
+    for (let tx = 0; tx < GRID_TILES; tx++) {
+      if (pillarWall[tz]![tx]) tiles[tz]![tx] = TileType.Wall;
+    }
+  }
+
   // Skeleton tiles that carving may neither modify nor route through:
   // structure (walls) and open voids. Locked FLOORS (door landings,
   // balcony rims, ramps) are walkable and fine to route across.
+  // Pillar footprints are equally untouchable.
   const carveBlocked: boolean[][] = Array.from({ length: GRID_TILES }, (_, tz) =>
     Array.from({ length: GRID_TILES }, (_, tx) =>
-      imprint.locked[tz]![tx]! && (
-        tiles[tz]![tx] === TileType.Wall ||
-        (imprint.presetFloor[tz]![tx] ?? 0) <= PIT_FLOOR + 1
+      pillarWall[tz]![tx]! || (
+        imprint.locked[tz]![tx]! && (
+          tiles[tz]![tx] === TileType.Wall ||
+          (imprint.presetFloor[tz]![tx] ?? 0) <= PIT_FLOOR + 1
+        )
       ),
     ),
   );
@@ -191,13 +261,16 @@ function generateLevel(
   let entrance: GridPos;
   let exit: GridPos;
 
+  // Spawn/exit rooms never land in a cell a pillar touches
+  const occupiedCells = new Set([...skel.usedCells, ...pillarCells]);
+
   if (level === 0) {
     // Single-level worlds have no stairwell to anchor against — measure
     // spawn distance from the grid center instead
     const anchor = stairDown
       ? { cx: stairDown.cx, cz: stairDown.cz }
       : { cx: Math.floor(CELL_GRID_SIZE / 2), cz: Math.floor(CELL_GRID_SIZE / 2) };
-    const spawnCell = pickFarthestCell(anchor.cx, anchor.cz, skel.usedCells);
+    const spawnCell = pickFarthestCell(anchor.cx, anchor.cz, occupiedCells);
     spawnCx = spawnCell.cx;
     spawnCz = spawnCell.cz;
     entrance = {
@@ -210,7 +283,7 @@ function generateLevel(
 
   if (isBottom) {
     const entranceCell = { cx: Math.floor(entrance.x / CELL_TILE_SIZE), cz: Math.floor(entrance.y / CELL_TILE_SIZE) };
-    const exitCell = pickFarthestCell(entranceCell.cx, entranceCell.cz, skel.usedCells);
+    const exitCell = pickFarthestCell(entranceCell.cx, entranceCell.cz, occupiedCells);
     exitCx = exitCell.cx;
     exitCz = exitCell.cz;
     exit = {
@@ -289,6 +362,7 @@ function generateLevel(
     openUp: imprint.openUp,
     skelVoid: imprint.skelVoid,
     fascia: imprint.fascia,
+    pillarWall,
   };
 }
 
@@ -307,10 +381,23 @@ function pickFarthestCell(fromCx: number, fromCz: number, exclude: Set<string>):
     }
   }
   if (!best) {
-    // No usable active cell — take the opposite corner; layer 3 carves a
-    // room there and connects it
-    best = { cx: CELL_GRID_SIZE - 1 - fromCx, cz: CELL_GRID_SIZE - 1 - fromCz };
-    if (exclude.has(`${best.cx},${best.cz}`)) best = { cx: 1, cz: 1 };
+    // No usable active cell — take the farthest NON-EXCLUDED cell on the
+    // whole grid; layer 3 carves a room there and connects it. (Never
+    // fall back into an excluded cell: a room punched inside a pillar
+    // footprint is sealed off forever.)
+    let fallbackScore = -1;
+    for (let cz = 0; cz < CELL_GRID_SIZE; cz++) {
+      for (let cx = 0; cx < CELL_GRID_SIZE; cx++) {
+        if (exclude.has(`${cx},${cz}`)) continue;
+        if (cx === fromCx && cz === fromCz) continue;
+        const score = Math.abs(cx - fromCx) + Math.abs(cz - fromCz);
+        if (score > fallbackScore) {
+          fallbackScore = score;
+          best = { cx, cz };
+        }
+      }
+    }
+    best ??= { cx: 1, cz: 1 };
   }
   return best;
 }

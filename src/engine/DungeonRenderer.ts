@@ -47,8 +47,10 @@ const REGION_EMISSIVE: Partial<Record<RegionKey, number>> = {
   ember: 0x2a0d04,
 };
 
-/** How high canyon walls render into an open sky span */
-const RENDER_SKY_TOP = 44;
+/** How high canyon walls render into an open sky span. Must clear the
+ *  tallest pillar (~84 incl. crown headroom) or upper pillar faces fall
+ *  outside the clip and vanish. */
+const RENDER_SKY_TOP = 92;
 /** How deep a bottomless pit's walls render below the lowest level */
 const RENDER_ABYSS_DROP = 24;
 
@@ -386,10 +388,14 @@ export class DungeonRenderer {
       for (let x = 0; x < w; x++) {
         const a = world.columns[z * w + x]!;
 
-        // Structural rock floors (a shaft ending on the slab below)
+        // Structural rock floors (a shaft ending on the slab below) and
+        // rock ceilings (pillar slab undersides, crown attic roofs)
         for (const s of a) {
           if (s.owner === -1 && s.floor > ABYSS_FLOOR) {
             addHorizontalQuad(rockFloors, x * TILE_SIZE, z * TILE_SIZE, s.floor, s.floor, s.floor, s.floor, true);
+          }
+          if (s.ceilOwner === -1 && s.ceil < SKY_CEIL) {
+            addHorizontalQuad(rockFloors, x * TILE_SIZE, z * TILE_SIZE, s.ceil, s.ceil, s.ceil, s.ceil, false);
           }
         }
 
@@ -398,7 +404,10 @@ export class DungeonRenderer {
         // tubes, and steep sightlines from below see through the slit
         // between their faces.
         const reachesSky = a.length > 0 && a[a.length - 1]!.ceil >= SKY_CEIL;
-        if (!reachesSky) {
+        const isPillarCol = world.levels[0]!.pillarWall[z]![x]!;
+        // Pillar tops are real geometry (crown roofs / open rooftops) —
+        // the canyon roof-slab hack must not cap them
+        if (!reachesSky && !isPillarCol) {
           let skyNear = false;
           for (let oz = -2; oz <= 2 && !skyNear; oz++) {
             for (let ox = -2; ox <= 2 && !skyNear; ox++) {

@@ -95,6 +95,20 @@ export function buildSkeleton(
   cellTile: number,
   gridTiles: number,
 ): WorldSkeleton {
+  // Single-level worlds have no cross-level structure to build — and the
+  // massive pillar layer owns vertical drama now. Atria and megacolumns
+  // were absorbed into the pillar chunk vocabulary.
+  if (levelCount < 2) {
+    return {
+      stairwells: [],
+      atria: [],
+      columns: [],
+      pitBan: Array.from({ length: gridTiles }, () =>
+        Array.from({ length: gridTiles }, () => false)),
+      usedCells: new Set(),
+    };
+  }
+
   const rng = mulberry32(stackSeed + 8888);
   const usedCells = new Set<string>();
 

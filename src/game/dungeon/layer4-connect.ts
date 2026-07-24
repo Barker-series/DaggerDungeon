@@ -34,62 +34,87 @@ export function connectIslands(
 ): void {
   hallwayCells.clear();
 
-  for (let safety = 0; safety < 20; safety++) {
+  // Islands a carve already failed to reach — never target them again
+  const sealed = new Set<string>();
+
+  // Each pass: flood the spawn network once, label EVERY disconnected
+  // component, and carve each one toward the network. Big grids fragment
+  // into hundreds of islands; one-island-per-flood-fill does not scale.
+  for (let pass = 0; pass < 8; pass++) {
     const spawnIsland = floodFill(tiles, entrance, gridTiles);
 
-    // Find all floor tiles NOT in the spawn island. Skeleton voids are
-    // never targets — carving "to" open air connects nothing.
-    const unreached: GridPos[] = [];
-    for (let z = 0; z < gridTiles; z++) {
-      for (let x = 0; x < gridTiles; x++) {
-        if (tiles[z]![x] !== TileType.Wall && !spawnIsland.has(`${x},${z}`) && !locked?.[z]?.[x]) {
-          unreached.push({ x, y: z });
-        }
-      }
-    }
-
-    if (unreached.length === 0) break;
-
-    // Find border tiles of spawn island (adjacent to wall). Skeleton voids
-    // can't start a carve — a hallway can't begin over open air.
+    // Border tiles of the spawn network (adjacent to wall, carveable),
+    // subsampled — hallway starts don't need tile-exact optimality
     const border: GridPos[] = [];
+    let bi = 0;
     for (const key of spawnIsland) {
       const parts = key.split(',');
       const x = parseInt(parts[0]!, 10);
       const z = parseInt(parts[1]!, 10);
       if (locked?.[z]?.[x]) continue;
+      let edge = false;
       for (const off of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
         const nx = x + off[0]!;
         const nz = z + off[1]!;
-        if (nx >= 0 && nz >= 0 && nx < gridTiles && nz < gridTiles) {
-          if (tiles[nz]![nx] === TileType.Wall) {
-            border.push({ x, y: z });
-            break;
+        if (nx >= 0 && nz >= 0 && nx < gridTiles && nz < gridTiles && tiles[nz]![nx] === TileType.Wall) {
+          edge = true;
+          break;
+        }
+      }
+      if (edge && bi++ % 3 === 0) border.push({ x, y: z });
+    }
+    if (border.length === 0) break;
+
+    // Label disconnected components (floor, not spawn network, not
+    // locked/sealed). Skeleton voids are never targets — carving "to"
+    // open air connects nothing.
+    const assigned = new Set<string>();
+    const components: GridPos[][] = [];
+    for (let z = 0; z < gridTiles; z++) {
+      for (let x = 0; x < gridTiles; x++) {
+        const k = `${x},${z}`;
+        if (tiles[z]![x] === TileType.Wall || spawnIsland.has(k) || assigned.has(k)) continue;
+        if (locked?.[z]?.[x] || sealed.has(k)) continue;
+        const comp = [...floodFill(tiles, { x, y: z }, gridTiles)].map((s) => {
+          const p = s.split(',');
+          return { x: parseInt(p[0]!, 10), y: parseInt(p[1]!, 10) };
+        });
+        for (const t of comp) assigned.add(`${t.x},${t.y}`);
+        components.push(comp);
+      }
+    }
+    if (components.length === 0) break;
+
+    let anyCarved = false;
+    for (const comp of components) {
+      // Closest pair between a sample of the component and the border
+      const step = Math.max(1, Math.floor(comp.length / 48));
+      let bestDist = Infinity;
+      let bestFrom: GridPos | null = null;
+      let bestTo: GridPos | null = null;
+      for (let i = 0; i < comp.length; i += step) {
+        const to = comp[i]!;
+        for (const from of border) {
+          const dist = Math.abs(from.x - to.x) + Math.abs(from.y - to.y);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestFrom = from;
+            bestTo = to;
           }
         }
       }
-    }
-
-    // Find closest pair
-    let bestDist = Infinity;
-    let bestFrom: GridPos | null = null;
-    let bestTo: GridPos | null = null;
-
-    for (const from of border) {
-      for (const to of unreached) {
-        const dist = Math.abs(from.x - to.x) + Math.abs(from.y - to.y);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestFrom = from;
-          bestTo = to;
-        }
+      if (!bestFrom || !bestTo) continue;
+      // The carve A* can't start or end on the outermost tile ring —
+      // clamp endpoints inward; the 3-wide carve still reaches the edge
+      const cl = (v: number): number => Math.max(1, Math.min(gridTiles - 2, v));
+      const ok = carveHallway(tiles, rooms, cl(bestFrom.x), cl(bestFrom.y), cl(bestTo.x), cl(bestTo.y), gridTiles, cellTileSize, locked);
+      if (ok) {
+        anyCarved = true;
+      } else {
+        for (const t of comp) sealed.add(`${t.x},${t.y}`);
       }
     }
-
-    if (!bestFrom || !bestTo) break;
-
-    // Carve hallway between them and register as rooms
-    carveHallway(tiles, rooms, bestFrom.x, bestFrom.y, bestTo.x, bestTo.y, gridTiles, cellTileSize, locked);
+    if (!anyCarved) break;
   }
 }
 
@@ -102,7 +127,7 @@ function carveHallway(
   gridTiles: number,
   cellTileSize: number,
   locked?: boolean[][],
-): void {
+): boolean {
   // Track the bounding box of the hallway for room registration
   let minX = Math.min(x1, x2);
   let maxX = Math.max(x1, x2);
@@ -116,7 +141,7 @@ function carveHallway(
   const astar = new Path.AStar(x2, z2, passable, { topology: 4 });
   const route: GridPos[] = [];
   astar.compute(x1, z1, (x, z) => route.push({ x, y: z }));
-  if (route.length === 0) return; // fully sealed off — leave the island be
+  if (route.length === 0) return false; // fully sealed off — leave the island be
 
   for (const p of route) {
     carveSpot(tiles, p.x, p.y, gridTiles, locked);
@@ -147,6 +172,7 @@ function carveHallway(
     type: RoomType.Combat,
     doors: [],
   });
+  return true;
 }
 
 /** Carve a circular-ish area around a point for hallway width */
