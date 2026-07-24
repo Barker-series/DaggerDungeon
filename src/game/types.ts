@@ -91,6 +91,12 @@ export interface DungeonData {
    *  their real shape (ramps, plazas, interiors) lives in the column
    *  spans, and collision must come from spans alone. */
   pillarWall: boolean[][];
+  /** Footprint tiles whose ground surface joined the level floor system
+   *  (owner-0 span; its height is in floorHeights). In the corner field
+   *  these are DOMINANT: foundations stay dead flat and the terrain's
+   *  edge bends to meet them — earth banked against a slab, never a
+   *  slab rolling with the hills. */
+  pillarGround: boolean[][];
 }
 
 /** A walkable connection between two levels (stairwell doorway). */

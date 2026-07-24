@@ -129,7 +129,7 @@ export class GameEngine {
 
     this.world = generateWorld({ seed, stack });
     this.cornerFloors = this.world.levels.map((l) =>
-      buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0));
+      buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
     this.contours = this.world.levels.map((l) => buildOrganicContour(l));
     this.dungeonRenderer.build(this.world);
     this.lighting.setup(this.world);

@@ -208,15 +208,25 @@ export interface AirSpanLite {
  * crown; these are the habitable gaps (ramps, plazas, interiors,
  * rooftop).
  */
-export function pillarAirSpans(spec: PillarSpec): Map<string, AirSpanLite[]> {
+export function pillarAirSpans(
+  spec: PillarSpec,
+  /** Terrain ground height at a local tile — the rolling surface
+   *  continues UNDER the pillar and its foundation rises to meet it, so
+   *  the ground-level air floor IS the terrain. Chunks near the base
+   *  submerge into rising ground and ramps emerge from hillsides. */
+  groundAt?: (lx: number, lz: number) => number,
+): Map<string, AirSpanLite[]> {
   const out = new Map<string, AirSpanLite[]>();
   const capTop = spec.totalHeight + CROWN_HEADROOM;
   for (const [k, t] of collectSolids(spec)) {
-    // Every footprint tile is founded to below the abyss — the pillar
-    // stands on a plinth, never floats. Air is the complement of the
-    // solids within [foundation, capTop]; above capTop stays solid.
+    const [lx, lz] = k.split(',').map(Number);
+    const ground = Math.max(0, groundAt?.(lx!, lz!) ?? 0);
+    // Every footprint tile is founded from below the abyss up to the
+    // terrain surface — the pillar stands IN the ground, never on a
+    // plinth. Air is the complement of the solids within
+    // [foundation, capTop]; above capTop stays solid.
     const intervals: [number, number][] = [
-      [FOUNDATION_BOTTOM, 0],
+      [FOUNDATION_BOTTOM, ground],
       ...t.intervals,
     ];
     intervals.sort((a, b) => a[0] - b[0]);

@@ -33,6 +33,11 @@ export function buildCornerField(
   width: number,
   height: number,
   fallback: number,
+  /** Structure ground tiles (pillar foundations, plazas). They join the
+   *  continuous surface but DOMINATE any corner they touch: man-made
+   *  surfaces stay dead flat, and the neighboring terrain's edge bends
+   *  to meet the foundation — never the other way around. */
+  extraFloor?: boolean[][],
 ): number[][] {
   const corners: number[][] = Array.from({ length: height + 1 }, () =>
     Array.from({ length: width + 1 }, () => fallback),
@@ -42,19 +47,30 @@ export function buildCornerField(
     for (let cx = 0; cx <= width; cx++) {
       let sum = 0;
       let count = 0;
+      let structSum = 0;
+      let structCount = 0;
       let pitMin = Infinity;
       for (const [tx, ty] of [[cx - 1, cy - 1], [cx, cy - 1], [cx - 1, cy], [cx, cy]]) {
         if (tx! < 0 || ty! < 0 || tx! >= width || ty! >= height) continue;
-        if (tiles[ty!]![tx!] === TileType.Wall) continue;
+        const struct = extraFloor?.[ty!]?.[tx!] ?? false;
+        if (tiles[ty!]![tx!] === TileType.Wall && !struct) continue;
         const v = values[ty!]![tx!]!;
         if (v <= PIT_LEVEL) {
           pitMin = Math.min(pitMin, v);
           continue;
         }
-        sum += v;
-        count++;
+        if (struct) {
+          structSum += v;
+          structCount++;
+        } else {
+          sum += v;
+          count++;
+        }
       }
-      if (count > 0) corners[cy]![cx] = sum / count;
+      // Structure dominates: a corner touching a foundation takes the
+      // foundation's height; terrain-only corners average as usual
+      if (structCount > 0) corners[cy]![cx] = structSum / structCount;
+      else if (count > 0) corners[cy]![cx] = sum / count;
       else if (pitMin < Infinity) corners[cy]![cx] = pitMin;
     }
   }

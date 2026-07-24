@@ -143,6 +143,9 @@ export function computeHeightFields(
   /** Where the void field opens holes (from computePitMask — the same
    *  mask the golden path was routed with) */
   pitMask: boolean[][],
+  /** Pillar footprint tiles — structural joints, same doctrine as the
+   *  skeleton: terrain touching them is EXACTLY at grade */
+  pillarWall?: boolean[][],
 ): HeightFields {
   const heightSeed = worldSeed + 4242;
   const locked = imprint.locked;
@@ -158,14 +161,22 @@ export function computeHeightFields(
 
   const isFloor = (tx: number, tz: number): boolean =>
     tx >= 0 && tz >= 0 && tx < gridTiles && tz < gridTiles && tiles[tz]![tx] !== TileType.Wall;
+  // Terrain flows UNDER pillars: footprint tiles are Wall for routing,
+  // but they carry real ground heights so the rolling surface continues
+  // through the footprint and the pillar's ground span rides it — the
+  // joint uses the same corner field as every other floor connection.
+  const carriesGround = (tx: number, tz: number): boolean =>
+    isFloor(tx, tz) || (tx >= 0 && tz >= 0 && tx < gridTiles && tz < gridTiles && (pillarWall?.[tz]?.[tx] ?? false));
   const biomeAt = (tx: number, tz: number): BiomeType | null => {
     const cell = getCell(Math.floor(tx / cellTileSize), Math.floor(tz / cellTileSize));
     return cell?.active ? cell.biome : null;
   };
-  // ── Floor: walkable rolling grade, with holes dropping out of it ──
+  // ── Floor: walkable rolling grade, with holes dropping out of it.
+  // Pillar footprint tiles participate — their ground height IS the
+  // terrain continuing beneath the structure. ──
   for (let tz = 0; tz < gridTiles; tz++) {
     for (let tx = 0; tx < gridTiles; tx++) {
-      if (!isFloor(tx, tz) || locked[tz]![tx]) continue;
+      if (!carriesGround(tx, tz) || locked[tz]![tx]) continue;
       if (pitMask[tz]![tx]) {
         pit[tz]![tx] = true;
         floor[tz]![tx] = PIT_FLOOR;
@@ -174,7 +185,7 @@ export function computeHeightFields(
       const biome = biomeAt(tx, tz);
       if (!biome || !isOrganicBiome(biome)) continue; // built floors stay flat between breaches
       // Terrain relief is decoration INSIDE open areas — never at a
-      // structural joint. Tiles touching the skeleton stay at grade so
+      // skeleton joint. Tiles touching the skeleton stay at grade so
       // smoothing can't smear across an exact edge.
       let nearStructure = false;
       for (let dz = -1; dz <= 1 && !nearStructure; dz++) {
@@ -193,13 +204,13 @@ export function computeHeightFields(
     const snapshot = floor.map((row) => [...row]);
     for (let tz = 0; tz < gridTiles; tz++) {
       for (let tx = 0; tx < gridTiles; tx++) {
-        if (!isFloor(tx, tz) || pit[tz]![tx] || locked[tz]![tx]) continue;
+        if (!carriesGround(tx, tz) || pit[tz]![tx] || locked[tz]![tx]) continue;
         let sum = snapshot[tz]![tx]!;
         let count = 1;
         for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
           const nx = tx + dx!;
           const nz = tz + dz!;
-          if (!isFloor(nx, nz) || pit[nz]![nx]) continue;
+          if (!carriesGround(nx, nz) || pit[nz]![nx]) continue;
           if (snapshot[nz]![nx]! <= PIT_FLOOR + 1) continue; // locked voids never blend
           sum += snapshot[nz]![nx]!;
           count++;
@@ -300,7 +311,7 @@ export function computeHeightFields(
   // sentinel; skeleton presets are already exact.)
   for (let tz = 0; tz < gridTiles; tz++) {
     for (let tx = 0; tx < gridTiles; tx++) {
-      if (!isFloor(tx, tz) || locked[tz]![tx]) continue;
+      if (!carriesGround(tx, tz) || locked[tz]![tx]) continue;
       const f = floor[tz]![tx]!;
       if (f > PIT_LEVEL) floor[tz]![tx] = Math.round(f / HEIGHT_STEP) * HEIGHT_STEP;
       ceiling[tz]![tx] = Math.round(ceiling[tz]![tx]! / HEIGHT_STEP) * HEIGHT_STEP;

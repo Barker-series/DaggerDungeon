@@ -129,7 +129,7 @@ export class DungeonRenderer {
    */
   build(world: WorldData): void {
     const cornerFloors = world.levels.map((l) =>
-      buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0));
+      buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
 
     const materials = new Map<RegionKey, RegionMaterials>();
     const materialsFor = (key: RegionKey): RegionMaterials => {
@@ -226,6 +226,21 @@ export class DungeonRenderer {
         const region = regionOf(x, y);
 
         if (tile === TileType.Wall) {
+          // Pillar footprint tiles whose ground span belongs to this
+          // level draw the SAME corner-field floor as the terrain around
+          // them — the rolling surface continues under the pillar, and
+          // the footprint boundary is not a seam
+          if (dungeon.pillarGround[y]![x] && ownsFloor(x, y)) {
+            const wx = x * TILE_SIZE;
+            const wz = y * TILE_SIZE;
+            addHorizontalQuad(
+              regionBuffers(region).floor, wx, wz,
+              cornerFloor[y]![x]!, cornerFloor[y]![x + 1]!,
+              cornerFloor[y + 1]![x]!, cornerFloor[y + 1]![x + 1]!,
+              true,
+            );
+            continue;
+          }
           // Contoured wall tiles get "apron" floor + ceiling quads behind
           // the chamfers — without them every chamfer pocket is a hole
           if (contour.softWalls.has(y * w + x) && hasFloorNeighbor(x, y)) {
@@ -234,7 +249,9 @@ export class DungeonRenderer {
             const buf = regionBuffers(region);
             const ap = (v: number): number => Math.max(v, -3);
             addHorizontalQuad(buf.floor, wx, wz, ap(cornerFloor[y]![x]!), ap(cornerFloor[y]![x + 1]!), ap(cornerFloor[y + 1]![x]!), ap(cornerFloor[y + 1]![x + 1]!), true);
-            if (!dungeon.openUp[y]![x]) {
+            // No pocket cap under open sky — outside pockets are open;
+            // a cap at "ceiling height" floats mid-air on the wall face
+            if (!dungeon.openUp[y]![x] && region !== 'outside') {
               // Pocket cap: the apron ceiling over a contoured wall tile
               // sits at the HIGHEST adjacent room ceiling (the wall tile's
               // own value is meaningless filler). Chamfer tops rise to the
@@ -399,28 +416,15 @@ export class DungeonRenderer {
           }
         }
 
-        // Rooftops: a solid column beside open sky renders a roof slab at
-        // the sky clip height — canyon walls are otherwise open-topped
-        // tubes, and steep sightlines from below see through the slit
-        // between their faces.
+        // The world's top plane is WATERTIGHT: every column either opens
+        // to sky or carries a roof slab at the clip height. (The old
+        // near-sky-only hack left wide solid regions open-topped — from
+        // a pillar summit you looked down into holes. Roofs over deep
+        // interior tiles sit inside conceptual rock; a batched quad each
+        // is the price of unrepresentable leaks.)
         const reachesSky = a.length > 0 && a[a.length - 1]!.ceil >= SKY_CEIL;
-        const isPillarCol = world.levels[0]!.pillarWall[z]![x]!;
-        // Pillar tops are real geometry (crown roofs / open rooftops) —
-        // the canyon roof-slab hack must not cap them
-        if (!reachesSky && !isPillarCol) {
-          let skyNear = false;
-          for (let oz = -2; oz <= 2 && !skyNear; oz++) {
-            for (let ox = -2; ox <= 2 && !skyNear; ox++) {
-              const nx2 = x + ox;
-              const nz2 = z + oz;
-              if (nx2 < 0 || nz2 < 0 || nx2 >= w || nz2 >= h) continue;
-              const nb = world.columns[nz2 * w + nx2]!;
-              if (nb.length > 0 && nb[nb.length - 1]!.ceil >= SKY_CEIL) skyNear = true;
-            }
-          }
-          if (skyNear) {
-            addHorizontalQuad(rockFloors, x * TILE_SIZE, z * TILE_SIZE, RENDER_SKY_TOP, RENDER_SKY_TOP, RENDER_SKY_TOP, RENDER_SKY_TOP, true);
-          }
+        if (!reachesSky) {
+          addHorizontalQuad(rockFloors, x * TILE_SIZE, z * TILE_SIZE, RENDER_SKY_TOP, RENDER_SKY_TOP, RENDER_SKY_TOP, RENDER_SKY_TOP, true);
         }
 
         // Two directed boundaries per column (east, south) — plus the
@@ -509,6 +513,7 @@ export class DungeonRenderer {
             // plane its floors seal against, tearing slivers. ──
             let chamferLc = -1;
             let airSpanTop = hi;
+            let airIsSky = false;
             const solidIn = solidX >= 0 && solidZ >= 0 && solidX < w && solidZ < h;
             if (solidIn) {
               let airOwner = -1;
@@ -516,6 +521,7 @@ export class DungeonRenderer {
                 if (mid >= clipY(s.floor) && mid <= clipY(s.ceil)) {
                   airOwner = s.owner;
                   airSpanTop = clipY(s.ceil);
+                  airIsSky = s.ceil >= SKY_CEIL;
                   break;
                 }
               }
@@ -552,9 +558,12 @@ export class DungeonRenderer {
               // to the SOLID tile's shared pocket ceiling (max of adjacent
               // room ceilings) — per-boundary ceilings differ across the
               // corner and would open a triangle between the halves.
+              // UNDER OPEN SKY there is no pocket ceiling: the chamfer
+              // rises to the sky clip like its flat neighbors, or the
+              // wall top alternates tall/short with every corner.
               let hiK = k === 0 ? hi0 : hi1;
               let hiM = (hi0 + hi1) / 2;
-              if (chamferLc >= 0 && Math.abs(hi - airSpanTop) < 0.03) {
+              if (chamferLc >= 0 && !airIsSky && Math.abs(hi - airSpanTop) < 0.03) {
                 const L = world.levels[chamferLc]!;
                 let pc = L.ceilingHeights[solidZ]?.[solidX] ?? 3;
                 for (let dz2 = -1; dz2 <= 1; dz2++) {

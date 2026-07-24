@@ -138,18 +138,71 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   // own air spans — ledges, platforms, gallery interiors, crown attic —
   // replace them. Faces, floors, and collision derive as usual.
   const topBiomes = levels[0]!.cellBiomes;
+  const topFloors = levels[0]!.floorHeights;
+  // Marry decisions read the ORIGINAL terrain field — married tiles
+  // overwrite topFloors as they go, and neighbors must not see that
+  const origFloors = topFloors.map((row) => [...row]);
   for (const spec of pillars.values()) {
-    for (const [k, air] of pillarAirSpans(spec)) {
+    // Terrain flows under the pillar (footprint tiles carry real ground
+    // heights) — the foundation rises to meet it per tile
+    const airSpans = pillarAirSpans(spec, (lx, lz) =>
+      topFloors[spec.cz * PILLAR_CELL_TILES + lz]?.[spec.cx * PILLAR_CELL_TILES + lx] ?? 0,
+    );
+    // Sky-open is a PER-PILLAR decision: only a pillar standing entirely
+    // in the outside biome gets an open rooftop. A straddler is partly
+    // embedded in the boundary cliff — opening its outside tiles would
+    // cut a notch out of the cliff mass above its crown (missing geo up
+    // to the skyline). Straddlers stay capped; the cliff continues.
+    let outsideTiles = 0, totalTiles = 0;
+    for (const k of airSpans.keys()) {
+      const [lx, lz] = k.split(',').map(Number);
+      totalTiles++;
+      if (tileBiome(topBiomes, spec.cx * PILLAR_CELL_TILES + lx!, spec.cz * PILLAR_CELL_TILES + lz!) === 'outside') outsideTiles++;
+    }
+    const fullyOutside = totalTiles > 0 && outsideTiles === totalTiles;
+    const straddler = outsideTiles > 0 && !fullyOutside;
+    for (const [k, air] of airSpans) {
       const [lx, lz] = k.split(',').map(Number);
       const gx = spec.cx * PILLAR_CELL_TILES + lx!;
       const gz = spec.cz * PILLAR_CELL_TILES + lz!;
-      const spans = air.map((s) => ({
+      let spans = air.map((s) => ({
         floor: s.floor, ceil: s.ceil, owner: -1, ceilOwner: -1,
       }));
-      // Under open sky the pillar's top is a real rooftop, not an attic
-      // carved into rock — the highest air continues into the sky
-      if (spans.length > 0 && tileBiome(topBiomes, gx, gz) === 'outside') {
+      // Ground surfaces near the terrain JOIN the level system: owner 0,
+      // and the surface height replaces the buried-terrain value in the
+      // height field, so renderer and physics corner-sample one
+      // continuous surface — terrain, plaza slabs, and ramp entries
+      // blend like worn stone, and the footprint boundary stops being a
+      // seam at all. "Near" is judged against the whole 3x3 terrain
+      // neighborhood: a surface within a step of ANY adjacent ground
+      // must blend with it (only equal-height joints crack — anything
+      // still structural has a real ≥1 wall face sealing it).
+      if (spans.length > 0) {
+        const f0 = spans[0]!.floor;
+        let near = false;
+        for (let dz = -1; dz <= 1 && !near; dz++) {
+          for (let dx = -1; dx <= 1 && !near; dx++) {
+            const t = origFloors[gz + dz]?.[gx + dx];
+            if (t !== undefined && t > PIT_FLOOR && Math.abs(f0 - Math.max(0, t)) < 1.0) near = true;
+          }
+        }
+        if (near) {
+          spans[0]!.owner = 0;
+          topFloors[gz]![gx] = f0;
+          levels[0]!.pillarGround[gz]![gx] = true;
+        }
+      }
+      if (spans.length > 0 && fullyOutside) {
+        // Under open sky the pillar's top is a real rooftop, not an
+        // attic carved into rock — the highest air continues into sky
         spans[spans.length - 1]!.ceil = SKY_CEIL;
+      } else if (straddler && spans.length > 0) {
+        // A boundary-cliff pillar merges into the skyline as one solid
+        // mass: no crown attic, no recessed ring under a hanging slab —
+        // the spiral tops out at a sheltered landing and the tower
+        // continues up. (Interior pillars keep their attic rooms.)
+        const top = spans[spans.length - 1]!;
+        if (Math.abs(top.floor - spec.totalHeight) < 0.01) spans = spans.slice(0, -1);
       }
       columns[gz * GRID_TILES + gx] = spans;
     }
@@ -340,7 +393,7 @@ function generateLevel(
 
   // ── Layer 6: Height fields (same void mask, skeleton heights locked) ──
   const { floor: floorHeights, ceiling: ceilingHeights } = computeHeightFields(
-    tiles, GRID_TILES, CELL_TILE_SIZE, levelSeed, imprint, pitMask,
+    tiles, GRID_TILES, CELL_TILE_SIZE, levelSeed, imprint, pitMask, pillarWall,
   );
 
   // ── Output ──
@@ -363,6 +416,9 @@ function generateLevel(
     skelVoid: imprint.skelVoid,
     fascia: imprint.fascia,
     pillarWall,
+    // Filled in by generateWorld once pillar spans are applied
+    pillarGround: Array.from({ length: GRID_TILES }, () =>
+      Array.from({ length: GRID_TILES }, () => false)),
   };
 }
 

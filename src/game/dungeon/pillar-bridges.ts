@@ -215,6 +215,15 @@ export function carveBridgeIntoColumn(spans: ColumnSpan[], h: number): ColumnSpa
   const slabLo = h - SLAB;
   const slabHi = h;
 
+  // Where the existing ground is already at bridge height (rolling
+  // outdoor terrain, plaza edges), the terrain IS the bridge — slicing
+  // a flat slab through it makes sliver spans and z-fighting rock cuts.
+  // Leave the column untouched; the walker steps between terrain and
+  // slab at the transition (differences stay under the step limit).
+  if (spans.some((s) => s.floor > -100 && s.floor >= h - 0.6 && s.floor <= h + 0.6)) {
+    return spans;
+  }
+
   // Split existing air around the slab
   const split: ColumnSpan[] = [];
   for (const s of spans) {
