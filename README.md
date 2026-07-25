@@ -1,42 +1,81 @@
 # Dagger Dungeon
 
-A Daggerfall-inspired first-person roguelite dungeon crawler built with Three.js and React on the RUN.game platform.
+A first-person megastructure exploration game built with Three.js and React on the RUN.game platform. One vast vertical world: massive climbable pillars rising out of a procedurally sculpted dungeon floor, connected by high bridges over bottomless pits.
+
+## The Pillar Kebab System
+
+The core world idea, inspired by the brilliant procgen in **Lorne's Lure**: instead of forcing a 2D generator to fake verticality with stacked levels (we tried — endless edge cases), verticality is *content*, not generation.
+
+- The world has ONE ground-level procedural floor.
+- On a **coarse grid** (one pillar cell = 4×4 dungeon cells = 168×168 world units), each cell may hold a **pillar**: a massive monument built as a vertical **kebab of authored chunks** — plain shaft segments, terrace plazas, hollow galleries, a crown — skewered bottom to top.
+- Every chunk carries a **winding ramp** up one face, and the ramp face advances a quarter-turn per chunk, so a continuous spiral staircase wraps each pillar from grade to crown — climbability is guaranteed *by construction*, never verified.
+- **Bridges** connect neighboring pillars where their sockets (plaza edges, gallery doorways) align in height — a pure neighbor-pair computation, with a local degree guarantee so no pillar is ever unreachable by air.
+- Terrace plazas omit their slab over the arriving stairs (open-air climbs) and grow corbel brackets under their cantilevered edges.
+
+Every pillar is a **pure function of (seed, cellX, cellZ)** and bridges read only a 1-cell neighbor radius — the endgame is an infinite streamed world, and the bounded map is just a window over the same functions.
 
 ## Dungeon Generation — LayerProcGen
 
-The dungeon generator uses a **LayerProcGen** architecture — a layered procedural generation system where each layer reads the output of all previous layers before making decisions. Information flows downward through layers, never upward. Each layer adds to or modifies the shared tile grid, building the dungeon through additive and subtractive sculpting.
-
-This is inspired by [Rune Skovbo Johansen's LayerProcGen framework](https://runevision.github.io/LayerProcGen/) ([EPC 2024 talk](https://youtu.be/GJWuVwZO98s)) and our own production implementation in [runGame Blame](https://github.com/Barker-series).
+The generator uses a **LayerProcGen** architecture — layered procedural generation where each layer reads the output of previous layers; information flows downward, never upward. Inspired by [Rune Skovbo Johansen's LayerProcGen framework](https://runevision.github.io/LayerProcGen/) ([EPC 2024 talk](https://youtu.be/GJWuVwZO98s)). The pillar layer is a true *coarse* layer in this hierarchy: the fine dungeon layers read its footprints the way LayerProcGen fine layers read coarse ones.
 
 ### Layer Stack
 
 | Layer | Name | What it does |
 |-------|------|-------------|
-| 0 | **Noise** | Perlin noise field defines the dungeon boundary — which cells are active (dungeon) vs void. Deterministic seeding via FNV-1a + mulberry32 PRNG. |
-| 1 | **Tile Grid** | Reads Layer 0. Active cells become floor tiles. Adjacent active cells merge seamlessly. Void stays wall. |
-| 2 | **Spawn/Exit** | Reads Layer 1. Finds the two farthest-apart active cells. Picks spawn and exit positions. |
-| 3 | **Spawn Rooms** | Reads Layer 2. If spawn or exit is in void, carves a dedicated room and connects it to the nearest dungeon floor. If already in active space, tags the existing room. |
-| 4 | **Connectivity** | Reads Layer 3. Flood fills from spawn. Finds disconnected floor islands. Bridges them with hallway corridors at the narrowest gaps. Repeats until all floor is reachable. |
-
-The layer system IS the system. Nothing happens outside it. No "stamping phase," no post-processing hacks. Each layer reads and writes the shared tile grid directly.
+| Pillar | **Coarse pillar layer** | One kebab per pillar cell — pure function of (seed, px, pz). Footprints become walls the rest routes around. |
+| 0 | **Noise** | Noise field defines which dungeon cells are active. Deterministic seeding via FNV-1a + mulberry32. |
+| 1 | **Tile Grid + Fine Noise** | Active cells become floor; organic biomes get noise-sculpted edges. |
+| 2 | **Biome** | Per-cell biome assignment: dungeon, crypt, cave, ember, outside. |
+| 3 | **Spawn/Exit** | Far-apart spawn and exit rooms, never inside a pillar footprint. Exit stairs regenerate the next stack. |
+| 4 | **Connectivity** | Batch-per-pass island bridging: every disconnected floor component is carved toward the spawn network. |
+| 5 | **Golden Path** | Guaranteed spawn→exit route, penalized away from unstable ground; pit crossings become flat causeways. |
+| 6 | **Height Fields** | Rolling walkable terrain, bottomless pits, biome-clearance ceilings. Terrain flows *under* pillar footprints; foundations dominate the shared corner field so man-made surfaces stay flat and the ground banks against them. |
+| Columns | **Column model** | The single authority on solid vs air: per-(x,z) air spans, built last. Pillar air spans and bridge carves replace/split columns. Renderer, physics, and agents all derive from it — leaks are unrepresentable, not patched. |
 
 ### Design Principles
 
-1. **Layers are additive and subtractive** — they sculpt the dungeon like clay. Add structure, carve away, add detail.
-2. **The guaranteed path is sacred** — spawn to exit is always navigable. No layer can break it.
-3. **Noise drives organic variation** — one continuous noise field shapes boundary, density, and theming.
-4. **No raw tile generation from scratch** — the block library (planned) provides pre-authored room templates. Procedural generation only fills gaps between blocks.
+1. **The column model is the seam** — all vertical faces derive from span differences between adjacent columns; a face exists exactly where air meets solid.
+2. **The guaranteed path is sacred** — spawn to exit is always navigable; pillar spirals are continuous by construction.
+3. **Junctions interpenetrate, never abut** — face tops overshoot into solid, caps overlap neighbors; shared-edge geometry leaks rasterization hairlines, overlapping geometry cannot.
+4. **Infinite-world discipline** — every generation feature is a pure function of (seed, cell) plus a bounded neighbor radius. No global scans in new code.
 
-Full design document: [`docs/dungeon-layer-design.md`](docs/dungeon-layer-design.md)
+Design documents: [`docs/dungeon-layer-design.md`](docs/dungeon-layer-design.md), [`docs/layerprocgen-findings.md`](docs/layerprocgen-findings.md)
 
-### Research & References
+## Debug Tooling — the DDSNAP loop
 
-- [LayerProcGen](https://runevision.github.io/LayerProcGen/) — the framework architecture
-- [Daggerfall dungeon analysis](https://youtu.be/35a2fEKIvSI) — modular block assembly
-- [Bake Your Own 3D Dungeons](https://www.gamedeveloper.com/design/bake-your-own-3d-dungeons-with-procedural-recipes) — block connection system
-- [CryptJS](https://github.com/DhrBaksteen/CryptJS) — prefab wall geometry (arches, pillars, beams)
-- [jongallant/DungeonGenerator](https://github.com/jongallant/DungeonGenerator) — TinyKeep-style room scatter + Delaunay/MST
-- [redsled84/mstdungeon](https://github.com/redsled84/mstdungeon) — MST + A* corridor carving
+Seen bugs become reproducible bugs:
+
+- **F8** in-game copies a `DDSNAP1{...}` string (seed, position, view direction, and any click-marked points) to the clipboard.
+- **Left-click** marks the surface under the crosshair with a red beacon; **right-click** unmarks. Marks travel inside the snapshot.
+- `npx tsx tools/debug-view.ts 'DDSNAP1{...}' out.png` regenerates that exact world, software-raycasts the exact camera view over the real renderer geometry (marked geometry tinted red, holes rendered magenta), and prints the column spans, biome, and pillar chunk stack under the player and every mark.
+
+## Game Features
+
+- **Megastructure traversal** — climb spiral stairs around monuments, cross high bridges, drop into rolling caves, emerge into open-sky canyons
+- **Five biomes** — dungeon halls, crypts, caves, ember fields, and the outside — with per-biome terrain, ceilings, and pit behavior
+- **Bottomless pits** — the floor is failing; the golden path bridges the void (R respawns)
+- **Auto-play bot** — press P to watch the AI navigate (A* over the world graph)
+- **Elevation-slice maps** — minimap and debug map show what's accessible *at your current height*: pillar plazas, ramps, and bridges appear at their own elevation
+- **Debug map** — backtick for full-map views: elevation slice, tiles, biomes, noise, content, pillars
+- **Seed control** — reproducible worlds from the main menu
+- **Mobile support** — touch controls, responsive UI
+
+## Controls
+
+| Action | Key |
+|--------|-----|
+| Move | WASD |
+| Look | Mouse (click to capture) |
+| Jump | Space |
+| Crouch | Ctrl |
+| Sprint | Shift |
+| Interact | F |
+| Respawn | R |
+| Auto-play | P |
+| Debug Map | ` (backtick) |
+| Cycle Debug Mode | Tab (while debug open) |
+| Debug snapshot | F8 |
+| Mark / unmark debug geo | LMB / RMB |
 
 ## Tech Stack
 
@@ -46,36 +85,8 @@ Full design document: [`docs/dungeon-layer-design.md`](docs/dungeon-layer-design
 | UI | React 18 |
 | State | Zustand 5.0.3 |
 | Build | Vite 6 + TypeScript 5 |
-| Platform | RUN.game SDK (Three.js, React, Zustand are embedded — zero bundle cost) |
-| Dungeon Gen | ROT.js (A* pathfinding for bot/AI), Delaunator (available), custom LayerProcGen |
-
-## Game Features
-
-- **First-person combat** — LMB attack, RMB block, raycast-based targeting
-- **Enemy AI** — perception system (vision cone + hearing), combat movement (circle/strafe/backstep), attack telegraphing, battle circle coordination
-- **5 enemy types** — Rat, Skeleton, Bat, Imp (ranged), Orc
-- **Loot system** — Daggerfall material tiers (Iron through Daedric), weapons, potions
-- **3 classes** — Warrior, Rogue, Sorcerer (3 more unlockable)
-- **Auto-play bot** — press P to watch the AI play. Uses A* pathfinding and state machine (explore/fight/loot/heal)
-- **Debug map** — press backtick (`) for tile-level dungeon view with spawn/exit markers
-- **Seed control** — set dungeon seed from main menu for reproducible layouts
-- **Mobile support** — touch D-pad controls, responsive UI
-
-## Controls
-
-| Action | Key |
-|--------|-----|
-| Move | WASD |
-| Look | Mouse (click to capture) |
-| Attack | Left Mouse Button |
-| Block | Right Mouse Button |
-| Jump | Space |
-| Interact | E |
-| Quick Heal | Q |
-| Hotbar | 1, 2, 3 |
-| Auto-play | P |
-| Debug Map | ` (backtick) |
-| Cycle Debug Mode | Tab (while debug open) |
+| Platform | RUN.game SDK (Three.js, React, Zustand embedded — zero bundle cost) |
+| Generation | Custom LayerProcGen + column model; ROT.js A* for carving/bot |
 
 ## Getting Started
 
@@ -88,50 +99,38 @@ pnpm run dev
 
 ```
 src/
-  engine/              # Three.js game engine (vanilla)
-    GameEngine.ts      # Main loop, player movement, combat orchestration
-    DungeonRenderer.ts # Tile grid → 3D geometry (walls, floors, ceilings)
-    Camera.ts          # Free-look FPS camera
-    InputManager.ts    # Keyboard + mouse input (Skyrim-style)
-    SpriteManager.ts   # Billboard sprites for enemies/items
-    ProjectileManager.ts
-    LightingSystem.ts
+  engine/                  # Three.js game engine (vanilla)
+    GameEngine.ts          # Main loop, movement/physics from the column model, DDSNAP capture
+    DungeonRenderer.ts     # Column model → geometry: floors/ceilings/caps + one XOR wall pass
+    Camera.ts              # Free-look FPS camera
+    InputManager.ts        # Keyboard + mouse input
+    SpriteManager.ts       # Billboard sprites
+    LightingSystem.ts      # Nearest-K room lighting
 
-  game/                # Game logic
-    DungeonGenerator.ts    # LayerProcGen orchestrator
+  game/
+    DungeonGenerator.ts    # Orchestrator: pillar field → layers → column model → bridges
+    types.ts               # DungeonData, WorldData, ColumnSpan
+    mapslice.ts            # Elevation-slice classifier (shared by both maps)
+    pathfinding.ts         # World A* (bot, compass)
     dungeon/
-      cells.ts             # Cell grid + layer progression
-      rng.ts               # FNV-1a seeding + mulberry32 PRNG
-      noise.ts             # Seeded Perlin noise
-      layer0-noise.ts      # Layer 0: boundary shape
-      layer1-tilegrid.ts   # Layer 1: active cells → floor tiles
-      layer2-spawnexit.ts  # Layer 2: spawn/exit placement
-      layer3-spawnrooms.ts # Layer 3: spawn/exit rooms + connections
-      layer4-connect.ts    # Layer 4: island bridging
-      blocks.ts            # Block library (pre-authored room templates)
-      prefabs.ts           # CryptJS prefab geometry (ported to BufferGeometry)
-    EnemyAI.ts         # Perception, combat movement, attack state machine
-    EntityManager.ts   # Enemy spawning
-    CombatSystem.ts    # Damage formulas
-    BattleCircle.ts    # Group attack coordination
-    EnemyData.ts       # Enemy definitions
-    LootTable.ts       # Drop tables
-    ClassData.ts       # Player classes
+      pillar-layer.ts      # Coarse pillar layer — the kebab assembler (pure function)
+      pillar-chunks.ts     # Chunk contract + graybox chunk library
+      pillar-geometry.ts   # Chunks → footprints + per-tile air spans (ramps, plazas, corbels)
+      pillar-bridges.ts    # Neighbor-pair bridge planning + column carving
+      columns.ts           # The column model builder + validation
+      layer0..layer6*.ts   # The dungeon floor layer stack
+      heightfield.ts       # Corner fields: physics walks exactly what is drawn
+      organiccontour.ts    # Marching-squares walls: render and collision share one line
+      cells.ts, rng.ts, noise.ts
 
-  store/               # Zustand state
-    gameStore.ts       # Runtime game state
+  store/gameStore.ts       # Zustand runtime state
+  ui/                      # React overlay: HUD (live biome), Minimap, DebugMap, menus
+  bot/DungeonBot.ts        # Auto-play state machine
 
-  ui/                  # React overlay components
-    GameScreen.tsx     # Canvas + HUD
-    DebugMap.tsx       # Tile-level debug overlay
-    HUD.tsx, Hotbar.tsx, Minimap.tsx, etc.
+tools/
+  debug-view.ts            # DDSNAP viewer: exact-view software raycast + world data dump
 
-  bot/
-    DungeonBot.ts      # Auto-play state machine
-
-docs/
-  dungeon-layer-design.md   # Full dungeon generation design document
-  layerprocgen-findings.md  # LayerProcGen research notes
+docs/                      # Generation design notes
 ```
 
 ## License
