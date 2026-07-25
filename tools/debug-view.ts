@@ -341,13 +341,16 @@ for (let mi = 0; mi < marks.length; mi++) {
       let seeThrough = 0;
       const aM = (aMin + aMax) / 2;
       for (let y = yMin; y <= yMax; y += Math.max(0.5, (yMax - yMin) / 8)) {
-        const ox2 = planeX !== null ? planeX - (dx === 1 ? 0.5 : -0.5) : aM;
-        const oz2 = planeZ !== null ? planeZ - (dz === 1 ? 0.5 : -0.5) : aM;
-        const px2 = planeX !== null ? ox2 : aM;
-        const pz2 = planeZ !== null ? oz2 : aM;
-        const ddx2 = planeX !== null ? (dx === 1 ? 1 : -1) : 0;
-        const ddz2 = planeZ !== null ? (dz === 1 ? 1 : -1) : 0;
-        const r2 = cast(planeX !== null ? px2 : aM, y, planeZ !== null ? pz2 : aM, ddx2, 0, ddz2);
+        // Start on whichever side is actually AIR at this height and
+        // cast toward the solid side. (Starting inside the rock reports
+        // phantom holes: a chamfer diagonal sits set back INSIDE the
+        // wall tile, so a ray launched past it hits nothing.)
+        const aOpen = inAir(A, y);
+        const sign = aOpen ? 1 : -1; // A is the -x/-z side of the plane
+        const px2 = planeX !== null ? planeX - sign * 0.6 : aM;
+        const pz2 = planeZ !== null ? planeZ - sign * 0.6 : aM;
+        const r2 = cast(px2, y, pz2,
+          planeX !== null ? sign : 0, 0, planeZ !== null ? sign : 0);
         if (!Number.isFinite(r2.d) || r2.d > 4) seeThrough++;
       }
       if (seeThrough > 0) {

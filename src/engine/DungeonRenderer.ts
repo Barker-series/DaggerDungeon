@@ -673,14 +673,36 @@ export class DungeonRenderer {
               // classic see-through corner. So: chamfer only where the
               // corner is genuinely open at this height; otherwise emit
               // the flat face and seal the plane.
+              // MUTUAL AGREEMENT, or no chamfer. A chamfer half is only
+              // half of the corner cut; the other half comes from the
+              // perpendicular boundary. That boundary computes over ITS
+              // air column's range, so if the two columns differ (a room
+              // capped at 21.5 meeting one open to sky) one side
+              // chamfers and the other goes flat — the lone diagonal
+              // leaves a see-through wedge. Requiring the tangent to
+              // have a span EXACTLY equal to this segment makes the test
+              // symmetric: both sides chamfer, or neither does and flat
+              // faces seal the plane.
               const tangentOpen = (t: [number, number]): boolean => {
                 const tx2 = solidX + t[0];
                 const tz2 = solidZ + t[1];
                 if (tx2 < 0 || tz2 < 0 || tx2 >= w || tz2 >= h) return false;
                 const sp = world.columns[tz2 * w + tx2]!;
-                return sp.some((s2) => clipY(s2.floor) <= mid && mid <= clipY(s2.ceil));
+                return sp.some((s2) =>
+                  Math.abs(clipY(s2.floor) - lo) < 0.05 && Math.abs(clipY(s2.ceil) - hi) < 0.05);
               };
+              // The contour is a 2D marching-squares line over the TILE
+              // GRID; a chamfer is only meaningful where the 3D air/solid
+              // structure at this height matches that 2D picture. Air
+              // inside a WALL tile (a bridge passage, a pillar interior)
+              // breaks the assumption: the perpendicular boundary at the
+              // corner sees a wall on our side and will not emit its
+              // matching half, so our diagonal stands alone and leaves a
+              // see-through slit. Require both the air side and the
+              // tangent to be genuine 2D floor AND open here in 3D.
+              const airIsRealFloor = !wallAt(airX, airZ);
               const openHalf = (t: [number, number]): boolean => {
+                if (!airIsRealFloor) return false;
                 const dxT = solidX + t[0];
                 const dzT = solidZ + t[1];
                 if (wallAt(dxT, dzT)) return false;
