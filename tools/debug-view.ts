@@ -224,6 +224,48 @@ try {
   console.log(`view rendered: ${ppm} (PPM; install ImageMagick for PNG) missPixels=${missPixels}`);
 }
 
+// ── HOLE AUTO-LOCATE: march each missed ray and report where it left
+// the air (the boundary it slipped through). No mark needed. ──
+
+if (missPixels > 0) {
+  const holeAt = new Map<string, number>();
+  let skyExits = 0;
+  for (let py = 0; py < H; py += 2) {
+    for (let px = 0; px < W; px += 2) {
+      const u = (px / W) * 2 - 1;
+      const v = 1 - (py / H) * 2;
+      let dx = fwd[0]! + u * tanX * right[0]! + v * tanY * up[0]!;
+      let dy = fwd[1]! + u * tanX * right[1]! + v * tanY * up[1]!;
+      let dz = fwd[2]! + u * tanX * right[2]! + v * tanY * up[2]!;
+      const dl = Math.hypot(dx, dy, dz);
+      dx /= dl; dy /= dl; dz /= dl;
+      if (Number.isFinite(cast(eye.x, eye.y, eye.z, dx, dy, dz).d)) continue;
+      let prev = '';
+      for (let d = 0.5; d < 300; d += 0.25) {
+        const wx = eye.x + dx * d, wy = eye.y + dy * d, wz = eye.z + dz * d;
+        const tx = Math.floor(wx / TILE_SIZE);
+        const tz = Math.floor(wz / TILE_SIZE);
+        if (tx < 0 || tz < 0 || tx >= L.width || tz >= L.height) { skyExits++; break; }
+        const spans = world.columns[tz * L.width + tx]!;
+        const top = spans[spans.length - 1];
+        if (top && top.ceil >= SKY_CEIL && wy > top.floor - 0.2) { skyExits++; break; }
+        const inAir = spans.some((s2) => wy >= s2.floor - 0.01 && wy <= s2.ceil + 0.01);
+        const key = `${tx},${tz}`;
+        if (!inAir) {
+          if (prev) holeAt.set(`${prev} -> ${key} @y=${wy.toFixed(1)}`, (holeAt.get(`${prev} -> ${key} @y=${wy.toFixed(1)}`) ?? 0) + 1);
+          break;
+        }
+        prev = key;
+      }
+    }
+  }
+  const top = [...holeAt.entries()].sort((a2, b2) => b2[1] - a2[1]).slice(0, 6);
+  if (top.length > 0) {
+    console.log(`\nHOLES (rays leaving air; ${skyExits} legit sky exits):`);
+    for (const [k, n] of top) console.log(`  ${n}x  ${k}`);
+  }
+}
+
 // ── Wrong-side hotspots: seeing the BACK of a surface means a
 // missing or flipped face there (DoubleSide renders it regardless) ──
 

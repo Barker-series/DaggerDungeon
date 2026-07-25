@@ -525,10 +525,32 @@ export class DungeonRenderer {
             const c1 = dx !== 0
               ? { cx: dx === 1 ? x + 1 : x, cz: z + 1 }
               : { cx: x + 1, cz: dz === 1 ? z + 1 : z };
-            const lo0 = refine(lo, airSpans, otherSpans, c0.cx, c0.cz);
-            const lo1 = refine(lo, airSpans, otherSpans, c1.cx, c1.cz);
-            const hi0 = refine(hi, airSpans, otherSpans, c0.cx, c0.cz);
-            const hi1 = refine(hi, airSpans, otherSpans, c1.cx, c1.cz);
+            let lo0 = refine(lo, airSpans, otherSpans, c0.cx, c0.cz);
+            let lo1 = refine(lo, airSpans, otherSpans, c1.cx, c1.cz);
+            let hi0 = refine(hi, airSpans, otherSpans, c0.cx, c0.cz);
+            let hi1 = refine(hi, airSpans, otherSpans, c1.cx, c1.cz);
+            // REFINEMENT MUST NEVER COLLAPSE A REAL STEP. Both bounds of
+            // a segment can snap to the SAME shared corner value — two
+            // foundation tiles at different heights (a pit rim dipping
+            // beside a pillar) average at their shared corner to a value
+            // neither surface passes through. The face then has zero
+            // height, gets skipped, and the step is left as a
+            // wedge-shaped hole. Fall back to the raw span bounds there;
+            // any overshoot is buried under the floor or inside solid.
+            // ...but ONLY where a FLAT structural surface is involved.
+            // When both sides are corner-blended they really are
+            // continuous at the shared corners, and forcing the raw
+            // bounds stands a fin proud of the floor.
+            const spanAtFloor = (sp: ColumnSpan[], y: number): ColumnSpan | undefined =>
+              sp.find((s2) => Math.abs(clipY(s2.floor) - y) < 0.02);
+            const sLo = spanAtFloor(airSpans, lo) ?? spanAtFloor(otherSpans, lo);
+            const sHi = spanAtFloor(airSpans, hi) ?? spanAtFloor(otherSpans, hi);
+            const flatInvolved = (sLo !== undefined && sLo.owner < 0)
+              || (sHi !== undefined && sHi.owner < 0);
+            if (flatInvolved) {
+              if (hi0 - lo0 < 0.02) { lo0 = Math.min(lo0, lo); hi0 = Math.max(hi0, hi); }
+              if (hi1 - lo1 < 0.02) { lo1 = Math.min(lo1, lo); hi1 = Math.max(hi1, hi); }
+            }
             if (hi0 - lo0 < 0.02 && hi1 - lo1 < 0.02) continue;
 
             const airX = inA ? x : nx;

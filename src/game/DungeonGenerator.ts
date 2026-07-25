@@ -212,6 +212,45 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     }
   }
 
+  // ── MARRIAGE PROPAGATES ACROSS THE FOOTPRINT. A pillar ground tile
+  // drawn FLAT (structural, owner -1) beside one drawn CORNER-BLENDED
+  // (married, owner 0) at the same height is the crack condition: the
+  // blended surface climbs away from the flat one and no wall face
+  // exists between them (both columns are air there), opening a
+  // wedge-shaped hole. The per-tile marry test compares against
+  // terrain, so neighbours can land on opposite sides of its threshold.
+  // Pull any unmarried ground surface in when it sits within a step of
+  // an already-married neighbour. ──
+  for (let pass = 0; pass < 4; pass++) {
+    let changed = false;
+    for (const spec of pillars.values()) {
+      for (let lz = 0; lz < PILLAR_CELL_TILES; lz++) {
+        for (let lx = 0; lx < PILLAR_CELL_TILES; lx++) {
+          const gx = spec.cx * PILLAR_CELL_TILES + lx;
+          const gz = spec.cz * PILLAR_CELL_TILES + lz;
+          if (gx < 0 || gz < 0 || gx >= GRID_TILES || gz >= GRID_TILES) continue;
+          if (!pillarWall[gz]![gx] || level.pillarGround[gz]![gx]) continue;
+          const spans = columns[gz * GRID_TILES + gx]!;
+          const s0 = spans[0];
+          if (!s0 || s0.owner === 0 || s0.floor < -100 || s0.floor > 30) continue;
+          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nx = gx + dx!;
+            const nz = gz + dz!;
+            if (nx < 0 || nz < 0 || nx >= GRID_TILES || nz >= GRID_TILES) continue;
+            if (!level.pillarGround[nz]![nx]) continue;
+            if (Math.abs(topFloors[nz]![nx]! - s0.floor) > 0.6) continue;
+            s0.owner = 0;
+            topFloors[gz]![gx] = s0.floor;
+            level.pillarGround[gz]![gx] = true;
+            changed = true;
+            break;
+          }
+        }
+      }
+    }
+    if (!changed) break;
+  }
+
   // ── Bridges: the neighbor-pair pass with the local degree guarantee.
   // Each cell owns its east and south pairs, so every pair is planned
   // exactly once — and identically from either side in a streamed world. ──
