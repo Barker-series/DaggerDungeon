@@ -34,6 +34,12 @@ const CROWN_HEADROOM = 4;
 const SLAB = 0.5;
 /** Ramp slabs are chunky — thin floating stairs read as jank */
 const RAMP_SLAB = 1;
+/** Extra treads the ground-floor flight runs PAST the pillar face,
+ *  continuing down at the same slope until it reaches grade. Adding
+ *  descent by steepening the flight instead makes it unclimbable — it
+ *  needs run, not pitch. Steps below the terrain are buried by the
+ *  foundation, so the stair meets whatever grade it lands on. */
+const RAMP_ENTRY_STEPS = 10;
 /** Guaranteed headroom over every ramp surface — generous: the spiral
  *  stairs are a marquee traversal experience, not a crawlspace. The
  *  punch is capped near landings (chunk top + landing headroom) so it
@@ -127,13 +133,16 @@ function addAllow(
  * landing (at its base — the same height) merge into one flat platform
  * instead of a mismatched step. The spiral chains corner to corner.
  */
-function rampSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void {
+function rampSolids(placed: PlacedChunk, solids: Map<string, TileSolids>, isFirst = false): void {
   const b = placed.baseY;
   const h = placed.def.height;
   const k = placed.rotation;
   const run = RING.hi - RING.lo; // 29 steps across the band
-  for (let i = 0; i <= run; i++) {
-    const t = Math.max(0, Math.min(1, (i - 2.5) / (run - 5)));
+  // The ground flight keeps descending past the face until it hits grade
+  const first = isFirst ? -RAMP_ENTRY_STEPS : 0;
+  for (let i = first; i <= run; i++) {
+    const tRaw = (i - 2.5) / (run - 5);
+    const t = Math.min(1, i < 0 ? tRaw : Math.max(0, tRaw));
     const surface = b + h * t;
     const clearTop = Math.min(surface + RAMP_CLEARANCE, b + h + LANDING_CLEARANCE);
     for (let z = RING.lo; z <= RING.lo + 2; z++) {
@@ -148,7 +157,7 @@ function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>, below
   const k = placed.rotation;
   const top = b + placed.def.height;
 
-  rampSolids(placed, solids);
+  rampSolids(placed, solids, below === undefined);
 
   switch (placed.def.id) {
     case 'terrace':
@@ -160,7 +169,9 @@ function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>, below
       eachTile(SLIM.lo, SLIM.hi, (x, z) => addSolid(solids, x, z, k, b, top));
       eachTile(RING.lo, RING.hi, (x, z) => {
         const inCore = x >= SLIM.lo && x <= SLIM.hi && z >= SLIM.lo && z <= SLIM.hi;
-        const overLowerRamp = x <= RING.lo + 2; // pre-rot west strip
+        // Wider than the ramp band itself: open air over the stairs
+        // reads better than a plaza lid hanging just above them
+        const overLowerRamp = x <= RING.lo + 4; // pre-rot west strip
         if (!inCore && !overLowerRamp) {
           addSolid(solids, x, z, k, b, b + SLAB);
           addAllow(solids, x, z, k, b + SLAB, b + SLAB + 3.5);
@@ -175,14 +186,22 @@ function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>, below
           );
           if (dOut > 0 && b >= 2) {
             const along = (x < FULL.lo || x > FULL.hi) ? z : x;
+            // A support may not stand where the stairs climb through it:
+            // the ramp clearance punches it away and leaves a floating
+            // stub hanging under the rim. Skip those tiles entirely.
+            const clears = tileAt(solids, x, z, k).clear;
+            const free = (lo: number, hi: number): boolean =>
+              !clears.some(([clo, chi]) => chi > lo + 0.01 && clo < hi - 0.01);
             if (below?.def.id === 'terrace') {
-              if (dOut === 2 && along % 5 === 2) {
-                // Colonnade post: plaza underside to the balcony below
+              // Colonnade posts stand on the INNER ledge (the ring tile
+              // against the core), where the balcony below is solid —
+              // out at the rim they hang over the drop
+              if (dOut === 1 && along % 5 === 2 && free(below.baseY + SLAB, b)) {
                 addSolid(solids, x, z, k, below.baseY + SLAB, b);
               }
             } else if (along % 5 === 2) {
               const depth = dOut === 1 ? 2.5 : dOut === 2 ? 1.5 : 0.75;
-              addSolid(solids, x, z, k, b - depth, b);
+              if (free(b - depth, b)) addSolid(solids, x, z, k, b - depth, b);
             }
           }
         }
@@ -293,8 +312,13 @@ export function pillarAirSpans(
       if (prev && lo <= prev[1]) prev[1] = Math.max(prev[1], up);
       else merged.push([lo, up]);
     }
-    // …then punch the guaranteed clearances through them
-    for (const [clo, chi] of t.clear) {
+    // …then punch the guaranteed clearances through them. A clearance
+    // NEVER cuts below grade: stair headroom is for passing under
+    // structure, and letting it reach the foundation excavates a trench
+    // in the ground wherever the flight runs below the terrain.
+    for (const [clo0, chi] of t.clear) {
+      const clo = Math.max(clo0, ground);
+      if (chi <= clo + 0.01) continue;
       const next: [number, number][] = [];
       for (const [lo, up] of merged) {
         if (chi <= lo || clo >= up) {
