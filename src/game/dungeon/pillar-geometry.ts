@@ -64,11 +64,15 @@ const key = (lx: number, lz: number): string => `${lx},${lz}`;
 
 interface TileSolids {
   intervals: [number, number][];
-  /** Guaranteed-open intervals — subtracted from the solids AFTER
-   *  merging. Ramp headroom punches through whatever hangs overhead
-   *  (plaza slabs, roof plates): the opening it cuts in the floor above
-   *  is the stair opening. */
+  /** PUNCHING clearances — subtracted from the solids AFTER merging.
+   *  Ramp headroom cuts through whatever hangs overhead (plaza slabs,
+   *  roof plates): the opening is the stair opening. Also count as
+   *  allowed zones for the roofline cull. */
   clear: [number, number][];
+  /** ALLOW-ONLY zones — exempt from the roofline cull but never punch
+   *  solids (a plaza's headroom must not erase the ramp slabs crossing
+   *  its own ring). */
+  allow: [number, number][];
 }
 
 function eachTile(lo: number, hi: number, fn: (lx: number, lz: number) => void): void {
@@ -81,7 +85,7 @@ function tileAt(solids: Map<string, TileSolids>, lx: number, lz: number, k: numb
   const [x, z] = rot(lx, lz, k);
   let t = solids.get(key(x, z));
   if (!t) {
-    t = { intervals: [], clear: [] };
+    t = { intervals: [], clear: [], allow: [] };
     solids.set(key(x, z), t);
   }
   return t;
@@ -101,6 +105,14 @@ function addClear(
   lo: number, hi: number,
 ): void {
   tileAt(solids, lx, lz, k).clear.push([lo, hi]);
+}
+
+function addAllow(
+  solids: Map<string, TileSolids>,
+  lx: number, lz: number, k: number,
+  lo: number, hi: number,
+): void {
+  tileAt(solids, lx, lz, k).allow.push([lo, hi]);
 }
 
 /**
@@ -139,7 +151,10 @@ function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void
       eachTile(SLIM.lo, SLIM.hi, (x, z) => addSolid(solids, x, z, k, b, top));
       eachTile(RING.lo, RING.hi, (x, z) => {
         const inCore = x >= SLIM.lo && x <= SLIM.hi && z >= SLIM.lo && z <= SLIM.hi;
-        if (!inCore) addSolid(solids, x, z, k, b, b + SLAB);
+        if (!inCore) {
+          addSolid(solids, x, z, k, b, b + SLAB);
+          addAllow(solids, x, z, k, b + SLAB, b + SLAB + 3.5);
+        }
       });
       break;
 
@@ -151,12 +166,14 @@ function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void
         if (!perimeter) {
           addSolid(solids, x, z, k, b, b + SLAB);
           addSolid(solids, x, z, k, top - 1, top);
+          addAllow(solids, x, z, k, b + SLAB, top - 1);
           return;
         }
         const doorway = z === FULL.hi && x >= DOOR.lo && x <= DOOR.hi;
         if (doorway) {
           addSolid(solids, x, z, k, b, b + SLAB);
           addSolid(solids, x, z, k, b + SLAB + DOOR_HEIGHT, top);
+          addAllow(solids, x, z, k, b + SLAB, b + SLAB + DOOR_HEIGHT);
         } else {
           addSolid(solids, x, z, k, b, top);
         }
@@ -165,6 +182,7 @@ function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void
       for (let z = FULL.hi + 1; z <= RING.hi; z++) {
         for (let x = DOOR.lo - 1; x <= DOOR.hi + 1; x++) {
           addSolid(solids, x, z, k, b, b + SLAB);
+          addAllow(solids, x, z, k, b + SLAB, b + SLAB + 3.5);
         }
       }
       break;
@@ -215,6 +233,12 @@ export function pillarAirSpans(
    *  the ground-level air floor IS the terrain. Chunks near the base
    *  submerge into rising ground and ramps emerge from hillsides. */
   groundAt?: (lx: number, lz: number) => number,
+  /** Local interior roofline at a tile, or null under open sky. ABOVE
+   *  the roofline generic between-slab air is CULLED — the pillar is a
+   *  solid mass passing through the roof. Reserved clearances (ramps),
+   *  allow zones (plazas, interiors, doors), and the crown attic stay
+   *  open as enclosed passages. */
+  capAt?: (lx: number, lz: number) => number | null,
 ): Map<string, AirSpanLite[]> {
   const out = new Map<string, AirSpanLite[]>();
   const capTop = spec.totalHeight + CROWN_HEADROOM;
@@ -252,13 +276,42 @@ export function pillarAirSpans(
       merged = next;
     }
 
-    const air: AirSpanLite[] = [];
+    let air: AirSpanLite[] = [];
     let hi = FOUNDATION_BOTTOM;
     for (const [lo, up] of merged) {
       if (lo > hi && lo - hi >= MIN_AIR) air.push({ floor: hi, ceil: lo });
       hi = Math.max(hi, up);
     }
     if (capTop - hi >= MIN_AIR) air.push({ floor: hi, ceil: capTop });
+
+    // Roofline cull (interior biomes): the pillar passes through the
+    // roof as SOLID. Only air below the roofline, reserved clearances,
+    // allow zones, and the crown attic survive above it.
+    const cap = capAt?.(lx!, lz!) ?? null;
+    if (cap !== null) {
+      const allowed: [number, number][] = [
+        [FOUNDATION_BOTTOM, cap],
+        [spec.totalHeight, capTop],
+        ...t.clear,
+        ...t.allow,
+      ];
+      allowed.sort((a, b) => a[0] - b[0]);
+      const am: [number, number][] = [];
+      for (const [lo, up] of allowed) {
+        const prev = am[am.length - 1];
+        if (prev && lo <= prev[1]) prev[1] = Math.max(prev[1], up);
+        else am.push([lo, up]);
+      }
+      const culled: AirSpanLite[] = [];
+      for (const sp of air) {
+        for (const [alo, aup] of am) {
+          const f = Math.max(sp.floor, alo);
+          const c = Math.min(sp.ceil, aup);
+          if (c - f >= MIN_AIR) culled.push({ floor: f, ceil: c });
+        }
+      }
+      air = culled;
+    }
     out.set(k, air);
   }
   return out;

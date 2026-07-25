@@ -241,31 +241,56 @@ export class DungeonRenderer {
             );
             continue;
           }
-          // Contoured wall tiles get "apron" floor + ceiling quads behind
-          // the chamfers — without them every chamfer pocket is a hole
-          if (contour.softWalls.has(y * w + x) && hasFloorNeighbor(x, y)) {
+          if (hasFloorNeighbor(x, y)) {
             const wx = x * TILE_SIZE;
             const wz = y * TILE_SIZE;
             const buf = regionBuffers(region);
-            const ap = (v: number): number => Math.max(v, -3);
-            addHorizontalQuad(buf.floor, wx, wz, ap(cornerFloor[y]![x]!), ap(cornerFloor[y]![x + 1]!), ap(cornerFloor[y + 1]![x]!), ap(cornerFloor[y + 1]![x + 1]!), true);
-            // No pocket cap under open sky — outside pockets are open;
-            // a cap at "ceiling height" floats mid-air on the wall face
-            if (!dungeon.openUp[y]![x] && region !== 'outside') {
-              // Pocket cap: the apron ceiling over a contoured wall tile
-              // sits at the HIGHEST adjacent room ceiling (the wall tile's
-              // own value is meaningless filler). Chamfer tops rise to the
-              // same value, so pillar pockets seal against one plane.
-              let ac = dungeon.ceilingHeights[y]![x]!;
+            const soft = contour.softWalls.has(y * w + x);
+            // Contoured wall tiles get "apron" floor quads behind the
+            // chamfers — without them every chamfer pocket is a hole
+            if (soft) {
+              const ap = (v: number): number => Math.max(v, -3);
+              addHorizontalQuad(buf.floor, wx, wz, ap(cornerFloor[y]![x]!), ap(cornerFloor[y]![x + 1]!), ap(cornerFloor[y + 1]![x]!), ap(cornerFloor[y + 1]![x + 1]!), true);
+            }
+            // THE ROOF CRASHES THROUGH THE COLUMN, never the other way:
+            // the cap over a wall tile continues the roof at its natural
+            // interpolated height — the AVERAGE of the adjacent room
+            // ceilings. Sight-lines can never reach above a room's own
+            // ceiling at a boundary (the room's ceiling quad blocks
+            // first) and chamfer diagonals rise to the max, so any cap
+            // at or above the local minimum is sealed; the average keeps
+            // the visible dip/rise within half the local variation, so
+            // the roof reads as continuous THROUGH the column. Not under
+            // open sky — that's the sky-clip roof plane's job.
+            // Per-NEIGHBOR gating, not per-tile: a wall straddling the
+            // outside boundary sits in an outside cell but faces cave
+            // rooms — it still needs its cap toward them. Only interior
+            // neighbors contribute (outside "ceilings" are sky-high
+            // fillers that would skew the cap); walls facing only open
+            // sky get no cap at all.
+            {
+              let sum = 0;
+              let count = 0;
               for (let dz2 = -1; dz2 <= 1; dz2++) {
                 for (let dx2 = -1; dx2 <= 1; dx2++) {
                   const t2 = dungeon.tiles[y + dz2]?.[x + dx2];
-                  if (t2 !== undefined && t2 !== TileType.Wall) {
-                    ac = Math.max(ac, dungeon.ceilingHeights[y + dz2]![x + dx2]!);
-                  }
+                  if (t2 === undefined || t2 === TileType.Wall) continue;
+                  if (tileBiome(dungeon.cellBiomes, x + dx2, y + dz2) === 'outside') continue;
+                  sum += dungeon.ceilingHeights[y + dz2]![x + dx2]!;
+                  count++;
                 }
               }
-              addHorizontalQuad(buf.ceil, wx, wz, ac, ac, ac, ac, false);
+              if (count > 0) {
+                // Overlap past the tile edge: the cap tucks OVER the
+                // neighboring ceiling quads, so the junction line can
+                // never leak a hairline. Nudged up so it is NEVER
+                // coplanar with them — built biomes have uniform
+                // ceilings, and a same-height overlap z-fights along
+                // every wall top. From below, the true ceiling occludes
+                // the raised overlap ring.
+                const ac = sum / count + 0.06;
+                addHorizontalQuad(buf.ceil, wx, wz, ac, ac, ac, ac, false, 0.45);
+              }
             }
           }
           continue;
@@ -482,20 +507,33 @@ export class DungeonRenderer {
             const nrmZ = dz === 0 ? 0 : (dz === 1 ? (inA ? -1 : 1) : (inA ? 1 : -1));
             const lerp = (p: number, q: number, t: number): number => p + (q - p) * t;
 
+            // At the TOP segment of a soft-wall boundary, EVERY half of
+            // the face rises to the shared pocket cap (set below) — a
+            // flat half stopping at its own room ceiling leaves the band
+            // up to the cap wide open into the undrawn pocket void.
+            let topOverride: number | null = null;
+
             const emitFlat = (s0: number, s1: number): void => {
+              // Wall-top segments overshoot a full unit INTO the solid:
+              // the column passes through the ceiling plane, so the
+              // column|ceiling junction has face material behind it and
+              // T-junction hairlines have nothing to leak into
+              const ext = topOverride !== null ? 1.0 : 0;
+              const t0 = lerp(hi0, hi1, s0) + ext;
+              const t1 = lerp(hi0, hi1, s1) + ext;
               const vi = buf.verts.length / 3;
               buf.verts.push(
                 lerp(ex0, ex1, s0), lerp(lo0, lo1, s0), lerp(ez0, ez1, s0),
                 lerp(ex0, ex1, s1), lerp(lo0, lo1, s1), lerp(ez0, ez1, s1),
-                lerp(ex0, ex1, s1), lerp(hi0, hi1, s1), lerp(ez0, ez1, s1),
-                lerp(ex0, ex1, s0), lerp(hi0, hi1, s0), lerp(ez0, ez1, s0),
+                lerp(ex0, ex1, s1), t1, lerp(ez0, ez1, s1),
+                lerp(ex0, ex1, s0), t0, lerp(ez0, ez1, s0),
               );
               for (let k = 0; k < 4; k++) buf.norms.push(nrmX, 0, nrmZ);
               buf.uvs.push(
                 s0, lerp(lo0, lo1, s0) / TILE_SIZE,
                 s1, lerp(lo0, lo1, s1) / TILE_SIZE,
-                s1, lerp(hi0, hi1, s1) / TILE_SIZE,
-                s0, lerp(hi0, hi1, s0) / TILE_SIZE,
+                s1, t1 / TILE_SIZE,
+                s0, t0 / TILE_SIZE,
               );
               buf.idxs.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
             };
@@ -530,6 +568,35 @@ export class DungeonRenderer {
               }
             }
 
+            // The shared wall cap: max of the neighboring room ceilings,
+            // matching the cap quad drawn over the wall tile. At the top
+            // segment, EVERY face against a wall — chamfered halves,
+            // flat halves, and fully HARD walls alike — rises to this
+            // plane. A wall's cap sits at the max neighbor ceiling; if a
+            // face against a LOWER room stopped at that room's ceiling,
+            // the band between the two planes would be open sideways — a
+            // visible gap ring around every column that touches the
+            // roof. (Never under open sky, and never for the massive
+            // pillars — their geometry is span-derived.)
+            const solidIsWall = solidIn
+              && world.levels[0]!.tiles[solidZ]![solidX] === TileType.Wall;
+            // Per-NEIGHBOR gating (see the cap): straddler walls in
+            // outside cells still seal toward the interior rooms they
+            // face; only interior ceilings define the override.
+            if (solidIsWall && !airIsSky && Math.abs(hi - airSpanTop) < 0.03) {
+              const L = world.levels[0]!;
+              let pc = -Infinity;
+              for (let dz2 = -1; dz2 <= 1; dz2++) {
+                for (let dx2 = -1; dx2 <= 1; dx2++) {
+                  const t2 = L.tiles[solidZ + dz2]?.[solidX + dx2];
+                  if (t2 === undefined || t2 === TileType.Wall) continue;
+                  if (tileBiome(L.cellBiomes, solidX + dx2, solidZ + dz2) === 'outside') continue;
+                  pc = Math.max(pc, L.ceilingHeights[solidZ + dz2]![solidX + dx2]!);
+                }
+              }
+              if (Number.isFinite(pc)) topOverride = L.baseY + pc;
+            }
+
             let o0 = false;
             let o1 = false;
             const tangents: [number, number][] = dx !== 0
@@ -554,28 +621,16 @@ export class DungeonRenderer {
             const emitChamfer = (k: 0 | 1): void => {
               const loK = k === 0 ? lo0 : lo1;
               const loM = (lo0 + lo1) / 2;
-              // At the top of the air, both halves at a pillar corner rise
-              // to the SOLID tile's shared pocket ceiling (max of adjacent
-              // room ceilings) — per-boundary ceilings differ across the
-              // corner and would open a triangle between the halves.
-              // UNDER OPEN SKY there is no pocket ceiling: the chamfer
-              // rises to the sky clip like its flat neighbors, or the
-              // wall top alternates tall/short with every corner.
+              // At the top of the air, both halves rise to the shared
+              // pocket cap (topOverride) — per-boundary ceilings differ
+              // across the corner and would open a triangle between the
+              // halves. UNDER OPEN SKY there is no pocket ceiling: the
+              // chamfer rises to the sky clip like its flat neighbors.
               let hiK = k === 0 ? hi0 : hi1;
               let hiM = (hi0 + hi1) / 2;
-              if (chamferLc >= 0 && !airIsSky && Math.abs(hi - airSpanTop) < 0.03) {
-                const L = world.levels[chamferLc]!;
-                let pc = L.ceilingHeights[solidZ]?.[solidX] ?? 3;
-                for (let dz2 = -1; dz2 <= 1; dz2++) {
-                  for (let dx2 = -1; dx2 <= 1; dx2++) {
-                    const t2 = L.tiles[solidZ + dz2]?.[solidX + dx2];
-                    if (t2 !== undefined && t2 !== TileType.Wall) {
-                      pc = Math.max(pc, L.ceilingHeights[solidZ + dz2]![solidX + dx2]!);
-                    }
-                  }
-                }
-                hiK = L.baseY + pc;
-                hiM = L.baseY + pc;
+              if (topOverride !== null) {
+                hiK = topOverride;
+                hiM = topOverride;
               }
               const mAx = (ex0 + ex1) / 2;
               const mAz = (ez0 + ez1) / 2;
@@ -589,8 +644,9 @@ export class DungeonRenderer {
               // along tile edges, not along the diagonal)
               const b0 = loM - 0.4;
               const b1 = loK - 0.4;
-              const t0 = hiM + 0.2;
-              const t1 = hiK + 0.2;
+              const topMargin = topOverride !== null ? 1.0 : 0.2;
+              const t0 = hiM + topMargin;
+              const t1 = hiK + topMargin;
               let nrx = -(ccz - mAz);
               let nrz = ccx - mAx;
               const acx = airX * TILE_SIZE + TILE_SIZE / 2;
@@ -711,21 +767,26 @@ function addHorizontalQuad(
   wx: number, wz: number,
   h00: number, h10: number, h01: number, h11: number,
   facingUp: boolean,
+  /** Expand the quad outward past the tile on every side — overdraw
+   *  that hides junction hairlines under neighboring geometry */
+  expand: number = 0,
 ): void {
-  const s = TILE_SIZE;
+  const x0 = wx - expand;
+  const z0 = wz - expand;
+  const s = TILE_SIZE + 2 * expand;
   const i = buf.verts.length / 3;
 
   if (facingUp) {
-    buf.verts.push(wx, h00, wz);
-    buf.verts.push(wx + s, h10, wz);
-    buf.verts.push(wx + s, h11, wz + s);
-    buf.verts.push(wx, h01, wz + s);
+    buf.verts.push(x0, h00, z0);
+    buf.verts.push(x0 + s, h10, z0);
+    buf.verts.push(x0 + s, h11, z0 + s);
+    buf.verts.push(x0, h01, z0 + s);
     buf.uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
   } else {
-    buf.verts.push(wx, h00, wz);
-    buf.verts.push(wx, h01, wz + s);
-    buf.verts.push(wx + s, h11, wz + s);
-    buf.verts.push(wx + s, h10, wz);
+    buf.verts.push(x0, h00, z0);
+    buf.verts.push(x0, h01, z0 + s);
+    buf.verts.push(x0 + s, h11, z0 + s);
+    buf.verts.push(x0 + s, h10, z0);
     buf.uvs.push(0, 0, 0, 1, 1, 1, 1, 0);
   }
   buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);

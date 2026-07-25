@@ -2,10 +2,9 @@ import { TileType, type WorldData, type GridPos } from './types';
 import { PIT_LEVEL } from './dungeon/heightfield';
 
 /**
- * World pathfinding: 8-direction movement across the whole stack. Nodes
- * are (level, x, z); stairwell doorways (WorldData.links) join levels, so
- * a route walks down ramps between floors instead of stopping at the
- * level it started on.
+ * World pathfinding: 8-direction movement over the floor. Nodes are
+ * (level, x, z) — level is always 0 today, kept for the pillar traversal
+ * graph to extend.
  *
  * Diagonal steps cost √2 and are only allowed when both adjacent cardinal
  * tiles are open: the player has a collision radius, so cutting a corner
@@ -89,13 +88,6 @@ export function findWorldPath(
   const layer = w * h;
   const key = (level: number, x: number, y: number): number => level * layer + y * w + x;
 
-  // Cross-level doorways, both directions
-  const links = new Map<number, WorldStep>();
-  for (const l of world.links) {
-    links.set(key(l.a.level, l.a.x, l.a.y), { level: l.b.level, x: l.b.x, y: l.b.y });
-    links.set(key(l.b.level, l.b.x, l.b.y), { level: l.a.level, x: l.a.x, y: l.a.y });
-  }
-
   const open: Node[] = [];
   const best = new Map<number, Node>();
   const closed = new Set<number>();
@@ -153,12 +145,6 @@ export function findWorldPath(
         Math.abs(L.floorHeights[cur.y + dy]![cur.x]! - hCur) > MAX_CLIMB
       )) continue;
       consider(cur.level, nx, ny, cost);
-    }
-
-    // Stairwell doorway — step through to the other level
-    const through = links.get(curKey);
-    if (through && passable(world, through.level, through.x, through.y)) {
-      consider(through.level, through.x, through.y, 1);
     }
   }
 

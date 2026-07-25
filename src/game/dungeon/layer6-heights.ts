@@ -27,7 +27,6 @@ import { PIT_LEVEL } from './heightfield';
 import { getCell, isOrganicBiome, type BiomeType } from './cells';
 import { sampleNoise, sampleNoise3D } from './noise';
 import { goldenPath } from './layer5-goldenpath';
-import type { SkeletonImprint } from './layer00-skeleton';
 
 const TUNNEL_CLEARANCE = 3.5;
 const HEIGHT_STEP = 0.5; // built-biome clearances quantize to this
@@ -35,10 +34,6 @@ const FLOOR_SMOOTH_PASSES = 2;
 
 const FLOOR_SWELL_SCALE = 9; // tiles per rolling-floor feature
 const PIT_SCALE = 14; // tiles per hole feature
-/** Level-to-level drift of the void field — holes persist ~2 levels on
- *  average, so some line up into deep shafts and a few punch through the
- *  whole stack */
-const PIT_Y_STEP = 0.55;
 export const PIT_FLOOR = -1000; // hole sentinel: no floor slab at this tile
 const SAFE_RADIUS = 3; // spawn/exit neighborhoods never sink into holes
 const RAMP_STEP = 0.7; // max per-tile rise along the golden-path channel
@@ -91,10 +86,7 @@ export function computePitMask(
   cellTileSize: number,
   entrance: GridPos,
   exit: GridPos,
-  level: number,
   stackSeed: number,
-  pitBan: boolean[][],
-  locked: boolean[][],
 ): boolean[][] {
   const voidSeed = stackSeed + 21;
   const mask: boolean[][] = Array.from({ length: gridTiles }, () =>
@@ -106,7 +98,7 @@ export function computePitMask(
 
   for (let tz = 0; tz < gridTiles; tz++) {
     for (let tx = 0; tx < gridTiles; tx++) {
-      if (tiles[tz]![tx] === TileType.Wall || locked[tz]![tx] || pitBan[tz]![tx]) continue;
+      if (tiles[tz]![tx] === TileType.Wall) continue;
       // BUFFER: a hole never touches a wall (diagonals included) — every
       // pit is ringed by walkable rim floor before any wall starts, so
       // wall geometry and pit geometry never meet edge-on. That contact
@@ -126,7 +118,7 @@ export function computePitMask(
       if (!biome) continue;
       const p = PROFILES[biome];
       if (p.pitThreshold <= 0 || isSafe(tx, tz)) continue;
-      const voidNoise = sampleNoise3D(tx / PIT_SCALE, level * PIT_Y_STEP, tz / PIT_SCALE, voidSeed);
+      const voidNoise = sampleNoise3D(tx / PIT_SCALE, 0, tz / PIT_SCALE, voidSeed);
       if (voidNoise < p.pitThreshold) mask[tz]![tx] = true;
     }
   }
@@ -138,25 +130,22 @@ export function computeHeightFields(
   gridTiles: number,
   cellTileSize: number,
   worldSeed: number,
-  /** Skeleton-owned tiles: exact preset heights, never modified here */
-  imprint: SkeletonImprint,
   /** Where the void field opens holes (from computePitMask — the same
    *  mask the golden path was routed with) */
   pitMask: boolean[][],
-  /** Pillar footprint tiles — structural joints, same doctrine as the
-   *  skeleton: terrain touching them is EXACTLY at grade */
+  /** Pillar footprint tiles — terrain flows under them and they carry
+   *  real ground heights */
   pillarWall?: boolean[][],
 ): HeightFields {
   const heightSeed = worldSeed + 4242;
-  const locked = imprint.locked;
-  const floor: number[][] = Array.from({ length: gridTiles }, (_, tz) =>
-    Array.from({ length: gridTiles }, (_, tx) => imprint.presetFloor[tz]![tx] ?? 0),
+  const floor: number[][] = Array.from({ length: gridTiles }, () =>
+    Array.from({ length: gridTiles }, () => 0),
   );
   const pit: boolean[][] = Array.from({ length: gridTiles }, () =>
     Array.from({ length: gridTiles }, () => false),
   );
-  const ceiling: number[][] = Array.from({ length: gridTiles }, (_, tz) =>
-    Array.from({ length: gridTiles }, (_, tx) => imprint.presetCeil[tz]![tx] ?? TUNNEL_CLEARANCE),
+  const ceiling: number[][] = Array.from({ length: gridTiles }, () =>
+    Array.from({ length: gridTiles }, () => TUNNEL_CLEARANCE),
   );
 
   const isFloor = (tx: number, tz: number): boolean =>
@@ -176,7 +165,7 @@ export function computeHeightFields(
   // terrain continuing beneath the structure. ──
   for (let tz = 0; tz < gridTiles; tz++) {
     for (let tx = 0; tx < gridTiles; tx++) {
-      if (!carriesGround(tx, tz) || locked[tz]![tx]) continue;
+      if (!carriesGround(tx, tz)) continue;
       if (pitMask[tz]![tx]) {
         pit[tz]![tx] = true;
         floor[tz]![tx] = PIT_FLOOR;
@@ -184,16 +173,6 @@ export function computeHeightFields(
       }
       const biome = biomeAt(tx, tz);
       if (!biome || !isOrganicBiome(biome)) continue; // built floors stay flat between breaches
-      // Terrain relief is decoration INSIDE open areas — never at a
-      // skeleton joint. Tiles touching the skeleton stay at grade so
-      // smoothing can't smear across an exact edge.
-      let nearStructure = false;
-      for (let dz = -1; dz <= 1 && !nearStructure; dz++) {
-        for (let dx = -1; dx <= 1 && !nearStructure; dx++) {
-          if (locked[tz + dz]?.[tx + dx]) nearStructure = true;
-        }
-      }
-      if (nearStructure) continue;
       const swell = sampleNoise(tx, tz, heightSeed + 55, FLOOR_SWELL_SCALE);
       floor[tz]![tx] = swell * PROFILES[biome].rollAmp;
     }
@@ -204,14 +183,14 @@ export function computeHeightFields(
     const snapshot = floor.map((row) => [...row]);
     for (let tz = 0; tz < gridTiles; tz++) {
       for (let tx = 0; tx < gridTiles; tx++) {
-        if (!carriesGround(tx, tz) || pit[tz]![tx] || locked[tz]![tx]) continue;
+        if (!carriesGround(tx, tz) || pit[tz]![tx]) continue;
         let sum = snapshot[tz]![tx]!;
         let count = 1;
         for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
           const nx = tx + dx!;
           const nz = tz + dz!;
           if (!carriesGround(nx, nz) || pit[nz]![nx]) continue;
-          if (snapshot[nz]![nx]! <= PIT_FLOOR + 1) continue; // locked voids never blend
+          if (snapshot[nz]![nx]! <= PIT_FLOOR + 1) continue; // holes never blend
           sum += snapshot[nz]![nx]!;
           count++;
         }
@@ -227,11 +206,11 @@ export function computeHeightFields(
   // band below.
   for (let i = 0; i < goldenPath.length; i++) {
     const p = goldenPath[i]!;
-    if (locked[p.y]![p.x] || floor[p.y]![p.x]! > PIT_LEVEL) continue;
+    if (floor[p.y]![p.x]! > PIT_LEVEL) continue;
     let j = i;
     while (j < goldenPath.length) {
       const q = goldenPath[j]!;
-      if (locked[q.y]![q.x] || floor[q.y]![q.x]! > PIT_LEVEL) break;
+      if (floor[q.y]![q.x]! > PIT_LEVEL) break;
       j++;
     }
     const before = goldenPath[i - 1];
@@ -248,7 +227,7 @@ export function computeHeightFields(
   }
 
   // Relax heights along the path, then pull its shoulders in.
-  relaxChannel(goldenPath, floor, locked);
+  relaxChannel(goldenPath, floor);
   for (const p of goldenPath) {
     const h = floor[p.y]?.[p.x];
     if (h === undefined) continue;
@@ -256,7 +235,7 @@ export function computeHeightFields(
       for (let dx = -1; dx <= 1; dx++) {
         const nx = p.x + dx;
         const nz = p.y + dz;
-        if (!isFloor(nx, nz) || locked[nz]![nx]) continue;
+        if (!isFloor(nx, nz)) continue;
         floor[nz]![nx] = Math.max(h - PATH_SHOULDER, Math.min(h + PATH_SHOULDER, floor[nz]![nx]!));
       }
     }
@@ -264,7 +243,7 @@ export function computeHeightFields(
   // The shoulder pass can re-clamp path tiles (they neighbor each other),
   // reopening steps up to PATH_SHOULDER — relax once more so the channel
   // itself is guaranteed back under RAMP_STEP
-  relaxChannel(goldenPath, floor, locked);
+  relaxChannel(goldenPath, floor);
 
   // ── Ceiling = grade + biome clearance ──
   // Referenced to grade (not the pit floor), so the airspace over a pit
@@ -273,7 +252,7 @@ export function computeHeightFields(
   // local biome ceiling so they blend with the room around them.
   for (let tz = 0; tz < gridTiles; tz++) {
     for (let tx = 0; tx < gridTiles; tx++) {
-      if (!isFloor(tx, tz) || imprint.presetCeil[tz]![tx] !== null) continue;
+      if (!isFloor(tx, tz)) continue;
       const biome = biomeAt(tx, tz);
       const f = Math.max(floor[tz]![tx]!, 0);
 
@@ -301,9 +280,7 @@ export function computeHeightFields(
   }
 
   // ── Cave-mouth sweep: ceilings rise toward outside regions ──
-  const ceilLocked = (tx: number, tz: number): boolean =>
-    imprint.presetCeil[tz]![tx] !== null;
-  applyMouthSweep(floor, ceiling, gridTiles, isFloor, biomeAt, ceilLocked);
+  applyMouthSweep(floor, ceiling, gridTiles, isFloor, biomeAt);
 
   // ── SNAP: every committed height sits on the vertical grid ──
   // Structure meets structure exactly or not at all; float mush from
@@ -311,7 +288,7 @@ export function computeHeightFields(
   // sentinel; skeleton presets are already exact.)
   for (let tz = 0; tz < gridTiles; tz++) {
     for (let tx = 0; tx < gridTiles; tx++) {
-      if (!carriesGround(tx, tz) || locked[tz]![tx]) continue;
+      if (!carriesGround(tx, tz)) continue;
       const f = floor[tz]![tx]!;
       if (f > PIT_LEVEL) floor[tz]![tx] = Math.round(f / HEIGHT_STEP) * HEIGHT_STEP;
       ceiling[tz]![tx] = Math.round(ceiling[tz]![tx]! / HEIGHT_STEP) * HEIGHT_STEP;
@@ -321,15 +298,14 @@ export function computeHeightFields(
   return { floor, ceiling };
 }
 
-/** Clamp successive heights along a tile chain to a walkable ramp.
- *  Locked (skeleton) tiles are read but never written. */
-function relaxChannel(chain: GridPos[], floor: number[][], locked: boolean[][]): void {
+/** Clamp successive heights along a tile chain to a walkable ramp. */
+function relaxChannel(chain: GridPos[], floor: number[][]): void {
   for (let i = 1; i < chain.length; i++) {
     const prev = chain[i - 1]!;
     const cur = chain[i]!;
     const ph = floor[prev.y]?.[prev.x];
     const ch = floor[cur.y]?.[cur.x];
-    if (ph === undefined || ch === undefined || locked[cur.y]![cur.x]) continue;
+    if (ph === undefined || ch === undefined) continue;
     floor[cur.y]![cur.x] = Math.max(ph - RAMP_STEP, Math.min(ph + RAMP_STEP, ch));
   }
   for (let i = chain.length - 2; i >= 0; i--) {
@@ -337,7 +313,7 @@ function relaxChannel(chain: GridPos[], floor: number[][], locked: boolean[][]):
     const cur = chain[i]!;
     const nh = floor[next.y]?.[next.x];
     const ch = floor[cur.y]?.[cur.x];
-    if (nh === undefined || ch === undefined || locked[cur.y]![cur.x]) continue;
+    if (nh === undefined || ch === undefined) continue;
     floor[cur.y]![cur.x] = Math.max(nh - RAMP_STEP, Math.min(nh + RAMP_STEP, ch));
   }
 }
@@ -349,7 +325,6 @@ function applyMouthSweep(
   gridTiles: number,
   isFloor: (tx: number, tz: number) => boolean,
   biomeAt: (tx: number, tz: number) => BiomeType | null,
-  ceilLocked: (tx: number, tz: number) => boolean,
 ): void {
   // Multi-source BFS from outside floor tiles across non-outside floor
   const dist = new Map<number, number>();
@@ -376,7 +351,6 @@ function applyMouthSweep(
         if (biomeAt(nx, nz) === 'outside') continue;
         dist.set(k, d);
         next.push({ x: nx, y: nz });
-        if (ceilLocked(nx, nz)) continue;
         const rise = MOUTH_RISE * (1 - d / (MOUTH_RANGE + 1));
         ceiling[nz]![nx] = Math.max(ceiling[nz]![nx]!, floor[nz]![nx]! + TUNNEL_CLEARANCE + rise);
       }

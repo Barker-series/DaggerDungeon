@@ -118,8 +118,8 @@ export class GameEngine {
     this.threeCamera.updateProjectionMatrix();
   };
 
-  /** Generate and enter a megastructure stack — WORLD_LEVELS levels that
-   *  physically coexist; the player spawns on the top one. */
+  /** Generate and enter a megastructure stack — one tall floor of
+   *  pillars, bridges, and dungeon ground. */
   loadStack(stack: number, seed: number): void {
     this.seed = seed;
     this.dungeonRenderer.clear();

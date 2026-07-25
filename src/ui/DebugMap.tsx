@@ -4,7 +4,6 @@ import { getAllCells, tileBiome, type DungeonCell } from '../game/dungeon/cells'
 import { hallwayCells } from '../game/dungeon/layer4-connect';
 import { PIT_LEVEL } from '../game/dungeon/heightfield';
 import { findWorldPathToExit, startLevelFor } from '../game/pathfinding';
-import { WORLD_LEVELS } from '../game/types';
 
 const PIT_COLOR = '#601525';
 
@@ -164,25 +163,6 @@ export function DebugMap() {
         }
       }
 
-      // Stairwell doorways on this level — blue diamonds
-      if (world) {
-        ctx.fillStyle = '#5599ff';
-        for (const link of world.links) {
-          for (const end of [link.a, link.b]) {
-            if (end.level !== currentLevel) continue;
-            const px = end.x * tilePx + tilePx / 2;
-            const pz = end.y * tilePx + tilePx / 2;
-            ctx.beginPath();
-            ctx.moveTo(px, pz - 5);
-            ctx.lineTo(px + 5, pz);
-            ctx.lineTo(px, pz + 5);
-            ctx.lineTo(px - 5, pz);
-            ctx.closePath();
-            ctx.fill();
-          }
-        }
-      }
-
       // Spawn marker
       const spx = dungeon.entrance.x * tilePx + tilePx / 2;
       const spz = dungeon.entrance.y * tilePx + tilePx / 2;
@@ -210,7 +190,7 @@ export function DebugMap() {
       // Legend
       const legendX = dungeon.width * tilePx + 10;
       ctx.fillStyle = '#ccc'; ctx.font = '12px monospace';
-      ctx.fillText(`Level ${currentLevel + 1}/${WORLD_LEVELS}`, legendX, 20);
+      ctx.fillText(`Stack ${currentLevel + 1}`, legendX, 20);
       ctx.fillText(`Mode: ${mode}`, legendX, 38);
       ctx.fillText('` toggle map', legendX, 56);
       ctx.fillText('Tab cycle mode', legendX, 71);

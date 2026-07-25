@@ -19,13 +19,11 @@
  *                         the slab between the bands does not exist.
  * - Hole tile           → no floor; the band's air joins downward and is
  *                         capped by this level's own ceiling.
- * - skelVoid tile       → contributes nothing; another level's geometry
- *                         (a stairwell ramp) owns this space.
  * - outside (top level) → ceiling is SKY.
  */
 
 import {
-  TileType, LEVEL_HEIGHT, SKY_CEIL, ABYSS_FLOOR,
+  TileType, SKY_CEIL, ABYSS_FLOOR,
   type DungeonData, type ColumnSpan,
 } from '../types';
 import { PIT_LEVEL } from './heightfield';
@@ -48,19 +46,7 @@ export function buildColumns(levels: DungeonData[]): ColumnSpan[][] {
         const tile = L.tiles[z]![x]!;
         const baseY = L.baseY;
 
-        if (tile === TileType.Wall || L.skelVoid[z]![x]) {
-          if (tile === TileType.Wall && pending) {
-            // The shaft ends on this band's solid top — structural rock
-            spans.push({
-              floor: baseY + LEVEL_HEIGHT,
-              ceil: pending.ceil,
-              owner: -1,
-              ceilOwner: pending.ceilOwner,
-            });
-            pending = null;
-          }
-          // skelVoid: another grid's geometry fills this space; its span
-          // was already contributed by that grid's floor tile
+        if (tile === TileType.Wall) {
           continue;
         }
 

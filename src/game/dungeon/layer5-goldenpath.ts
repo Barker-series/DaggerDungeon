@@ -22,9 +22,6 @@ export function computeGoldenPath(
   entrance: GridPos,
   exit: GridPos,
   gridTiles: number,
-  /** Extra impassable tiles (skeleton voids — atrium wells, ramp shafts):
-   *  the guaranteed route must never be routed over open air */
-  blocked?: (x: number, z: number) => boolean,
   /** Unstable ground (void-field holes). Heavily penalized, not banned:
    *  the route hugs solid floor and only bridges a void where it must,
    *  at the narrowest crossing. */
@@ -70,7 +67,6 @@ export function computeGoldenPath(
 
       const tile = tiles[nz]![nx];
       if (tile === TileType.Wall) continue;
-      if (blocked?.(nx, nz)) continue;
 
       const g = current.g + (costly?.(nx, nz) ? COSTLY_STEP : 1);
       const h = Math.abs(exit.x - nx) + Math.abs(exit.y - nz);

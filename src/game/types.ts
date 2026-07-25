@@ -76,16 +76,6 @@ export interface DungeonData {
   cellBiomes: (BiomeType | null)[][];
   /** Guaranteed entrance→exit route on this level (debug map) */
   goldenPath: GridPos[];
-  /** Ceiling absent — the volume continues into the level above
-   *  (atrium wells, shaft mouths). Renderer skips ceilings here. */
-  openUp: boolean[][];
-  /** Skeleton-owned void: another level's geometry fills this space
-   *  (e.g. a stairwell ramp descending through this band). Renderer
-   *  draws nothing; tiles stay passable for collision. */
-  skelVoid: boolean[][];
-  /** Atrium interior: the hole's edge renders as a thin slab fascia
-   *  instead of a deep shaft collar. */
-  fascia: boolean[][];
   /** Pillar footprint tiles. Wall in `tiles`, but STRUCTURAL, not
    *  organic: the contour system must never chamfer or fence them —
    *  their real shape (ramps, plazas, interiors) lives in the column
@@ -97,12 +87,6 @@ export interface DungeonData {
    *  edge bends to meet them — earth banked against a slab, never a
    *  slab rolling with the hills. */
   pillarGround: boolean[][];
-}
-
-/** A walkable connection between two levels (stairwell doorway). */
-export interface WorldLink {
-  a: { level: number; x: number; y: number };
-  b: { level: number; x: number; y: number };
 }
 
 // ── The column model: the single authority on solid vs air ──
@@ -135,8 +119,6 @@ export interface WorldData {
   /** Stack index; the bottom level's stairs regenerate stack+1 */
   stack: number;
   levels: DungeonData[];
-  /** Walkable cross-level doorways (stairwell bottoms), for pathfinding */
-  links: WorldLink[];
   /** The column model: air spans per (x,z), indexed z * width + x,
    *  sorted bottom-up. Built once after ALL generation mutations; nothing
    *  may modify the world after it exists. */
@@ -153,12 +135,6 @@ export interface WorldData {
 
 export const TILE_SIZE = 3;
 export const WALL_HEIGHT = 3;
-/** Vertical distance between stacked level grades */
-export const LEVEL_HEIGHT = 18;
-/** Levels per megastructure stack — flattened to one tall floor; vertical
- *  variety now comes from ceiling clearance, pits, and (next) pillar
- *  kebab content rather than stacked generation levels. */
-export const WORLD_LEVELS = 1;
 export const EYE_HEIGHT = 1.6;
 export const MOVE_DURATION = 0.18; // seconds
 export const TURN_DURATION = 0.12; // seconds
