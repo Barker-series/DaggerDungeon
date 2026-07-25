@@ -75,6 +75,9 @@ export class GameEngine {
   private smoothFeetY = 0;
   private isGrounded = true;
   private crouchAmount = 0; // 0 = standing, 1 = fully crouched
+  /** Debug marks: click-tagged world points, embedded in DDSNAP strings
+   *  so the viewer highlights the exact geometry being reported */
+  private marks: { pos: THREE.Vector3; mesh: THREE.Mesh }[] = [];
   private bobOffset = 0;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -107,7 +110,49 @@ export class GameEngine {
     this.handleResize();
     window.addEventListener('resize', this.handleResize);
     window.addEventListener('keydown', this.handleSnapshotKey);
+    window.addEventListener('mousedown', this.handleMarkClick);
   }
+
+  /** Pointer-locked LMB: mark the surface under the crosshair with a
+   *  red beacon; RMB: remove the nearest mark. Marks ride along in the
+   *  DDSNAP snapshot so the debug viewer highlights EXACTLY the
+   *  geometry being reported. */
+  private handleMarkClick = (e: MouseEvent) => {
+    if (!this.gridCamera.getIsPointerLocked()) return;
+    if (e.button === 0) {
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(0, 0), this.threeCamera);
+      ray.far = 200;
+      const hits = ray.intersectObjects(this.scene.children, true)
+        .filter((h) => !(h.object as THREE.Mesh).userData['debugMark'] && (h.object as THREE.Mesh).isMesh);
+      const hit = hits[0];
+      if (!hit) return;
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.3, 8, 6),
+        new THREE.MeshBasicMaterial({ color: 0xff2020 }),
+      );
+      mesh.userData['debugMark'] = true;
+      mesh.position.copy(hit.point);
+      this.scene.add(mesh);
+      this.marks.push({ pos: hit.point.clone(), mesh });
+      console.log(`[mark] ${this.marks.length} @ (${hit.point.x.toFixed(1)}, ${hit.point.y.toFixed(1)}, ${hit.point.z.toFixed(1)})`);
+    } else if (e.button === 2) {
+      const eyePos = this.threeCamera.position;
+      let best = -1;
+      let bestD = Infinity;
+      this.marks.forEach((m, i) => {
+        const d = m.pos.distanceTo(eyePos);
+        if (d < bestD) { bestD = d; best = i; }
+      });
+      if (best >= 0) {
+        const [m] = this.marks.splice(best, 1);
+        this.scene.remove(m!.mesh);
+        m!.mesh.geometry.dispose();
+        (m!.mesh.material as THREE.Material).dispose();
+        console.log(`[mark] removed, ${this.marks.length} left`);
+      }
+    }
+  };
 
   /** F8 — copy a DDSNAP repro string to the clipboard. Paste it to the
    *  assistant: tools/debug-view.ts regenerates this exact world and
@@ -125,6 +170,9 @@ export class GameEngine {
       z: +pos.z.toFixed(2),
       yaw: +this.gridCamera.yaw.toFixed(3),
       pitch: +this.gridCamera.pitch.toFixed(3),
+      ...(this.marks.length > 0 && {
+        marks: this.marks.map((m) => [+m.pos.x.toFixed(2), +m.pos.y.toFixed(2), +m.pos.z.toFixed(2)]),
+      }),
     })}`;
     console.log('[snapshot]', snap);
     void navigator.clipboard?.writeText(snap).catch(() => {
@@ -197,6 +245,7 @@ export class GameEngine {
     this.input.dispose();
     this.gridCamera.detach();
     window.removeEventListener('keydown', this.handleSnapshotKey);
+    window.removeEventListener('mousedown', this.handleMarkClick);
     this.sprites.dispose();
     window.removeEventListener('resize', this.handleResize);
     this.renderer.dispose();

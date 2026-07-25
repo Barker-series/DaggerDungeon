@@ -241,6 +241,10 @@ export class DungeonRenderer {
             );
             continue;
           }
+          // Pillar tiles never take the wall-cap path: their ceilings
+          // are span-derived rock; a stray cap plate floats inside the
+          // band, and overlapping same-height caps z-fight
+          if (dungeon.pillarWall[y]![x]) continue;
           if (hasFloorNeighbor(x, y)) {
             const wx = x * TILE_SIZE;
             const wz = y * TILE_SIZE;
@@ -280,16 +284,38 @@ export class DungeonRenderer {
                   count++;
                 }
               }
-              if (count > 0) {
-                // Overlap past the tile edge: the cap tucks OVER the
-                // neighboring ceiling quads, so the junction line can
-                // never leak a hairline. Nudged up so it is NEVER
-                // coplanar with them — built biomes have uniform
-                // ceilings, and a same-height overlap z-fights along
-                // every wall top. From below, the true ceiling occludes
-                // the raised overlap ring.
+              // Columns with their own air spans (bridge passages carved
+              // through walls) get span-derived rock ceilings — a cap on
+              // top would coincide with them
+              if (count > 0 && world.columns[y * w + x]!.length === 0) {
+                // Overlap toward FLOOR neighbors only: the cap tucks
+                // over their ceiling quads (nudged up, never coplanar —
+                // the true ceiling occludes the ring from below), so the
+                // junction line can't leak a hairline. Toward WALL
+                // neighbors there is no expansion: the adjacent cap sits
+                // at the same height and same-plane overlaps z-fight.
+                // Deterministic per-tile jitter: no two caps are EVER
+                // coplanar (diagonal neighbors' corner overlaps included)
                 const ac = sum / count + 0.06;
-                addHorizontalQuad(buf.ceil, wx, wz, ac, ac, ac, ac, false, 0.45);
+                // Overlap flap per side, and ONLY toward a floor
+                // neighbor whose ceiling clearly differs from the cap:
+                // near-equal heights would z-fight, and a hairline
+                // between near-equal surfaces is invisible anyway
+                const flap = (dx2: number, dz2: number): number => {
+                  const t2 = dungeon.tiles[y + dz2]?.[x + dx2];
+                  if (t2 === undefined || t2 === TileType.Wall) return 0;
+                  const nc = dungeon.ceilingHeights[y + dz2]![x + dx2]!;
+                  return Math.abs(nc - ac) > 0.15 ? 0.45 : 0;
+                };
+                // Center + side strips: strips never reach the corner
+                // squares, whose diagonal neighbors may hold a ceiling
+                // at yet another height
+                addCeilPatch(buf.ceil, wx, wz, wx + TILE_SIZE, wz + TILE_SIZE, ac);
+                const fw = flap(-1, 0), fe = flap(1, 0), fn = flap(0, -1), fs = flap(0, 1);
+                if (fw > 0) addCeilPatch(buf.ceil, wx - fw, wz, wx, wz + TILE_SIZE, ac);
+                if (fe > 0) addCeilPatch(buf.ceil, wx + TILE_SIZE, wz, wx + TILE_SIZE + fe, wz + TILE_SIZE, ac);
+                if (fn > 0) addCeilPatch(buf.ceil, wx, wz - fn, wx + TILE_SIZE, wz, ac);
+                if (fs > 0) addCeilPatch(buf.ceil, wx, wz + TILE_SIZE, wx + TILE_SIZE, wz + TILE_SIZE + fs, ac);
               }
             }
           }
@@ -552,6 +578,7 @@ export class DungeonRenderer {
             let chamferLc = -1;
             let airSpanTop = hi;
             let airIsSky = false;
+            let airTopKnown = false;
             const solidIn = solidX >= 0 && solidZ >= 0 && solidX < w && solidZ < h;
             if (solidIn) {
               let airOwner = -1;
@@ -560,6 +587,7 @@ export class DungeonRenderer {
                   airOwner = s.owner;
                   airSpanTop = clipY(s.ceil);
                   airIsSky = s.ceil >= SKY_CEIL;
+                  airTopKnown = true;
                   break;
                 }
               }
@@ -580,10 +608,22 @@ export class DungeonRenderer {
             // pillars — their geometry is span-derived.)
             const solidIsWall = solidIn
               && world.levels[0]!.tiles[solidZ]![solidX] === TileType.Wall;
+            // PILLAR-INTERNAL boundaries (both columns in one footprint)
+            // never take the override: room ceilings are meaningless up
+            // on a ramp, and extending slab faces there pokes blades
+            // through the plaza floors. The override exists for
+            // room↔wall junctions only — and only when the air span was
+            // actually identified (the default airSpanTop equals hi and
+            // would pass the top-segment test vacuously).
+            const pillarInternal = solidIn
+              && world.levels[0]!.pillarWall[solidZ]![solidX]
+              && airX >= 0 && airZ >= 0 && airX < w && airZ < h
+              && world.levels[0]!.pillarWall[airZ]![airX];
             // Per-NEIGHBOR gating (see the cap): straddler walls in
             // outside cells still seal toward the interior rooms they
             // face; only interior ceilings define the override.
-            if (solidIsWall && !airIsSky && Math.abs(hi - airSpanTop) < 0.03) {
+            if (solidIsWall && !pillarInternal && airTopKnown && !airIsSky
+              && Math.abs(hi - airSpanTop) < 0.03) {
               const L = world.levels[0]!;
               let pc = -Infinity;
               for (let dz2 = -1; dz2 <= 1; dz2++) {
@@ -796,6 +836,23 @@ function addTessellatedFloor(
       );
     }
   }
+}
+
+/** Down-facing quad with explicit bounds — wall caps with per-side
+ *  overlap margins */
+function addCeilPatch(
+  buf: MeshBuffers,
+  x0: number, z0: number, x1: number, z1: number,
+  h: number,
+): void {
+  const i = buf.verts.length / 3;
+  buf.verts.push(x0, h, z0);
+  buf.verts.push(x0, h, z1);
+  buf.verts.push(x1, h, z1);
+  buf.verts.push(x1, h, z0);
+  buf.uvs.push(0, 0, 0, 1, 1, 1, 1, 0);
+  buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
+  for (let k = 0; k < 4; k++) buf.norms.push(0, -1, 0);
 }
 
 function addHorizontalQuad(

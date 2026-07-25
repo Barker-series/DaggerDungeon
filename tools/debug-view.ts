@@ -38,7 +38,10 @@ if (!arg || !arg.startsWith('DDSNAP1')) {
 }
 const snap = JSON.parse(arg.slice('DDSNAP1'.length)) as {
   seed: number; stack: number; x: number; y: number; z: number; yaw: number; pitch: number;
+  /** Click-marked world points — the exact geometry being reported */
+  marks?: [number, number, number][];
 };
+const marks = snap.marks ?? [];
 const outPath = process.argv[3] ?? '/tmp/debug-view.png';
 console.log('snapshot:', snap);
 
@@ -165,14 +168,31 @@ for (let py = 0; py < H; py++) {
       img[i] = 255; img[i + 1] = 0; img[i + 2] = 255; // MAGENTA = hole/sky
       continue;
     }
+    // Marked geometry TINTS red (small radius, shading preserved so
+    // the marked shape stays readable — a solid blob hid it)
+    const hx = eye.x + dx * d, hy = eye.y + dy * d, hz = eye.z + dz * d;
+    let marked = false;
+    for (const m of marks) {
+      const md = (hx - m[0]) ** 2 + (hy - m[1]) ** 2 + (hz - m[2]) ** 2;
+      if (md < 0.45 * 0.45) { marked = true; break; }
+    }
     const light = 0.45 + 0.55 * Math.abs(n[0]! * 0.35 + n[1]! * 0.85 + n[2]! * 0.4);
     const fog = Math.max(0.25, 1 - d / 160);
     const base = 215 * light * fog;
-    // tint: floors warm, ceilings cool, walls neutral
-    const r = n[1]! > 0.5 ? base : n[1]! < -0.5 ? base * 0.8 : base * 0.95;
+    // tint: floors warm, ceilings cool, walls neutral. NOTE: the
+    // renderer's horizontal quads wind clockwise-from-above, so their
+    // GEOMETRIC normal points down for floors — invert accordingly.
+    const upness = -n[1]!;
+    const r = upness > 0.5 ? base : upness < -0.5 ? base * 0.8 : base * 0.95;
     const g = base * 0.92;
-    const b = n[1]! < -0.5 ? base : base * 0.85;
-    img[i] = r; img[i + 1] = g; img[i + 2] = b;
+    const b = upness < -0.5 ? base : base * 0.85;
+    if (marked) {
+      img[i] = Math.min(255, r * 0.45 + 150);
+      img[i + 1] = g * 0.35;
+      img[i + 2] = b * 0.35;
+    } else {
+      img[i] = r; img[i + 1] = g; img[i + 2] = b;
+    }
   }
 }
 const ppm = outPath.replace(/\.png$/, '.ppm');
@@ -182,6 +202,30 @@ try {
   console.log(`view rendered: ${outPath} (missPixels=${missPixels} — magenta = nothing hit; expected for open sky)`);
 } catch {
   console.log(`view rendered: ${ppm} (PPM; install ImageMagick for PNG) missPixels=${missPixels}`);
+}
+
+// ── Data under each mark ──
+
+for (let mi = 0; mi < marks.length; mi++) {
+  const [mx, my, mz] = marks[mi]!;
+  const mtx = Math.floor(mx / TILE_SIZE);
+  const mtz = Math.floor(mz / TILE_SIZE);
+  const spans = world.columns[mtz * L.width + mtx] ?? [];
+  console.log(`\nMARK ${mi + 1} @ (${mx},${my},${mz}) tile(${mtx},${mtz})` +
+    ` tile=${L.tiles[mtz]?.[mtx]}${L.pillarWall[mtz]?.[mtx] ? 'P' : ''}` +
+    ` biome=${tileBiome(L.cellBiomes, mtx, mtz) ?? 'tunnel'}` +
+    ` ceil=${L.ceilingHeights[mtz]?.[mtx]?.toFixed(1)} floor=${L.floorHeights[mtz]?.[mtx]?.toFixed(1)}`);
+  console.log(`  spans: ${spans.map((s) =>
+    `${s.floor <= -1e8 ? 'ABYSS' : s.floor.toFixed(1)}..${s.ceil >= SKY_CEIL ? 'SKY' : s.ceil.toFixed(1)}(${s.owner},${s.ceilOwner})`).join(' ') || '(solid)'}`);
+  console.log(`  slice@markY: ${JSON.stringify(sliceAt(spans, my))}`);
+  if (L.pillarWall[mtz]?.[mtx]) {
+    const pcx = Math.floor(mtx / 56);
+    const pcz = Math.floor(mtz / 56);
+    const spec = world.pillars.get(`${pcx},${pcz}`);
+    if (spec) {
+      console.log(`  pillar (${pcx},${pcz}) h=${spec.totalHeight} local(${mtx - pcx * 56},${mtz - pcz * 56}) chunks: ${spec.chunks.map((c) => `${c.def.id}@${c.baseY}r${c.rotation}`).join(' ')}`);
+    }
+  }
 }
 
 // ── Local world data at the player ──
