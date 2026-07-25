@@ -1,0 +1,203 @@
+/**
+ * Debug view — reproduce EXACTLY what the player saw from a DDSNAP
+ * string (press P in-game to copy one).
+ *
+ *   npx tsx tools/debug-view.ts 'DDSNAP1{"seed":23677,...}' [out.png]
+ *
+ * Regenerates that world, builds the real renderer geometry headlessly,
+ * and software-raycasts the player's exact camera view to an image:
+ *   - surfaces shaded by orientation + distance
+ *   - rays that hit NOTHING render MAGENTA — a magenta pixel is a hole
+ * Also prints the column spans and slice classification around the
+ * player's tile. One string from a playtest = a full local repro.
+ */
+
+/* eslint-disable no-console */
+import { writeFileSync } from 'fs';
+import { execSync } from 'child_process';
+
+// three's TextureLoader needs a DOM — stub before the renderer loads
+(globalThis as unknown as { document: unknown }).document = {
+  createElementNS: () => ({ addEventListener() {}, removeEventListener() {}, setAttribute() {}, style: {} }),
+};
+(globalThis as unknown as { self: unknown }).self = globalThis;
+
+const THREE = await import('three');
+const { generateWorld } = await import('../src/game/DungeonGenerator');
+const { DungeonRenderer } = await import('../src/engine/DungeonRenderer');
+const { tileBiome } = await import('../src/game/dungeon/cells');
+const { TILE_SIZE, SKY_CEIL } = await import('../src/game/types');
+const { sliceAt } = await import('../src/game/mapslice');
+
+// ── Parse ──
+
+const arg = process.argv[2];
+if (!arg || !arg.startsWith('DDSNAP1')) {
+  console.error('usage: npx tsx tools/debug-view.ts \'DDSNAP1{"seed":...}\' [out.png]');
+  process.exit(1);
+}
+const snap = JSON.parse(arg.slice('DDSNAP1'.length)) as {
+  seed: number; stack: number; x: number; y: number; z: number; yaw: number; pitch: number;
+};
+const outPath = process.argv[3] ?? '/tmp/debug-view.png';
+console.log('snapshot:', snap);
+
+// ── World + geometry ──
+
+const world = generateWorld({ seed: snap.seed, stack: snap.stack });
+const L = world.levels[0]!;
+const scene = new THREE.Scene();
+new DungeonRenderer(scene).build(world);
+
+type Tri = number[];
+const buckets = new Map<number, Tri[]>();
+const bkey = (tx: number, tz: number) => tz * 4096 + tx;
+scene.traverse((o) => {
+  if (!(o instanceof THREE.Mesh)) return;
+  const g = o.geometry as InstanceType<typeof THREE.BufferGeometry>;
+  const pos = g.getAttribute('position');
+  const idx = g.getIndex();
+  if (!pos || !idx) return;
+  for (let i = 0; i + 2 < idx.count; i += 3) {
+    const t: number[] = [];
+    for (let k = 0; k < 3; k++) {
+      const j = idx.getX(i + k);
+      t.push(pos.getX(j), pos.getY(j), pos.getZ(j));
+    }
+    const minTx = Math.floor(Math.min(t[0]!, t[3]!, t[6]!) / TILE_SIZE);
+    const maxTx = Math.floor(Math.max(t[0]!, t[3]!, t[6]!) / TILE_SIZE);
+    const minTz = Math.floor(Math.min(t[2]!, t[5]!, t[8]!) / TILE_SIZE);
+    const maxTz = Math.floor(Math.max(t[2]!, t[5]!, t[8]!) / TILE_SIZE);
+    for (let bz = minTz; bz <= maxTz; bz++) {
+      for (let bx = minTx; bx <= maxTx; bx++) {
+        const k = bkey(bx, bz);
+        let arr = buckets.get(k);
+        if (!arr) { arr = []; buckets.set(k, arr); }
+        arr.push(t);
+      }
+    }
+  }
+});
+
+function hitTri(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, t: Tri): number {
+  const e1x = t[3]! - t[0]!, e1y = t[4]! - t[1]!, e1z = t[5]! - t[2]!;
+  const e2x = t[6]! - t[0]!, e2y = t[7]! - t[1]!, e2z = t[8]! - t[2]!;
+  const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+  const det = e1x * px + e1y * py + e1z * pz;
+  if (Math.abs(det) < 1e-9) return Infinity;
+  const inv = 1 / det;
+  const sx = ox - t[0]!, sy = oy - t[1]!, sz = oz - t[2]!;
+  const u = (sx * px + sy * py + sz * pz) * inv;
+  if (u < -1e-6 || u > 1 + 1e-6) return Infinity;
+  const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+  const v = (dx * qx + dy * qy + dz * qz) * inv;
+  if (v < -1e-6 || u + v > 1 + 1e-6) return Infinity;
+  const tt = (e2x * qx + e2y * qy + e2z * qz) * inv;
+  return tt > 1e-4 ? tt : Infinity;
+}
+
+function cast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): { d: number; n: [number, number, number] } {
+  const MAXD = 200;
+  const seen = new Set<number>();
+  let best = Infinity;
+  let bestTri: Tri | null = null;
+  for (let d = 0; d <= MAXD; d += TILE_SIZE * 0.9) {
+    const x = ox + dx * d, z = oz + dz * d;
+    for (let bz = Math.floor(z / TILE_SIZE) - 1; bz <= Math.floor(z / TILE_SIZE) + 1; bz++) {
+      for (let bx = Math.floor(x / TILE_SIZE) - 1; bx <= Math.floor(x / TILE_SIZE) + 1; bx++) {
+        const k = bkey(bx, bz);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const arr = buckets.get(k);
+        if (!arr) continue;
+        for (const t of arr) {
+          const tt = hitTri(ox, oy, oz, dx, dy, dz, t);
+          if (tt < best) { best = tt; bestTri = t; }
+        }
+      }
+    }
+    if (best < d + TILE_SIZE) break;
+  }
+  if (!bestTri) return { d: Infinity, n: [0, 0, 0] };
+  const e1 = [bestTri[3]! - bestTri[0]!, bestTri[4]! - bestTri[1]!, bestTri[5]! - bestTri[2]!];
+  const e2 = [bestTri[6]! - bestTri[0]!, bestTri[7]! - bestTri[1]!, bestTri[8]! - bestTri[2]!];
+  const n: [number, number, number] = [
+    e1[1]! * e2[2]! - e1[2]! * e2[1]!,
+    e1[2]! * e2[0]! - e1[0]! * e2[2]!,
+    e1[0]! * e2[1]! - e1[1]! * e2[0]!,
+  ];
+  const len = Math.hypot(...n) || 1;
+  return { d: best, n: [n[0] / len, n[1] / len, n[2] / len] };
+}
+
+// ── Render the exact camera view ──
+
+const W = 480, H = 360;
+const FOV = 75 * Math.PI / 180;
+const tanY = Math.tan(FOV / 2);
+const tanX = tanY * (W / H);
+const eye = { x: snap.x, y: snap.y + 1.6, z: snap.z };
+const cy = Math.cos(snap.yaw), sy = Math.sin(snap.yaw);
+const cp = Math.cos(snap.pitch), sp = Math.sin(snap.pitch);
+const fwd = [-sy * cp, sp, -cy * cp];
+const right = [cy, 0, -sy];
+const up = [
+  right[1]! * fwd[2]! - right[2]! * fwd[1]!,
+  right[2]! * fwd[0]! - right[0]! * fwd[2]!,
+  right[0]! * fwd[1]! - right[1]! * fwd[0]!,
+];
+
+const img = new Uint8Array(W * H * 3);
+let missPixels = 0;
+for (let py = 0; py < H; py++) {
+  for (let px = 0; px < W; px++) {
+    const u = (px / W) * 2 - 1;
+    const v = 1 - (py / H) * 2;
+    let dx = fwd[0]! + u * tanX * right[0]! + v * tanY * up[0]!;
+    let dy = fwd[1]! + u * tanX * right[1]! + v * tanY * up[1]!;
+    let dz = fwd[2]! + u * tanX * right[2]! + v * tanY * up[2]!;
+    const dl = Math.hypot(dx, dy, dz);
+    dx /= dl; dy /= dl; dz /= dl;
+    const { d, n } = cast(eye.x, eye.y, eye.z, dx, dy, dz);
+    const i = (py * W + px) * 3;
+    if (!Number.isFinite(d)) {
+      missPixels++;
+      img[i] = 255; img[i + 1] = 0; img[i + 2] = 255; // MAGENTA = hole/sky
+      continue;
+    }
+    const light = 0.45 + 0.55 * Math.abs(n[0]! * 0.35 + n[1]! * 0.85 + n[2]! * 0.4);
+    const fog = Math.max(0.25, 1 - d / 160);
+    const base = 215 * light * fog;
+    // tint: floors warm, ceilings cool, walls neutral
+    const r = n[1]! > 0.5 ? base : n[1]! < -0.5 ? base * 0.8 : base * 0.95;
+    const g = base * 0.92;
+    const b = n[1]! < -0.5 ? base : base * 0.85;
+    img[i] = r; img[i + 1] = g; img[i + 2] = b;
+  }
+}
+const ppm = outPath.replace(/\.png$/, '.ppm');
+writeFileSync(ppm, Buffer.concat([Buffer.from(`P6\n${W} ${H}\n255\n`), Buffer.from(img)]));
+try {
+  execSync(`magick ${ppm} ${outPath} 2>/dev/null || convert ${ppm} ${outPath}`);
+  console.log(`view rendered: ${outPath} (missPixels=${missPixels} — magenta = nothing hit; expected for open sky)`);
+} catch {
+  console.log(`view rendered: ${ppm} (PPM; install ImageMagick for PNG) missPixels=${missPixels}`);
+}
+
+// ── Local world data at the player ──
+
+const tx = Math.floor(snap.x / TILE_SIZE);
+const tz = Math.floor(snap.z / TILE_SIZE);
+console.log(`\nplayer tile (${tx},${tz}) biome=${tileBiome(L.cellBiomes, tx, tz) ?? 'tunnel'} feetY=${snap.y}`);
+for (let dz = -1; dz <= 1; dz++) {
+  let row = '';
+  for (let dx = -1; dx <= 1; dx++) {
+    const nx = tx + dx, nz = tz + dz;
+    if (nx < 0 || nz < 0 || nx >= L.width || nz >= L.height) { row += ' [oob]'; continue; }
+    const spans = world.columns[nz * L.width + nx]!;
+    const slice = sliceAt(spans, snap.y);
+    row += ` [${nx},${nz} ${L.tiles[nz]![nx]}${L.pillarWall[nz]![nx] ? 'P' : ''} ${slice.kind} | ${spans.map((s) =>
+      `${s.floor <= -1e8 ? 'ABYSS' : s.floor.toFixed(1)}..${s.ceil >= SKY_CEIL ? 'SKY' : s.ceil.toFixed(1)}(${s.owner},${s.ceilOwner})`).join(' ')}]`;
+  }
+  console.log(row);
+}

@@ -106,7 +106,31 @@ export class GameEngine {
 
     this.handleResize();
     window.addEventListener('resize', this.handleResize);
+    window.addEventListener('keydown', this.handleSnapshotKey);
   }
+
+  /** F8 — copy a DDSNAP repro string to the clipboard. Paste it to the
+   *  assistant: tools/debug-view.ts regenerates this exact world and
+   *  renders this exact view headlessly, so a seen bug becomes a
+   *  reproducible one. */
+  private handleSnapshotKey = (e: KeyboardEvent) => {
+    if (e.code !== 'F8') return;
+    e.preventDefault();
+    const pos = this.gridCamera.position;
+    const snap = `DDSNAP1${JSON.stringify({
+      seed: this.seed,
+      stack: useGameStore.getState().currentFloor,
+      x: +pos.x.toFixed(2),
+      y: +pos.y.toFixed(2),
+      z: +pos.z.toFixed(2),
+      yaw: +this.gridCamera.yaw.toFixed(3),
+      pitch: +this.gridCamera.pitch.toFixed(3),
+    })}`;
+    console.log('[snapshot]', snap);
+    void navigator.clipboard?.writeText(snap).catch(() => {
+      /* clipboard unavailable — the console log above still has it */
+    });
+  };
 
   private handleResize = () => {
     const parent = this.renderer.domElement.parentElement;
@@ -172,6 +196,7 @@ export class GameEngine {
     cancelAnimationFrame(this.animFrameId);
     this.input.dispose();
     this.gridCamera.detach();
+    window.removeEventListener('keydown', this.handleSnapshotKey);
     this.sprites.dispose();
     window.removeEventListener('resize', this.handleResize);
     this.renderer.dispose();

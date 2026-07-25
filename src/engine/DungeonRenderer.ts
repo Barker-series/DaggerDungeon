@@ -670,11 +670,47 @@ export class DungeonRenderer {
               buf.idxs.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
             };
 
+            // TRANSOM: an open (chamfered) half leaves its boundary
+            // plane undrawn — a ray can enter the pocket under ONE
+            // neighbor's ceiling and exit above a LOWER neighbor's,
+            // passing clean through the world (found via DDSNAP). Seal
+            // the band from this boundary's ceiling up to the cap.
+            const emitTransom = (s0: number, s1: number): void => {
+              if (topOverride === null) return;
+              const top = topOverride + 1.0;
+              const lo0T = lerp(hi0, hi1, s0);
+              const lo1T = lerp(hi0, hi1, s1);
+              if (top <= Math.min(lo0T, lo1T) + 0.02) return;
+              const vi = buf.verts.length / 3;
+              buf.verts.push(
+                lerp(ex0, ex1, s0), lo0T, lerp(ez0, ez1, s0),
+                lerp(ex0, ex1, s1), lo1T, lerp(ez0, ez1, s1),
+                lerp(ex0, ex1, s1), top, lerp(ez0, ez1, s1),
+                lerp(ex0, ex1, s0), top, lerp(ez0, ez1, s0),
+              );
+              for (let k = 0; k < 4; k++) buf.norms.push(nrmX, 0, nrmZ);
+              buf.uvs.push(
+                s0, lo0T / TILE_SIZE,
+                s1, lo1T / TILE_SIZE,
+                s1, top / TILE_SIZE,
+                s0, top / TILE_SIZE,
+              );
+              buf.idxs.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+            };
+
             if (chamferLc >= 0 && (o0 || o1)) {
-              if (o0) emitChamfer(0);
-              else emitFlat(0, 0.5);
-              if (o1) emitChamfer(1);
-              else emitFlat(0.5, 1);
+              if (o0) {
+                emitChamfer(0);
+                emitTransom(0, 0.5);
+              } else {
+                emitFlat(0, 0.5);
+              }
+              if (o1) {
+                emitChamfer(1);
+                emitTransom(0.5, 1);
+              } else {
+                emitFlat(0.5, 1);
+              }
             } else {
               emitFlat(0, 1);
             }
