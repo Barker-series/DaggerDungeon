@@ -32,6 +32,10 @@ const MAX_DY = 10;
 const FORCED_MAX_DY = 24;
 /** Chosen bridges on one pair keep at least this much vertical space */
 const MIN_SEPARATION = 10;
+/** Sockets below this height never bridge: a bridge skimming the
+ *  rolling ground crosses nothing you couldn't walk, and its slab
+ *  z-fights and slits against the terrain it grazes. */
+const MIN_BRIDGE_Y = 6;
 /** Not every compatible pair bridges — the world stays airy */
 const BRIDGE_CHANCE = 0.65;
 const BRIDGE_SALT = 5252;
@@ -73,6 +77,7 @@ function pairCandidates(
   const candidates: { sa: ResolvedSocket; sb: ResolvedSocket; dy: number }[] = [];
   for (const sa of fromA) {
     for (const sb of fromB) {
+      if (sa.yAbs < MIN_BRIDGE_Y || sb.yAbs < MIN_BRIDGE_Y) continue;
       const dy = Math.abs(sa.yAbs - sb.yAbs);
       if (dy <= maxDy) candidates.push({ sa, sb, dy });
     }

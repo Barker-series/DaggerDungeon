@@ -100,7 +100,7 @@ function hitTri(ox: number, oy: number, oz: number, dx: number, dy: number, dz: 
 }
 
 function cast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): { d: number; n: [number, number, number] } {
-  const MAXD = 200;
+  const MAXD = 500; // long sightlines exist (colonnade arcades run through multiple pillar cells)
   const seen = new Set<number>();
   let best = Infinity;
   let bestTri: Tri | null = null;

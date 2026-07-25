@@ -138,7 +138,7 @@ function rampSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void 
   }
 }
 
-function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void {
+function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>, below?: PlacedChunk): void {
   const b = placed.baseY;
   const k = placed.rotation;
   const top = b + placed.def.height;
@@ -159,17 +159,23 @@ function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void
         if (!inCore && !overLowerRamp) {
           addSolid(solids, x, z, k, b, b + SLAB);
           addAllow(solids, x, z, k, b + SLAB, b + SLAB + 3.5);
-          // CORBELS: where the plaza cantilevers past the full core
-          // (the chunk below is at most that wide), stepped brackets at
-          // intervals support the balcony — deepest against the core,
-          // tapering to the rim
+          // SUPPORTS under the cantilevered plaza edge. Two styles by
+          // what's underneath: stepped CORBELS when the chunk below has
+          // a full core to back them; STANDING COLUMNS down onto the
+          // lower plaza when the chunk below is a slim-waist terrace —
+          // corbels hanging in front of a distant waist look silly.
           const dOut = Math.max(
             x < FULL.lo ? FULL.lo - x : x > FULL.hi ? x - FULL.hi : 0,
             z < FULL.lo ? FULL.lo - z : z > FULL.hi ? z - FULL.hi : 0,
           );
-          if (dOut > 0) {
+          if (dOut > 0 && b >= 2) {
             const along = (x < FULL.lo || x > FULL.hi) ? z : x;
-            if (along % 5 === 2) {
+            if (below?.def.id === 'terrace') {
+              if (dOut === 2 && along % 5 === 2) {
+                // Colonnade post: plaza underside to the balcony below
+                addSolid(solids, x, z, k, below.baseY + SLAB, b);
+              }
+            } else if (along % 5 === 2) {
               const depth = dOut === 1 ? 2.5 : dOut === 2 ? 1.5 : 0.75;
               addSolid(solids, x, z, k, b - depth, b);
             }
@@ -220,7 +226,7 @@ function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void
 
 function collectSolids(spec: PillarSpec): Map<string, TileSolids> {
   const solids = new Map<string, TileSolids>();
-  for (const placed of spec.chunks) chunkSolids(placed, solids);
+  spec.chunks.forEach((placed, i) => chunkSolids(placed, solids, spec.chunks[i - 1]));
   return solids;
 }
 
