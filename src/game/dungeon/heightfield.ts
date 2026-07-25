@@ -59,7 +59,11 @@ export function buildCornerField(
           continue;
         }
         if (struct) {
-          structSum += v;
+          // Two struct tiles can meet at DIFFERENT heights (adjacent
+          // stair treads). Averaging them smears the step into a wedge;
+          // the corner takes the LOWER slab and the riser face covers
+          // the rest — steps stay steps.
+          structSum = structCount === 0 ? v : Math.min(structSum, v);
           structCount++;
         } else {
           sum += v;
@@ -68,7 +72,7 @@ export function buildCornerField(
       }
       // Structure dominates: a corner touching a foundation takes the
       // foundation's height; terrain-only corners average as usual
-      if (structCount > 0) corners[cy]![cx] = structSum / structCount;
+      if (structCount > 0) corners[cy]![cx] = structSum;
       else if (count > 0) corners[cy]![cx] = sum / count;
       else if (pitMin < Infinity) corners[cy]![cx] = pitMin;
     }

@@ -233,12 +233,56 @@ export class DungeonRenderer {
           if (dungeon.pillarGround[y]![x] && ownsFloor(x, y)) {
             const wx = x * TILE_SIZE;
             const wz = y * TILE_SIZE;
-            addHorizontalQuad(
-              regionBuffers(region).floor, wx, wz,
-              cornerFloor[y]![x]!, cornerFloor[y]![x + 1]!,
-              cornerFloor[y + 1]![x]!, cornerFloor[y + 1]![x + 1]!,
-              true,
-            );
+            // Man-made surfaces are DEAD FLAT at their own slab height.
+            // Corner-sampling here let adjacent stair treads (married at
+            // different heights) drag each other's corners down into
+            // wedges. The corner field still bends the surrounding
+            // terrain up to this slab (struct dominance); the riser
+            // faces between treads are emitted by the wall pass.
+            const f = dungeon.floorHeights[y]![x]!;
+            const fbuf = regionBuffers(region).floor;
+            addHorizontalQuad(fbuf, wx, wz, f, f, f, f, true);
+            // SKIRTS: a flat slab beside a corner-blended floor tile can
+            // sit above the terrain's drawn edge with NO wall face — the
+            // span floors match, so the wall pass emits nothing, but the
+            // terrain edge slides between corner values while the slab
+            // lip stays at f (the marked triangle wedges into the void).
+            // Drop a quad from the slab lip down to the terrain's corner
+            // edge; overshoot is buried inside terrain. Slab-vs-slab
+            // needs none (both flat; differing spans get real faces).
+            for (const [dx3, dz3] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+              const nx3 = x + dx3, nz3 = y + dz3;
+              const nt = dungeon.tiles[nz3]?.[nx3];
+              if (nt === undefined) continue;
+              if (dungeon.pillarGround[nz3]![nx3]) continue;
+              if (nt === TileType.Wall) continue;
+              // shared-edge corner values on the neighbor's blended edge
+              const cA = dx3 !== 0
+                ? cornerFloor[y]![dx3 === 1 ? x + 1 : x]!
+                : cornerFloor[dz3 === 1 ? y + 1 : y]![x]!;
+              const cB = dx3 !== 0
+                ? cornerFloor[y + 1]![dx3 === 1 ? x + 1 : x]!
+                : cornerFloor[dz3 === 1 ? y + 1 : y]![x + 1]!;
+              if (f - Math.min(cA, cB) < 0.02) continue;
+              const ex = dx3 === 1 ? wx + TILE_SIZE : wx;
+              const ez = dz3 === 1 ? wz + TILE_SIZE : wz;
+              const vi = fbuf.verts.length / 3;
+              if (dx3 !== 0) {
+                fbuf.verts.push(ex, f, wz, ex, f, wz + TILE_SIZE,
+                  ex, Math.min(cB, f), wz + TILE_SIZE, ex, Math.min(cA, f), wz);
+              } else {
+                fbuf.verts.push(wx, f, ez, wx + TILE_SIZE, f, ez,
+                  wx + TILE_SIZE, Math.min(cB, f), ez, wx, Math.min(cA, f), ez);
+              }
+              // World-anchored v like every wall face — a 0..1 v over a
+              // half-unit skirt smears the texture into streaks
+              const bB = Math.min(cB, f), bA = Math.min(cA, f);
+              fbuf.uvs.push(0, f / TILE_SIZE, 1, f / TILE_SIZE,
+                1, bB / TILE_SIZE, 0, bA / TILE_SIZE);
+              const nnx = dx3, nnz = dz3; // face the neighbor (air side)
+              for (let q = 0; q < 4; q++) fbuf.norms.push(nnx, 0, nnz);
+              fbuf.idxs.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+            }
             continue;
           }
           // Pillar tiles never take the wall-cap path: their ceilings
@@ -309,8 +353,15 @@ export class DungeonRenderer {
                   // juts out of the cliff face as a slab of "cave roof"
                   // hanging in the outside biome
                   if (tileBiome(dungeon.cellBiomes, x + dx2, y + dz2) === 'outside') return 0;
+                  // The flap exists to hide the HAIRLINE where the cap
+                  // meets a neighbouring ceiling of nearly the same
+                  // height. Too close and they z-fight; too far apart
+                  // and there is no seam to hide — the boundary face
+                  // seals that step already, and the flap becomes a
+                  // shelf sticking out of the wall in mid-air.
                   const nc = dungeon.ceilingHeights[y + dz2]![x + dx2]!;
-                  return Math.abs(nc - ac) > 0.15 ? 0.45 : 0;
+                  const gap = Math.abs(nc - ac);
+                  return gap > 0.15 && gap < 1.0 ? 0.45 : 0;
                 };
                 // Center + side strips: strips never reach the corner
                 // squares, whose diagonal neighbors may hold a ceiling
@@ -547,6 +598,32 @@ export class DungeonRenderer {
             const sHi = spanAtFloor(airSpans, hi) ?? spanAtFloor(otherSpans, hi);
             const flatInvolved = (sLo !== undefined && sLo.owner < 0)
               || (sHi !== undefined && sHi.owner < 0);
+            // Married PILLAR surfaces are structural too: they carry
+            // owner 0 so they blend at the footprint edge, but they are
+            // DOMINANT in the corner field, so their corners already sit
+            // at the slab height and raw bounds cannot stand a fin proud
+            // of them. Without this every stair riser — a 0.6 step
+            // between two married treads — averages at its shared corner
+            // to a value neither tread passes through, both halves
+            // collapse, and the face vanishes into a see-through slit.
+            // Only true terrain-to-terrain joints are safe to let go.
+            const pg = world.levels[0]!.pillarGround;
+            // ...and married floors DRAW dead flat at their span heights,
+            // so any face bound that belongs to a SLAB surface must stay
+            // at the raw span value — a corner-refined edge dips below
+            // the flat lip and opens a triangle wedge. But ONLY the slab
+            // side: a corner-blended terrain surface descending to marry
+            // a lower slab really does close the step, and forcing its
+            // bound too stands the face proud of the ground as a lip.
+            const floorIsSlab = (tx3: number, tz3: number, yv: number): boolean =>
+              pg[tz3]?.[tx3] === true
+              && world.columns[tz3 * w + tx3]!.some((s2) => Math.abs(clipY(s2.floor) - yv) < 0.02);
+            if (floorIsSlab(x, z, hi) || floorIsSlab(nx, nz, hi)) {
+              hi0 = Math.max(hi0, hi); hi1 = Math.max(hi1, hi);
+            }
+            if (floorIsSlab(x, z, lo) || floorIsSlab(nx, nz, lo)) {
+              lo0 = Math.min(lo0, lo); lo1 = Math.min(lo1, lo);
+            }
             if (flatInvolved) {
               if (hi0 - lo0 < 0.02) { lo0 = Math.min(lo0, lo); hi0 = Math.max(hi0, hi); }
               if (hi1 - lo1 < 0.02) { lo1 = Math.min(lo1, lo); hi1 = Math.max(hi1, hi); }

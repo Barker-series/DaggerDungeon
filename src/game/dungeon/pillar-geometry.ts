@@ -39,7 +39,10 @@ const RAMP_SLAB = 1;
  *  descent by steepening the flight instead makes it unclimbable — it
  *  needs run, not pitch. Steps below the terrain are buried by the
  *  foundation, so the stair meets whatever grade it lands on. */
-const RAMP_ENTRY_STEPS = 10;
+const RAMP_ENTRY_STEPS = 11;
+/** Rise per tread. Engine STEP_UP is 0.65; one tile (3 units) is one
+ *  step, so this is as steep as a climbable stair can be here. */
+const RAMP_RISE = 0.6;
 /** Guaranteed headroom over every ramp surface — generous: the spiral
  *  stairs are a marquee traversal experience, not a crawlspace. The
  *  punch is capped near landings (chunk top + landing headroom) so it
@@ -137,13 +140,22 @@ function rampSolids(placed: PlacedChunk, solids: Map<string, TileSolids>, isFirs
   const b = placed.baseY;
   const h = placed.def.height;
   const k = placed.rotation;
-  const run = RING.hi - RING.lo; // 29 steps across the band
-  // The ground flight keeps descending past the face until it hits grade
+  const run = RING.hi - RING.lo; // tiles available across the band
+  // STAIRS, NOT A SLOPE. Spreading the chunk height across the whole
+  // band gave a 0.27 rise per 3-unit tread — a 1:11 ramp with lips,
+  // which is what it looked like. A flight climbs at a FIXED stair
+  // rise instead and lands out when it reaches the chunk top; the band
+  // is a budget, not a slope to fill. RAMP_RISE is the steepest tread
+  // the player can actually mount (engine STEP_UP is 0.65), and one
+  // tile is one step because the column model holds one span per tile.
+  const rise = RAMP_RISE;
   const first = isFirst ? -RAMP_ENTRY_STEPS : 0;
   for (let i = first; i <= run; i++) {
-    const tRaw = (i - 2.5) / (run - 5);
-    const t = Math.min(1, i < 0 ? tRaw : Math.max(0, tRaw));
-    const surface = b + h * t;
+    // The first 3 treads stay FLAT at the chunk base: that entry landing
+    // is what merges with the previous chunk's exit landing in the shared
+    // 3x3 corner square. Climbing straight off tile 0 buries the corner
+    // under a taller slab and breaks the spiral handoff.
+    const surface = b + Math.min(h, Math.max(0, i - 2) * rise);
     const clearTop = Math.min(surface + RAMP_CLEARANCE, b + h + LANDING_CLEARANCE);
     for (let z = RING.lo; z <= RING.lo + 2; z++) {
       addSolid(solids, RING.lo + i, z, k, surface - RAMP_SLAB, surface);
