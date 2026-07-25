@@ -147,13 +147,33 @@ function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void
 
   switch (placed.def.id) {
     case 'terrace':
-      // Slim waist inside a broad flat plaza — the bridge landing
+      // Slim waist inside a flat plaza — the bridge landing. The plaza
+      // OMITS its band over the ramp arriving from the chunk below
+      // (pre-rotation: the west strip, which rotation k maps onto face
+      // k-1): stairs climb under open air instead of a 3-unit-low
+      // plaza overhang. That face also exposes no sockets.
       eachTile(SLIM.lo, SLIM.hi, (x, z) => addSolid(solids, x, z, k, b, top));
       eachTile(RING.lo, RING.hi, (x, z) => {
         const inCore = x >= SLIM.lo && x <= SLIM.hi && z >= SLIM.lo && z <= SLIM.hi;
-        if (!inCore) {
+        const overLowerRamp = x <= RING.lo + 2; // pre-rot west strip
+        if (!inCore && !overLowerRamp) {
           addSolid(solids, x, z, k, b, b + SLAB);
           addAllow(solids, x, z, k, b + SLAB, b + SLAB + 3.5);
+          // CORBELS: where the plaza cantilevers past the full core
+          // (the chunk below is at most that wide), stepped brackets at
+          // intervals support the balcony — deepest against the core,
+          // tapering to the rim
+          const dOut = Math.max(
+            x < FULL.lo ? FULL.lo - x : x > FULL.hi ? x - FULL.hi : 0,
+            z < FULL.lo ? FULL.lo - z : z > FULL.hi ? z - FULL.hi : 0,
+          );
+          if (dOut > 0) {
+            const along = (x < FULL.lo || x > FULL.hi) ? z : x;
+            if (along % 5 === 2) {
+              const depth = dOut === 1 ? 2.5 : dOut === 2 ? 1.5 : 0.75;
+              addSolid(solids, x, z, k, b - depth, b);
+            }
+          }
         }
       });
       break;

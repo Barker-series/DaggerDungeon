@@ -86,12 +86,16 @@ export function rotateFace(face: SocketFace, quarterTurns: number): SocketFace {
 function chunkSockets(placed: PlacedChunk): ChunkSocket[] {
   const k = placed.rotation;
   switch (placed.def.id) {
-    case 'terrace':
-      // The plaza ring: bridges and footing on all four faces
-      return FACE_ORDER.flatMap((face) => [
+    case 'terrace': {
+      // The plaza ring: bridges and footing — except on the face where
+      // the ramp from the chunk below arrives (the plaza omits its band
+      // there so the stairs climb under open air; no landing, no socket)
+      const rampFace = rotateFace('west', k);
+      return FACE_ORDER.filter((face) => face !== rampFace).flatMap((face) => [
         { face, y: 0.5, kind: 'bridge' as const },
         { face, y: 0.5, kind: 'ledge' as const },
       ]);
+    }
     case 'gallery':
       // Doorway on the face opposite the ramp
       return [
