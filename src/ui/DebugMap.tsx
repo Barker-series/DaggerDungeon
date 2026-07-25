@@ -4,6 +4,7 @@ import { getAllCells, tileBiome, type DungeonCell } from '../game/dungeon/cells'
 import { hallwayCells } from '../game/dungeon/layer4-connect';
 import { PIT_LEVEL } from '../game/dungeon/heightfield';
 import { findWorldPathToExit, startLevelFor } from '../game/pathfinding';
+import { sliceAt } from '../game/mapslice';
 
 const PIT_COLOR = '#601525';
 
@@ -17,13 +18,13 @@ const BIOME_COLORS = {
   outside: '#3a7a3a',
 } as const;
 
-type ViewMode = 'tiles' | 'biome' | 'noise' | 'content' | 'pillars';
-const VIEW_MODES: ViewMode[] = ['tiles', 'biome', 'noise', 'content', 'pillars'];
+type ViewMode = 'slice' | 'tiles' | 'biome' | 'noise' | 'content' | 'pillars';
+const VIEW_MODES: ViewMode[] = ['slice', 'tiles', 'biome', 'noise', 'content', 'pillars'];
 
 export function DebugMap() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [visible, setVisible] = useState(false);
-  const [mode, setMode] = useState<ViewMode>('tiles');
+  const [mode, setMode] = useState<ViewMode>('slice');
   const dungeon = useGameStore((s) => s.dungeon);
   const world = useGameStore((s) => s.world);
   const playerPos = useGameStore((s) => s.playerPos);
@@ -76,6 +77,70 @@ export function DebugMap() {
     const cellMap = new Map<string, DungeonCell>();
     for (const cell of cells) {
       cellMap.set(`${cell.cx},${cell.cz}`, cell);
+    }
+
+    // ── Elevation slice: what exists at the PLAYER'S height, from the
+    // column model — pillar interiors, ramps, plazas, bridges included.
+    // The vertical buffer keeps ramps/steps readable however tangled
+    // the vertical layout gets. ──
+    if (mode === 'slice' && dungeon && world) {
+      const mapSize = 560;
+      const tilePx = Math.max(2, Math.floor(mapSize / dungeon.width));
+      canvas.width = dungeon.width * tilePx + 200;
+      canvas.height = dungeon.height * tilePx + 40;
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const w = dungeon.width;
+      for (let tz = 0; tz < dungeon.height; tz++) {
+        for (let tx = 0; tx < w; tx++) {
+          const cell = sliceAt(world.columns[tz * w + tx]!, playerY);
+          let color: string | null = null;
+          if (cell.kind === 'walk') {
+            const dh = Math.max(-4, Math.min(4, cell.floor - playerY));
+            const v = Math.round(96 + dh * 12);
+            color = `rgb(${v},${v},${v + 10})`;
+          } else if (cell.kind === 'abyss') color = PIT_COLOR;
+          else if (cell.kind === 'below') color = '#1a2a3e';
+          else if (cell.kind === 'above') color = '#2a3a24';
+          if (color) {
+            ctx.fillStyle = color;
+            ctx.fillRect(tx * tilePx, tz * tilePx, tilePx, tilePx);
+          }
+        }
+      }
+
+      // Player marker
+      if (playerPos) {
+        ctx.fillStyle = '#ff0';
+        ctx.beginPath();
+        ctx.arc(playerPos.x * tilePx + tilePx / 2, playerPos.y * tilePx + tilePx / 2, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Legend
+      const legendX = dungeon.width * tilePx + 10;
+      ctx.fillStyle = '#ccc'; ctx.font = '12px monospace';
+      ctx.fillText(`Slice @ y=${playerY.toFixed(1)}`, legendX, 20);
+      ctx.fillText(`Mode: ${mode}`, legendX, 38);
+      ctx.fillText('` toggle map', legendX, 56);
+      ctx.fillText('Tab cycle mode', legendX, 71);
+      let ly = 94;
+      const items = [
+        ['#606066', 'Walkable (here)'],
+        ['#b0b0ba', 'Walkable (higher)'],
+        ['#2a3a24', 'Landing above'],
+        ['#1a2a3e', 'Open air below'],
+        [PIT_COLOR, 'Abyss'],
+        ['#111', 'Solid'],
+        ['#ff0', 'You'],
+      ] as const;
+      for (const [c, text] of items) {
+        ctx.fillStyle = c; ctx.fillRect(legendX, ly - 8, 12, 12);
+        ctx.fillStyle = '#ccc'; ctx.fillText(text, legendX + 18, ly + 2);
+        ly += 18;
+      }
+      return;
     }
 
     // ── Tile-level view: draw actual tiles from dungeon.tiles ──

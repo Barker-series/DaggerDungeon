@@ -1,20 +1,27 @@
 import { useRef, useEffect } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { TileType } from '../game/types';
-import { PIT_LEVEL } from '../game/dungeon/heightfield';
+import { sliceAt } from '../game/mapslice';
 
 const MAP_SIZE = 140; // pixels
 const TILE_PX = 3; // pixels per tile on minimap
 
+/** Colors per slice kind; 'walk' shades by height offset from player */
+const COLOR_BELOW = '#1a2a3e'; // open air — a drop
+const COLOR_ABYSS = '#601525'; // bottomless
+const COLOR_ABOVE = '#22331f'; // walkable overhead hint
+
 export function Minimap() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const world = useGameStore((s) => s.world);
   const dungeon = useGameStore((s) => s.dungeon);
   const playerPos = useGameStore((s) => s.playerPos);
+  const playerY = useGameStore((s) => s.playerY);
   const playerYaw = useGameStore((s) => s.playerYaw);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !dungeon) return;
+    if (!canvas || !world || !dungeon) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -29,34 +36,38 @@ export function Minimap() {
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, MAP_SIZE, MAP_SIZE);
 
-    // Draw tiles
-    for (let y = 0; y < dungeon.height; y++) {
-      for (let x = 0; x < dungeon.width; x++) {
-        const tile = dungeon.tiles[y]![x]!;
-        if (tile === TileType.Wall) continue;
+    const w = dungeon.width;
+    const t0x = Math.max(0, Math.floor(playerPos.x - MAP_SIZE / 2 / TILE_PX) - 1);
+    const t1x = Math.min(w - 1, Math.ceil(playerPos.x + MAP_SIZE / 2 / TILE_PX) + 1);
+    const t0y = Math.max(0, Math.floor(playerPos.y - MAP_SIZE / 2 / TILE_PX) - 1);
+    const t1y = Math.min(dungeon.height - 1, Math.ceil(playerPos.y + MAP_SIZE / 2 / TILE_PX) + 1);
+
+    // ELEVATION SLICE: the map shows what exists at the player's height
+    // — pillar plazas, ramp bands, bridges, whatever the column model
+    // says is there. The tile grid alone can't see interiors.
+    for (let y = t0y; y <= t1y; y++) {
+      for (let x = t0x; x <= t1x; x++) {
+        const cell = sliceAt(world.columns[y * w + x]!, playerY);
+        if (cell.kind === 'solid') continue;
 
         const px = offsetX + x * TILE_PX;
         const py = offsetY + y * TILE_PX;
-
-        // Skip tiles outside minimap
         if (px < -TILE_PX || px > MAP_SIZE || py < -TILE_PX || py > MAP_SIZE) continue;
 
-        if (dungeon.floorHeights[y]![x]! <= PIT_LEVEL) {
-          ctx.fillStyle = '#601525'; // pit void — do not step here
+        if (cell.kind === 'walk') {
+          // Shade by height offset: brighter = higher than the player
+          const dh = Math.max(-4, Math.min(4, cell.floor - playerY));
+          const v = Math.round(70 + dh * 8);
+          const tile = dungeon.tiles[y]![x]!;
+          if (tile === TileType.Door) ctx.fillStyle = '#654';
+          else if (tile === TileType.StairsDown) ctx.fillStyle = '#3a3';
+          else ctx.fillStyle = `rgb(${v},${v},${v + 6})`;
+        } else if (cell.kind === 'abyss') {
+          ctx.fillStyle = COLOR_ABYSS;
+        } else if (cell.kind === 'below') {
+          ctx.fillStyle = COLOR_BELOW;
         } else {
-          switch (tile) {
-            case TileType.Floor:
-              ctx.fillStyle = '#333';
-              break;
-            case TileType.Door:
-              ctx.fillStyle = '#654';
-              break;
-            case TileType.StairsDown:
-              ctx.fillStyle = '#3a3';
-              break;
-            default:
-              ctx.fillStyle = '#333';
-          }
+          ctx.fillStyle = COLOR_ABOVE;
         }
         ctx.fillRect(px, py, TILE_PX, TILE_PX);
       }
@@ -71,7 +82,6 @@ export function Minimap() {
     const angle = playerYaw + Math.PI;
 
     const size = 6;
-    // Triangle: tip in front, two points behind
     const tipX = ppx + Math.sin(angle) * size;
     const tipY = ppy + Math.cos(angle) * size;
     const leftX = ppx + Math.sin(angle + 2.5) * size * 0.7;
@@ -86,7 +96,7 @@ export function Minimap() {
     ctx.lineTo(rightX, rightY);
     ctx.closePath();
     ctx.fill();
-  }, [dungeon, playerPos, playerYaw]);
+  }, [world, dungeon, playerPos, playerY, playerYaw]);
 
   return (
     <canvas
