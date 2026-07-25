@@ -304,6 +304,11 @@ export class DungeonRenderer {
                 const flap = (dx2: number, dz2: number): number => {
                   const t2 = dungeon.tiles[y + dz2]?.[x + dx2];
                   if (t2 === undefined || t2 === TileType.Wall) return 0;
+                  // NEVER flap into open sky: there is no ceiling out
+                  // there for the overlap to hide under, so the plate
+                  // juts out of the cliff face as a slab of "cave roof"
+                  // hanging in the outside biome
+                  if (tileBiome(dungeon.cellBiomes, x + dx2, y + dz2) === 'outside') return 0;
                   const nc = dungeon.ceilingHeights[y + dz2]![x + dx2]!;
                   return Math.abs(nc - ac) > 0.15 ? 0.45 : 0;
                 };
@@ -503,6 +508,15 @@ export class DungeonRenderer {
 
             const airSpans = inA ? a : b;
             const otherSpans = inA ? b : a;
+            // The nearest breakpoint above this segment: face overshoot
+            // and transoms must stop there — another face occupies the
+            // plane beyond it, and coplanar overlap in a different
+            // buffer z-fights
+            let nextCut = Infinity;
+            for (const c of cuts) {
+              if (c > hi + 0.02 && c < nextCut) nextCut = c;
+            }
+            const extLimit = Math.max(0, Math.min(1.0, nextCut - hi));
             // shared edge corners per side: east (x+1,z)-(x+1,z+1),
             // west (x,z)-(x,z+1), south (x,z+1)-(x+1,z+1), north (x,z)-(x+1,z)
             const c0 = dx !== 0
@@ -540,11 +554,11 @@ export class DungeonRenderer {
             let topOverride: number | null = null;
 
             const emitFlat = (s0: number, s1: number): void => {
-              // Wall-top segments overshoot a full unit INTO the solid:
-              // the column passes through the ceiling plane, so the
-              // column|ceiling junction has face material behind it and
-              // T-junction hairlines have nothing to leak into
-              const ext = topOverride !== null ? 1.0 : 0;
+              // Wall-top segments overshoot INTO the solid (clamped at
+              // the next breakpoint): the column passes through the
+              // ceiling plane, so the junction has face material behind
+              // it and T-junction hairlines have nothing to leak into
+              const ext = topOverride !== null ? extLimit : 0;
               const t0 = lerp(hi0, hi1, s0) + ext;
               const t1 = lerp(hi0, hi1, s1) + ext;
               const vi = buf.verts.length / 3;
@@ -648,10 +662,29 @@ export class DungeonRenderer {
                 tx < 0 || tz < 0 || tx >= w || tz >= h || L.tiles[tz]![tx] === TileType.Wall;
               const org = (tx: number, tz: number): boolean =>
                 isOrganicTileIn(L.cellBiomes, tx, tz);
+              // A chamfer half replaces the flat face with a DIAGONAL set
+              // back inside the wall tile; the boundary plane itself is
+              // then sealed only by the matching half from the
+              // perpendicular boundary at that corner. That half exists
+              // only where the tangent column is ALSO open at this
+              // height. Where it isn't (a cave ceiling beside open sky,
+              // a low room beside a tall one), the diagonal stands alone
+              // and leaves a half-tile-wide, full-height SLIT — the
+              // classic see-through corner. So: chamfer only where the
+              // corner is genuinely open at this height; otherwise emit
+              // the flat face and seal the plane.
+              const tangentOpen = (t: [number, number]): boolean => {
+                const tx2 = solidX + t[0];
+                const tz2 = solidZ + t[1];
+                if (tx2 < 0 || tz2 < 0 || tx2 >= w || tz2 >= h) return false;
+                const sp = world.columns[tz2 * w + tx2]!;
+                return sp.some((s2) => clipY(s2.floor) <= mid && mid <= clipY(s2.ceil));
+              };
               const openHalf = (t: [number, number]): boolean => {
                 const dxT = solidX + t[0];
                 const dzT = solidZ + t[1];
                 if (wallAt(dxT, dzT)) return false;
+                if (!tangentOpen(t)) return false;
                 return org(airX, airZ) || org(solidX, solidZ) || org(dxT, dzT) || org(airX + t[0], airZ + t[1]);
               };
               o0 = openHalf(tangents[0]!);
@@ -669,8 +702,17 @@ export class DungeonRenderer {
               let hiK = k === 0 ? hi0 : hi1;
               let hiM = (hi0 + hi1) / 2;
               if (topOverride !== null) {
-                hiK = topOverride;
-                hiM = topOverride;
+                // ONLY RAISE, NEVER LOWER. The override lifts corner
+                // halves to the shared cap so no triangle opens between
+                // them — but the cap is derived from interior room
+                // ceilings, and at a biome boundary the air on this side
+                // can rise far above them (a cave roof beside open sky).
+                // Overwriting there SHRANK the face and left the band
+                // above the cave roof undrawn: the exact "no wall geo
+                // above them" gap, through which DoubleSide showed the
+                // backs of distant surfaces.
+                hiK = Math.max(hiK, topOverride);
+                hiM = Math.max(hiM, topOverride);
               }
               const mAx = (ex0 + ex1) / 2;
               const mAz = (ez0 + ez1) / 2;
@@ -717,7 +759,7 @@ export class DungeonRenderer {
             // the band from this boundary's ceiling up to the cap.
             const emitTransom = (s0: number, s1: number): void => {
               if (topOverride === null) return;
-              const top = topOverride + 1.0;
+              const top = Math.min(topOverride + 1.0, nextCut);
               const lo0T = lerp(hi0, hi1, s0);
               const lo1T = lerp(hi0, hi1, s1);
               if (top <= Math.min(lo0T, lo1T) + 0.02) return;

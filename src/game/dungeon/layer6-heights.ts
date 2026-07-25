@@ -282,6 +282,71 @@ export function computeHeightFields(
   // ── Cave-mouth sweep: ceilings rise toward outside regions ──
   applyMouthSweep(floor, ceiling, gridTiles, isFloor, biomeAt);
 
+  // ── BIOME-BORDER CEILING BUFFER: within a band along the outside
+  // boundary, interior ceilings smooth toward their neighbors — the
+  // mouth sweep and organic variation otherwise meet the boundary as a
+  // jagged staircase that every downstream seam system (faces, caps,
+  // chamfers) has to reconcile, and that junction breeds crashouts.
+  // A smooth ramp into the border gives them one clean line. ──
+  {
+    const BUFFER = 3;
+    const dist = new Int16Array(gridTiles * gridTiles).fill(-1);
+    let frontier: number[] = [];
+    for (let tz = 0; tz < gridTiles; tz++) {
+      for (let tx = 0; tx < gridTiles; tx++) {
+        if (!isFloor(tx, tz)) continue;
+        if (biomeAt(tx, tz) === 'outside') continue;
+        let borders = false;
+        for (let dz = -1; dz <= 1 && !borders; dz++) {
+          for (let dx = -1; dx <= 1 && !borders; dx++) {
+            if (biomeAt(tx + dx, tz + dz) === 'outside') borders = true;
+          }
+        }
+        if (borders) {
+          dist[tz * gridTiles + tx] = 0;
+          frontier.push(tz * gridTiles + tx);
+        }
+      }
+    }
+    for (let d = 1; d <= BUFFER && frontier.length > 0; d++) {
+      const next: number[] = [];
+      for (const k of frontier) {
+        const tx = k % gridTiles;
+        const tz = Math.floor(k / gridTiles);
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = tx + dx!;
+          const nz = tz + dz!;
+          if (!isFloor(nx, nz)) continue;
+          if (biomeAt(nx, nz) === 'outside') continue;
+          const nk = nz * gridTiles + nx;
+          if (dist[nk]! >= 0) continue;
+          dist[nk] = d;
+          next.push(nk);
+        }
+      }
+      frontier = next;
+    }
+    for (let pass = 0; pass < 4; pass++) {
+      const snap = ceiling.map((row) => [...row]);
+      for (let tz = 0; tz < gridTiles; tz++) {
+        for (let tx = 0; tx < gridTiles; tx++) {
+          if (dist[tz * gridTiles + tx]! < 0) continue;
+          let sum = snap[tz]![tx]!;
+          let count = 1;
+          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nx = tx + dx!;
+            const nz = tz + dz!;
+            if (!isFloor(nx, nz)) continue;
+            if (biomeAt(nx, nz) === 'outside') continue;
+            sum += snap[nz]![nx]!;
+            count++;
+          }
+          ceiling[tz]![tx] = sum / count;
+        }
+      }
+    }
+  }
+
   // ── SNAP: every committed height sits on the vertical grid ──
   // Structure meets structure exactly or not at all; float mush from
   // blending and relaxing never reaches the world. (Holes keep their

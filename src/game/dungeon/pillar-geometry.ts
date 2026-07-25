@@ -34,8 +34,12 @@ const CROWN_HEADROOM = 4;
 const SLAB = 0.5;
 /** Ramp slabs are chunky — thin floating stairs read as jank */
 const RAMP_SLAB = 1;
-/** Guaranteed headroom over every ramp surface */
-const RAMP_CLEARANCE = 3;
+/** Guaranteed headroom over every ramp surface — generous: the spiral
+ *  stairs are a marquee traversal experience, not a crawlspace. The
+ *  punch is capped near landings (chunk top + landing headroom) so it
+ *  never blasts through features two chunks up. */
+const RAMP_CLEARANCE = 9.5;
+const LANDING_CLEARANCE = 4.75;
 
 const CELL = 56;
 
@@ -131,9 +135,10 @@ function rampSolids(placed: PlacedChunk, solids: Map<string, TileSolids>): void 
   for (let i = 0; i <= run; i++) {
     const t = Math.max(0, Math.min(1, (i - 2.5) / (run - 5)));
     const surface = b + h * t;
+    const clearTop = Math.min(surface + RAMP_CLEARANCE, b + h + LANDING_CLEARANCE);
     for (let z = RING.lo; z <= RING.lo + 2; z++) {
       addSolid(solids, RING.lo + i, z, k, surface - RAMP_SLAB, surface);
-      addClear(solids, RING.lo + i, z, k, surface, surface + RAMP_CLEARANCE);
+      addClear(solids, RING.lo + i, z, k, surface, clearTop);
     }
   }
 }

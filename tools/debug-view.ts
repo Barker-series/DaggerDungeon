@@ -52,6 +52,9 @@ const L = world.levels[0]!;
 const scene = new THREE.Scene();
 new DungeonRenderer(scene).build(world);
 
+/** 9 position floats + 3 authored-normal floats (the renderer sets
+ *  explicit normals and uses DoubleSide, so WINDING is meaningless —
+ *  the authored normal is the only truth about which way a face looks) */
 type Tri = number[];
 const buckets = new Map<number, Tri[]>();
 const bkey = (tx: number, tz: number) => tz * 4096 + tx;
@@ -67,6 +70,9 @@ scene.traverse((o) => {
       const j = idx.getX(i + k);
       t.push(pos.getX(j), pos.getY(j), pos.getZ(j));
     }
+    const nrm = g.getAttribute('normal');
+    const j0 = idx.getX(i);
+    t.push(nrm ? nrm.getX(j0) : 0, nrm ? nrm.getY(j0) : 0, nrm ? nrm.getZ(j0) : 0);
     const minTx = Math.floor(Math.min(t[0]!, t[3]!, t[6]!) / TILE_SIZE);
     const maxTx = Math.floor(Math.max(t[0]!, t[3]!, t[6]!) / TILE_SIZE);
     const minTz = Math.floor(Math.min(t[2]!, t[5]!, t[8]!) / TILE_SIZE);
@@ -99,7 +105,7 @@ function hitTri(ox: number, oy: number, oz: number, dx: number, dy: number, dz: 
   return tt > 1e-4 ? tt : Infinity;
 }
 
-function cast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): { d: number; n: [number, number, number] } {
+function cast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): { d: number; n: [number, number, number]; back: boolean } {
   const MAXD = 500; // long sightlines exist (colonnade arcades run through multiple pillar cells)
   const seen = new Set<number>();
   let best = Infinity;
@@ -121,16 +127,16 @@ function cast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: nu
     }
     if (best < d + TILE_SIZE) break;
   }
-  if (!bestTri) return { d: Infinity, n: [0, 0, 0] };
-  const e1 = [bestTri[3]! - bestTri[0]!, bestTri[4]! - bestTri[1]!, bestTri[5]! - bestTri[2]!];
-  const e2 = [bestTri[6]! - bestTri[0]!, bestTri[7]! - bestTri[1]!, bestTri[8]! - bestTri[2]!];
-  const n: [number, number, number] = [
-    e1[1]! * e2[2]! - e1[2]! * e2[1]!,
-    e1[2]! * e2[0]! - e1[0]! * e2[2]!,
-    e1[0]! * e2[1]! - e1[1]! * e2[0]!,
-  ];
+  if (!bestTri) return { d: Infinity, n: [0, 0, 0], back: false };
+  // The AUTHORED normal (winding is meaningless in this renderer)
+  const n: [number, number, number] = [bestTri[9]!, bestTri[10]!, bestTri[11]!];
   const len = Math.hypot(...n) || 1;
-  return { d: best, n: [n[0] / len, n[1] / len, n[2] / len] };
+  const nn: [number, number, number] = [n[0] / len, n[1] / len, n[2] / len];
+  // WRONG-SIDE hit: the surface's own normal points AWAY from the eye,
+  // so we are looking at its back. DoubleSide renders it anyway, which
+  // is exactly why missing/flipped walls never show up as holes.
+  const back = nn[0] * dx + nn[1] * dy + nn[2] * dz > 0.05;
+  return { d: best, n: nn, back };
 }
 
 // ── Render the exact camera view ──
@@ -152,6 +158,9 @@ const up = [
 
 const img = new Uint8Array(W * H * 3);
 let missPixels = 0;
+let backPixels = 0;
+const backSpots = new Map<string, number>();
+const BACKFACE_VIS = process.argv.includes('--backfaces');
 for (let py = 0; py < H; py++) {
   for (let px = 0; px < W; px++) {
     const u = (px / W) * 2 - 1;
@@ -161,7 +170,7 @@ for (let py = 0; py < H; py++) {
     let dz = fwd[2]! + u * tanX * right[2]! + v * tanY * up[2]!;
     const dl = Math.hypot(dx, dy, dz);
     dx /= dl; dy /= dl; dz /= dl;
-    const { d, n } = cast(eye.x, eye.y, eye.z, dx, dy, dz);
+    const { d, n, back } = cast(eye.x, eye.y, eye.z, dx, dy, dz);
     const i = (py * W + px) * 3;
     if (!Number.isFinite(d)) {
       missPixels++;
@@ -176,17 +185,28 @@ for (let py = 0; py < H; py++) {
       const md = (hx - m[0]) ** 2 + (hy - m[1]) ** 2 + (hz - m[2]) ** 2;
       if (md < 0.45 * 0.45) { marked = true; break; }
     }
+    if (back) {
+      backPixels++;
+      const btx = Math.floor((eye.x + dx * d) / TILE_SIZE);
+      const btz = Math.floor((eye.z + dz * d) / TILE_SIZE);
+      const bk = `${btx},${btz}`;
+      backSpots.set(bk, (backSpots.get(bk) ?? 0) + 1);
+    }
     const light = 0.45 + 0.55 * Math.abs(n[0]! * 0.35 + n[1]! * 0.85 + n[2]! * 0.4);
     const fog = Math.max(0.25, 1 - d / 160);
     const base = 215 * light * fog;
     // tint: floors warm, ceilings cool, walls neutral. NOTE: the
     // renderer's horizontal quads wind clockwise-from-above, so their
     // GEOMETRIC normal points down for floors — invert accordingly.
-    const upness = -n[1]!;
+    const upness = n[1]!;
     const r = upness > 0.5 ? base : upness < -0.5 ? base * 0.8 : base * 0.95;
     const g = base * 0.92;
     const b = upness < -0.5 ? base : base * 0.85;
-    if (marked) {
+    if (BACKFACE_VIS && back) {
+      // Backfaces render CYAN: you are seeing the inside of a surface,
+      // i.e. a missing/flipped wall (DoubleSide hides this in-game)
+      img[i] = 0; img[i + 1] = Math.min(255, 120 + base * 0.5); img[i + 2] = Math.min(255, 160 + base * 0.4);
+    } else if (marked) {
       img[i] = Math.min(255, r * 0.45 + 150);
       img[i + 1] = g * 0.35;
       img[i + 2] = b * 0.35;
@@ -199,9 +219,23 @@ const ppm = outPath.replace(/\.png$/, '.ppm');
 writeFileSync(ppm, Buffer.concat([Buffer.from(`P6\n${W} ${H}\n255\n`), Buffer.from(img)]));
 try {
   execSync(`magick ${ppm} ${outPath} 2>/dev/null || convert ${ppm} ${outPath}`);
-  console.log(`view rendered: ${outPath} (missPixels=${missPixels} — magenta = nothing hit; expected for open sky)`);
+  console.log(`view rendered: ${outPath} (missPixels=${missPixels} magenta=nothing hit; backfacePixels=${backPixels}${BACKFACE_VIS ? ' shown CYAN' : ' — rerun with --backfaces to see them'})`);
 } catch {
   console.log(`view rendered: ${ppm} (PPM; install ImageMagick for PNG) missPixels=${missPixels}`);
+}
+
+// ── Wrong-side hotspots: seeing the BACK of a surface means a
+// missing or flipped face there (DoubleSide renders it regardless) ──
+
+if (backPixels > 0) {
+  const top = [...backSpots.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+  console.log(`\nWRONG-SIDE hotspots (${backPixels} px):`);
+  for (const [k, n] of top) {
+    const [btx, btz] = k.split(',').map(Number);
+    console.log(`  tile(${k}) ${n}px tile=${L.tiles[btz!]?.[btx!]}${L.pillarWall[btz!]?.[btx!] ? 'P' : ''}` +
+      ` biome=${tileBiome(L.cellBiomes, btx!, btz!) ?? 'tunnel'}` +
+      ` ceil=${L.ceilingHeights[btz!]?.[btx!]?.toFixed(1)}`);
+  }
 }
 
 // ── Data under each mark ──
@@ -218,6 +252,124 @@ for (let mi = 0; mi < marks.length; mi++) {
   console.log(`  spans: ${spans.map((s) =>
     `${s.floor <= -1e8 ? 'ABYSS' : s.floor.toFixed(1)}..${s.ceil >= SKY_CEIL ? 'SKY' : s.ceil.toFixed(1)}(${s.owner},${s.ceilOwner})`).join(' ') || '(solid)'}`);
   console.log(`  slice@markY: ${JSON.stringify(sliceAt(spans, my))}`);
+  // ── GAP AUDIT at the mark: for each of the 4 tile-boundary planes
+  // through this point, list the vertical coverage of the geometry on
+  // it vs the range that MUST be sealed (one side air, other solid).
+  // A mark on a slit lands straight on the missing interval. ──
+  let sealedCount = 0;
+  // Scan the 3x3 neighborhood: a mark on a shared corner belongs to
+  // several tiles at once, and the slit may be on any of their planes
+  for (const [ox, oz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]] as const)
+  for (const [dx, dz] of [[1, 0], [0, 1]] as const) {
+    const mtx2 = mtx + ox;
+    const mtz2 = mtz + oz;
+    const nx = mtx2 + dx;
+    const nz = mtz2 + dz;
+    if (mtx2 < 0 || mtz2 < 0 || mtx2 >= L.width || mtz2 >= L.height) continue;
+    if (nx < 0 || nz < 0 || nx >= L.width || nz >= L.height) continue;
+    const A = world.columns[mtz2 * L.width + mtx2] ?? [];
+    const B = world.columns[nz * L.width + nx] ?? [];
+    const mtxL = mtx2, mtzL = mtz2;
+    const clip = (y: number): number => (y >= SKY_CEIL ? 92 : y <= -1e8 ? -24 : y);
+    const inAir = (sp: typeof A, y: number): boolean =>
+      sp.some((s) => clip(s.floor) <= y && y <= clip(s.ceil));
+    // required: ranges where exactly one side is air
+    const marks2: number[] = [];
+    for (const sp of [A, B]) for (const s of sp) { marks2.push(clip(s.floor), clip(s.ceil)); }
+    marks2.push(0, 92);
+    marks2.sort((p2, q2) => p2 - q2);
+    const need: [number, number][] = [];
+    for (let i2 = 0; i2 + 1 < marks2.length; i2++) {
+      const lo = marks2[i2]!, hi = marks2[i2 + 1]!;
+      if (hi - lo < 0.05) continue;
+      const mid2 = (lo + hi) / 2;
+      if (inAir(A, mid2) !== inAir(B, mid2)) {
+        const prev = need[need.length - 1];
+        if (prev && Math.abs(prev[1] - lo) < 0.05) prev[1] = hi;
+        else need.push([lo, hi]);
+      }
+    }
+    if (need.length === 0) continue;
+    // 2D coverage on that plane: a slit can be half a tile WIDE at
+    // full height, so Y-only merging misses it. Sample the (along, y)
+    // rectangle and point-test the plane's triangles.
+    const planeX = dx !== 0 ? (mtxL + 1) * TILE_SIZE : null;
+    const planeZ = dz !== 0 ? (mtzL + 1) * TILE_SIZE : null;
+    const lo2 = (planeX !== null ? mtzL : mtxL) * TILE_SIZE;
+    const hi2 = lo2 + TILE_SIZE;
+    const planeTris: number[][] = [];
+    for (const arr of buckets.values()) {
+      for (const t of arr) {
+        const onPlane = planeX !== null
+          ? [0, 3, 6].every((o) => Math.abs(t[o]! - planeX) < 0.02)
+          : [2, 5, 8].every((o) => Math.abs(t[o]! - planeZ!) < 0.02);
+        if (!onPlane) continue;
+        const along = planeX !== null ? [t[2]!, t[5]!, t[8]!] : [t[0]!, t[3]!, t[6]!];
+        if (Math.max(...along) <= lo2 - 0.05 || Math.min(...along) >= hi2 + 0.05) continue;
+        planeTris.push([along[0]!, t[1]!, along[1]!, t[4]!, along[2]!, t[7]!]);
+      }
+    }
+    const covers = (a: number, y: number): boolean => {
+      for (const t of planeTris) {
+        const d1 = (a - t[2]!) * (t[1]! - t[3]!) - (t[0]! - t[2]!) * (y - t[3]!);
+        const d2 = (a - t[4]!) * (t[3]! - t[5]!) - (t[2]! - t[4]!) * (y - t[5]!);
+        const d3 = (a - t[0]!) * (t[5]! - t[1]!) - (t[4]! - t[0]!) * (y - t[1]!);
+        const hasNeg = d1 < -1e-6 || d2 < -1e-6 || d3 < -1e-6;
+        const hasPos = d1 > 1e-6 || d2 > 1e-6 || d3 > 1e-6;
+        if (!(hasNeg && hasPos)) return true;
+      }
+      return false;
+    };
+    const gaps: string[] = [];
+    for (const [nlo, nhi] of need) {
+      let aMin = Infinity, aMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+      let miss = 0, tot = 0;
+      for (let a = lo2 + 0.15; a < hi2; a += 0.3) {
+        for (let y = nlo + 0.15; y < nhi; y += 0.5) {
+          tot++;
+          if (covers(a, y)) continue;
+          miss++;
+          aMin = Math.min(aMin, a); aMax = Math.max(aMax, a);
+          yMin = Math.min(yMin, y); yMax = Math.max(yMax, y);
+        }
+      }
+      if (miss === 0) continue;
+      // A plane gap is only a REAL hole if you can see through it: a
+      // chamfered corner legitimately sets its surface back onto a
+      // diagonal inside the wall tile. Probe perpendicular rays through
+      // the uncovered area and keep only those that pass clean through.
+      let seeThrough = 0;
+      const aM = (aMin + aMax) / 2;
+      for (let y = yMin; y <= yMax; y += Math.max(0.5, (yMax - yMin) / 8)) {
+        const ox2 = planeX !== null ? planeX - (dx === 1 ? 0.5 : -0.5) : aM;
+        const oz2 = planeZ !== null ? planeZ - (dz === 1 ? 0.5 : -0.5) : aM;
+        const px2 = planeX !== null ? ox2 : aM;
+        const pz2 = planeZ !== null ? oz2 : aM;
+        const ddx2 = planeX !== null ? (dx === 1 ? 1 : -1) : 0;
+        const ddz2 = planeZ !== null ? (dz === 1 ? 1 : -1) : 0;
+        const r2 = cast(planeX !== null ? px2 : aM, y, planeZ !== null ? pz2 : aM, ddx2, 0, ddz2);
+        if (!Number.isFinite(r2.d) || r2.d > 4) seeThrough++;
+      }
+      if (seeThrough > 0) {
+        gaps.push(`${Math.round(100 * miss / tot)}% of ${nlo.toFixed(1)}..${nhi.toFixed(1)}` +
+          ` at along[${aMin.toFixed(1)}..${aMax.toFixed(1)}] y[${yMin.toFixed(1)}..${yMax.toFixed(1)}]` +
+          ` SEE-THROUGH(${seeThrough})`);
+      }
+    }
+    if (gaps.length === 0) { sealedCount++; continue; }
+    const dir = planeX !== null ? `x=${planeX}` : `z=${planeZ}`;
+    console.log(`  *** UNSEALED ${dir} tile(${mtxL},${mtzL})|(${nx},${nz}): ${gaps.join(' ; ')}` +
+      ` (need ${need.map((n2) => `${n2[0].toFixed(1)}..${n2[1].toFixed(1)}`).join(' ')})`);
+  }
+  console.log(`  boundary planes checked near mark: ${sealedCount} sealed`);
+  {
+    // Probe from the eye toward the mark: what do we actually see there?
+    let ddx = mx - eye.x, ddy = my - eye.y, ddz = mz - eye.z;
+    const dl = Math.hypot(ddx, ddy, ddz) || 1;
+    ddx /= dl; ddy /= dl; ddz /= dl;
+    const r = cast(eye.x, eye.y, eye.z, ddx, ddy, ddz);
+    console.log(`  seen-from-eye: ${Number.isFinite(r.d) ? `d=${r.d.toFixed(1)} n=(${r.n.map((v) => v.toFixed(2)).join(',')}) ${r.back ? 'WRONG-SIDE (seeing this surface\'s back — missing or flipped face)' : 'front'}` : 'NOTHING HIT'}`);
+  }
   if (L.pillarWall[mtz]?.[mtx]) {
     const pcx = Math.floor(mtx / 56);
     const pcz = Math.floor(mtz / 56);
