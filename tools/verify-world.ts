@@ -54,6 +54,8 @@ for (const seed of SEEDS) {
 
   // ── Climbability ──
   let climbable = 0;
+  let descendable = 0;
+  let deepPillars = 0;
   for (const spec of world.pillars.values()) {
     const x0 = spec.cx * PILLAR_CELL_TILES;
     const z0 = spec.cz * PILLAR_CELL_TILES;
@@ -75,9 +77,11 @@ for (const seed of SEEDS) {
       }
     }
     let reached = false;
-    while (queue.length > 0 && !reached) {
+    let lowest = Infinity;
+    while (queue.length > 0) {
       const [tx, tz, fy] = queue.pop()!;
-      if (Math.abs(fy - targetY) < 0.01) { reached = true; break; }
+      if (Math.abs(fy - targetY) < 0.01) reached = true;
+      if (fy < lowest) lowest = fy;
       for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const nx = tx + dx!;
         const nz = tz + dz!;
@@ -92,6 +96,13 @@ for (const seed of SEEDS) {
       }
     }
     if (reached) climbable++;
+    // Below-grade kebabs must be DESCENDABLE: the same walk from grade
+    // has to reach the bottom landing of the down spiral
+    if (spec.baseDepth < -4) {
+      if (lowest <= spec.baseDepth + 1.5) descendable++;
+      else fail(`seed ${seed}: pillar(${spec.cx},${spec.cz}) depth ${spec.baseDepth} unreachable (lowest walked ${lowest.toFixed(1)})`);
+      deepPillars++;
+    }
   }
   if (climbable !== world.pillars.size) {
     fail(`seed ${seed}: only ${climbable}/${world.pillars.size} pillars climbable`);
@@ -128,7 +139,7 @@ for (const seed of SEEDS) {
   }
   if (cracks > 0) fail(`seed ${seed}: ${cracks} crack pairs`);
 
-  console.log(`seed ${seed}: ${ms}ms pillars=${world.pillars.size} climbable=${climbable} bridges=${world.bridges.length} bridgeTiles=${total} route=${route.length} cracks=${cracks}`);
+  console.log(`seed ${seed}: deep=${descendable}/${deepPillars} ${ms}ms pillars=${world.pillars.size} climbable=${climbable} bridges=${world.bridges.length} bridgeTiles=${total} route=${route.length} cracks=${cracks}`);
 }
 
 console.log(failures === 0 ? `ALL CHECKS PASSED (${SEEDS.length} seeds)` : `${failures} FAILURES`);

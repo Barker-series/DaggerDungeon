@@ -86,6 +86,10 @@ interface TileSolids {
    *  solids (a plaza's headroom must not erase the ramp slabs crossing
    *  its own ring). */
   allow: [number, number][];
+  /** DEEP clearances — punched like `clear` but NOT clamped to grade:
+   *  below-grade chunks live inside the solid foundation, so their air
+   *  exists only where these cut it. Also allowed zones for the cull. */
+  clearDeep: [number, number][];
 }
 
 function eachTile(lo: number, hi: number, fn: (lx: number, lz: number) => void): void {
@@ -98,7 +102,7 @@ function tileAt(solids: Map<string, TileSolids>, lx: number, lz: number, k: numb
   const [x, z] = rot(lx, lz, k);
   let t = solids.get(key(x, z));
   if (!t) {
-    t = { intervals: [], clear: [], allow: [] };
+    t = { intervals: [], clear: [], allow: [], clearDeep: [] };
     solids.set(key(x, z), t);
   }
   return t;
@@ -116,8 +120,10 @@ function addClear(
   solids: Map<string, TileSolids>,
   lx: number, lz: number, k: number,
   lo: number, hi: number,
+  deep = false,
 ): void {
-  tileAt(solids, lx, lz, k).clear.push([lo, hi]);
+  const t = tileAt(solids, lx, lz, k);
+  (deep ? t.clearDeep : t.clear).push([lo, hi]);
 }
 
 function addAllow(
@@ -156,17 +162,20 @@ function rampSolids(
   // the player can actually mount (engine STEP_UP is 0.65), and one
   // tile is one step because the column model holds one span per tile.
   const rise = RAMP_RISE;
+  // Below-grade chunks carve their air out of the solid foundation:
+  // their clears must NOT clamp to grade
+  const deep = b < 0;
   const first = isFirst ? -RAMP_ENTRY_STEPS : 0;
   for (let i = first; i <= run; i++) {
     // The first 3 treads stay FLAT at the chunk base: that entry landing
     // is what merges with the previous chunk's exit landing in the shared
-    // 3x3 corner square. Climbing straight off tile 0 buries the corner
-    // under a taller slab and breaks the spiral handoff.
+    // 3x3 corner square. Both corner squares must stay flat — a climbing
+    // tread there gets erased by the neighbor flight's headroom punch.
     const surface = b + Math.min(h, Math.max(0, i - 2) * rise);
     const clearTop = Math.min(surface + RAMP_CLEARANCE, b + h + LANDING_CLEARANCE);
     for (let z = RING.lo; z <= RING.lo + 2; z++) {
       addSolid(solids, RING.lo + i, z, k, surface - RAMP_SLAB, surface);
-      addClear(solids, RING.lo + i, z, k, surface, clearTop);
+      addClear(solids, RING.lo + i, z, k, surface, clearTop, deep);
     }
   }
 }
@@ -181,7 +190,7 @@ function chunkSolids(
   const k = placed.rotation;
   const top = b + placed.def.height;
 
-  rampSolids(placed, solids, below === undefined, flattenRamp);
+  rampSolids(placed, solids, placed.baseY === 0, flattenRamp);
 
   switch (placed.def.id) {
     case 'terrace':
@@ -347,8 +356,13 @@ export function pillarAirSpans(
     // NEVER cuts below grade: stair headroom is for passing under
     // structure, and letting it reach the foundation excavates a trench
     // in the ground wherever the flight runs below the terrain.
-    for (const [clo0, chi] of t.clear) {
-      const clo = Math.max(clo0, ground);
+    // Deep clears cut the foundation itself (floored well above the
+    // render abyss); surface clears never cut below grade.
+    const punches: [number, number][] = [
+      ...t.clear.map(([lo, hi]) => [Math.max(lo, ground), hi] as [number, number]),
+      ...t.clearDeep.map(([lo, hi]) => [Math.max(lo, FOUNDATION_BOTTOM + 4), hi] as [number, number]),
+    ];
+    for (const [clo, chi] of punches) {
       if (chi <= clo + 0.01) continue;
       const next: [number, number][] = [];
       for (const [lo, up] of merged) {
@@ -379,6 +393,7 @@ export function pillarAirSpans(
         [FOUNDATION_BOTTOM, cap],
         [spec.totalHeight, capTop],
         ...t.clear,
+        ...t.clearDeep,
         ...t.allow,
       ];
       allowed.sort((a, b) => a[0] - b[0]);

@@ -229,10 +229,15 @@ Target mix: dungeon ≈39%, crypt ≈20%, cave ≈17%, outside ≈18%, ember ≈
 <!-- ══════════════ PILLARS ══════════════ -->
 <h2>Pillar Kebabs <span class="src">pillar-layer.ts · pillar-chunks.ts · pillar-geometry.ts</span></h2>
 <p class="lede">The megastructures. One pillar cell = 56 tiles (168 wu); the pillar occupies the central
-~30×30 tiles. A kebab of authored chunks is stacked to a noise-driven target height
-(<code>MIN 36 – MAX 80</code> wu, field scale 3 pillar cells); ~18% of cells are void gaps
-(<code>VOID_THRESHOLD 0.18</code>). Every chunk carries a stair flight up one face and the face advances one
-quarter-turn clockwise per chunk — <b>the spiral from grade to crown is continuous by construction</b>, never verified.</p>
+~30×30 tiles. A kebab of authored chunks is stacked BOTH WAYS from grade: the UP section to a noise-driven
+height (<code>MIN 36 – MAX 80</code> wu), and a DOWN section into the foundation driven by its own smooth
+field (~45% of pillars stay surface-only; the rest sink <code>8–32</code> wu; <code>15%</code> of deep
+pillars are <b>wells</b> — nothing above grade but a crown plinth, a spiral descending below). ~18% of cells
+are void gaps. Every chunk carries a stair flight up one face and the face advances one quarter-turn
+clockwise per chunk — <b>one continuous spiral from the deepest landing through grade to the crown</b>,
+never verified, unbreakable by construction. Below-grade chunks carve their air out of the solid foundation
+(deep clearances, unclamped); the at-grade chunk owns the ground entry flight. Below grade only plain and
+shaft spawn for now — buried plazas and halls are future meats.</p>
 
 <div class="cards">
   <div class="card">
@@ -269,6 +274,18 @@ quarter-turn clockwise per chunk — <b>the spiral from grade to crown is contin
     <p class="dim">Hollow interior hall carved in the core; doorway (tiles 26–29, 4 high) on the face opposite
     the ramp — a bridge can enter the pillar's inside.</p>
     <table class="mods"><tr><td>sockets</td><td>bridge at door face y 0.5; interior ledge</td></tr></table>
+  </div>
+
+  <div class="card">
+    <h3>Shaft <span class="tag">h 13.8 · weight 2</span></h3>
+    <svg class="chunk" width="150" height="70" viewBox="0 0 150 70">
+      <rect x="35" y="8" width="80" height="54" fill="#4a4f5c"/>
+      <path d="M10 62 h9 v-4 h9 v-4 h9 v-4 h9 v-4 h9 v-4 h9 v-4 h9 v-4 h9 v-4 h9 v-4 h9" stroke="#e8b44c" fill="none" stroke-width="2"/>
+    </svg>
+    <p class="dim">The express meat: stairs without stops. Height 13.8 = 23 treads at the fixed 0.6 rise —
+    exactly the climb between the two corner squares, so the flight fills the whole band and its only flat
+    tiles are the shared corners. (Corners must stay flat: a climbing tread there gets erased by the
+    neighboring flight's headroom punch.)</p>
   </div>
 
   <div class="card">

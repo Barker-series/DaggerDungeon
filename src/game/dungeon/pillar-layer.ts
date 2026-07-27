@@ -45,6 +45,15 @@ const VOID_THRESHOLD = 0.18;
 const HEIGHT_NOISE_SCALE = 3;
 const MIN_HEIGHT = 36;
 const MAX_HEIGHT = 80;
+/** Below-grade reach. ~45% of pillars stay surface-only; the rest sink
+ *  8..32 units of stacked chunks into the foundation (which bottoms out
+ *  at -40, so the deepest shaft keeps margin). */
+const DOWN_THRESHOLD = 0.45;
+const MAX_DOWN = 32;
+const MIN_DOWN = 8;
+/** Chance an otherwise-eligible deep pillar builds NOTHING above grade —
+ *  a well: crown plinth at the surface, spiral descending below. */
+const WELL_CHANCE = 0.15;
 const PILLAR_SALT = 4141;
 
 /**
@@ -79,7 +88,11 @@ export interface PillarSpec {
   /** PILLAR-grid coordinates */
   cx: number;
   cz: number;
+  /** Top of the crown, above grade */
   totalHeight: number;
+  /** Base of the lowest chunk — 0 for surface-only pillars, negative
+   *  when the kebab continues below grade */
+  baseDepth: number;
   chunks: PlacedChunk[];
   sockets: ResolvedSocket[];
 }
@@ -94,6 +107,9 @@ export function rotateFace(face: SocketFace, quarterTurns: number): SocketFace {
 
 /** Sockets a placed chunk exposes, in chunk-local heights */
 function chunkSockets(placed: PlacedChunk): ChunkSocket[] {
+  // Below-grade chunks expose no sockets: bridges are a surface system
+  // (and MIN_BRIDGE_Y would reject them anyway)
+  if (placed.baseY < 0) return [];
   const k = placed.rotation;
   switch (placed.def.id) {
     case 'terrace': {
@@ -134,6 +150,12 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   const rng = mulberry32(cellSeed(pcx, pcz, worldSeed, PILLAR_SALT));
   const heightNoise = elevationField(worldSeed, pcx, pcz);
   const targetHeight = MIN_HEIGHT + heightNoise * (MAX_HEIGHT - MIN_HEIGHT);
+  // The DOWN direction has its own smooth field, so sunken districts
+  // cluster the way tall districts do
+  const downNoise = sampleNoise(pcx, pcz, worldSeed + 606, HEIGHT_NOISE_SCALE);
+  const targetDown = downNoise < DOWN_THRESHOLD
+    ? 0
+    : MIN_DOWN + ((downNoise - DOWN_THRESHOLD) / (1 - DOWN_THRESHOLD)) * (MAX_DOWN - MIN_DOWN);
 
   const crown = CHUNK_BY_ID.get('crown')!;
   const pickable = CHUNK_LIBRARY.filter((c) => c.weight > 0);
@@ -146,19 +168,51 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
     }
     return pickable[pickable.length - 1]!;
   };
+  // Below grade only plain and shaft for now: buried plazas and
+  // underground halls are future meats
+  const deepPickable = pickable.filter((c) => c.id === 'plain' || c.id === 'shaft');
+  const pickDeep = (): PillarChunkDef =>
+    deepPickable[Math.floor(rng() * deepPickable.length)]!;
 
-  const chunks: PlacedChunk[] = [];
+  // A well builds nothing above grade: crown plinth + descent only
+  const well = targetDown >= MIN_DOWN && rng() < WELL_CHANCE;
+
+  // ── The DOWN section: stacked below grade, chunk boundaries land
+  // exactly ON grade so the at-grade chunk owns the ground entry ──
+  const downDefs: PillarChunkDef[] = [];
+  let depth = 0;
+  while (depth < targetDown && depth + 8 <= MAX_DOWN + 2) {
+    const def = downDefs.length === 0 ? CHUNK_BY_ID.get('plain')! : pickDeep();
+    downDefs.push(def); // [0] is the BOTTOM chunk — always 'landings'
+    depth += def.height;
+    if (depth > MAX_DOWN + 4) { depth -= def.height; downDefs.pop(); break; }
+  }
+  const downTotal = downDefs.reduce((a, c) => a + c.height, 0);
+
+  // ── The UP section as before (skipped for wells) ──
+  const upDefs: PillarChunkDef[] = [];
   let y = 0;
-  // The spiral: ramp face starts anywhere, advances clockwise per chunk
+  if (!well) {
+    while (y + crown.height < targetHeight) {
+      const def = pick();
+      upDefs.push(def);
+      y += def.height;
+    }
+  }
+  upDefs.push(crown);
+
+  // ── Stack bottom-to-top with one continuous spiral: the ramp face
+  // advances clockwise per chunk across the WHOLE kebab, so the climb
+  // from the deepest landing to the crown is unbroken through grade ──
+  const allDefs = [...downDefs, ...upDefs];
+  const chunks: PlacedChunk[] = [];
   let face = Math.floor(rng() * 4);
-  while (y + crown.height < targetHeight) {
-    const def = pick();
-    chunks.push({ def, baseY: y, rotation: face });
-    y += def.height;
+  let base = -downTotal;
+  for (const def of allDefs) {
+    chunks.push({ def, baseY: base, rotation: face });
+    base += def.height;
     face = (face + 1) % 4;
   }
-  chunks.push({ def: crown, baseY: y, rotation: face });
-  y += crown.height;
 
   const sockets: ResolvedSocket[] = [];
   chunks.forEach((placed, chunkIndex) => {
@@ -167,7 +221,7 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
     }
   });
 
-  return { cx: pcx, cz: pcz, totalHeight: y, chunks, sockets };
+  return { cx: pcx, cz: pcz, totalHeight: base, baseDepth: -downTotal, chunks, sockets };
 }
 
 /**

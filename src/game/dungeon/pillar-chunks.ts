@@ -37,6 +37,9 @@ export interface PillarChunkDef {
   height: number;
   /** Selection weight in the kebab assembler */
   weight: number;
+  /** Stair profile: 'landings' (default — flat entry/exit landings) or
+   *  'continuous' — the flight climbs the whole band without stops */
+  ramp?: 'landings' | 'continuous';
 }
 
 /**
@@ -48,6 +51,8 @@ export interface PillarChunkDef {
  *            base — prime bridge real estate on all four faces
  * - gallery: hollow interior hall, doorway on the face opposite the
  *            ramp — bridge entry into the pillar's inside
+ * - shaft:   core + a CONTINUOUS flight — the same stairs with no
+ *            landings, climbing without stops. The express meat.
  * - crown:   solid cap; its top is the rooftop. Every pillar ends in
  *            exactly one (placed explicitly, weight 0).
  */
@@ -55,6 +60,12 @@ export const CHUNK_LIBRARY: PillarChunkDef[] = [
   { id: 'plain', height: 8, weight: 3 },
   { id: 'terrace', height: 6, weight: 3 },
   { id: 'gallery', height: 12, weight: 2 },
+  // 13.8 = 23 treads at the fixed 0.6 rise — exactly the climb between
+  // the two corner squares. The flight fills the whole band: the shared
+  // corners are its only flat tiles, so it reads as stairs that never
+  // stop. (Corners MUST stay flat: a climbing tread in the shared square
+  // gets erased by the neighboring flight's headroom punch.)
+  { id: 'shaft', height: 13.8, weight: 2 },
   { id: 'crown', height: 4, weight: 0 },
 ];
 
