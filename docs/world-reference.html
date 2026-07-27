@@ -97,7 +97,10 @@
 <h2>The Layer Pipeline <span class="src">src/game/DungeonGenerator.ts</span></h2>
 <p class="lede">One level, generated in strict order. Every layer is a pure function of
 <code>(stackSeed, cellX, cellZ)</code> plus a bounded neighbor radius — negative coordinates are first-class,
-so a bounded world is just this pipeline evaluated over a window. Grid math:
+so a bounded world is just this pipeline evaluated over a window — and since M3 that is literal:
+<code>generateWorld({originPcx, originPcz})</code> generates ANY 4×4-pillar-cell window of the endless plane,
+and the engine re-centers the window as the player walks (the seam invariant holds overlapping windows to
+≥90% identical columns; per-window passes — rooms, hallways, golden path — account for the rest). Grid math:
 <b>1 tile = 3 world units · 1 dungeon cell = 14 tiles · 1 pillar cell = 4×4 dungeon cells = 56 tiles ·
 world = 16×16 cells = 224 tiles = 672 wu</b>.</p>
 
