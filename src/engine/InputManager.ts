@@ -16,7 +16,12 @@ export type InputAction =
  * P auto-play. E/Q/R and mouse buttons stay free for future combat.
  */
 export class KeyboardInput {
+  /** Physical keyboard state. Virtual bot controls must never mutate this:
+   * a held key produces no second keydown after a streaming handoff. */
   private keysDown = new Set<string>();
+  private botForward = 0;
+  private botRight = 0;
+  private botSprint = false;
   private actionQueue: InputAction[] = [];
   private disposed = false;
 
@@ -43,6 +48,8 @@ export class KeyboardInput {
     if (this.keysDown.has('KeyS') || this.keysDown.has('ArrowDown')) y -= 1;
     if (this.keysDown.has('KeyA') || this.keysDown.has('ArrowLeft')) x -= 1;
     if (this.keysDown.has('KeyD') || this.keysDown.has('ArrowRight')) x += 1;
+    y += this.botForward;
+    x += this.botRight;
 
     out.x = x;
     out.y = y;
@@ -57,7 +64,9 @@ export class KeyboardInput {
   }
 
   isSprinting(): boolean {
-    return this.keysDown.has('ShiftLeft') || this.keysDown.has('ShiftRight');
+    return this.botSprint
+      || this.keysDown.has('ShiftLeft')
+      || this.keysDown.has('ShiftRight');
   }
 
   /** Ctrl or C — C exists because browsers own Ctrl+W (closes the tab) */
@@ -84,27 +93,18 @@ export class KeyboardInput {
 
   /** Bot movement override */
   setMovementOverride(forward: number, right: number): void {
-    this.keysDown.delete('KeyW');
-    this.keysDown.delete('KeyS');
-    this.keysDown.delete('KeyA');
-    this.keysDown.delete('KeyD');
-    if (forward > 0) this.keysDown.add('KeyW');
-    if (forward < 0) this.keysDown.add('KeyS');
-    if (right > 0) this.keysDown.add('KeyD');
-    if (right < 0) this.keysDown.add('KeyA');
+    this.botForward = Math.sign(forward);
+    this.botRight = Math.sign(right);
   }
 
   clearMovementOverride(): void {
-    this.keysDown.delete('KeyW');
-    this.keysDown.delete('KeyS');
-    this.keysDown.delete('KeyA');
-    this.keysDown.delete('KeyD');
+    this.botForward = 0;
+    this.botRight = 0;
   }
 
   /** Bot sprint override — holds/releases virtual Shift */
   setSprintOverride(on: boolean): void {
-    if (on) this.keysDown.add('ShiftLeft');
-    else this.keysDown.delete('ShiftLeft');
+    this.botSprint = on;
   }
 
   // ── Keyboard ──

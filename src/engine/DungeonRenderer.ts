@@ -201,9 +201,32 @@ interface Marker {
   baseY: number; // local to the level group
 }
 
+interface RenderBounds {
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+}
+
+export interface PreparedDungeonRender {
+  group: THREE.Group;
+  world: WorldData;
+  cancelled: boolean;
+}
+
 export class DungeonRenderer {
   private scene: THREE.Scene;
   private meshGroup: THREE.Group;
+  /** Materials and their compiled shader programs are window-independent.
+   * Keeping them alive avoids a shader-compilation stall at every recenter. */
+  private materials = new Map<RegionKey, RegionMaterials>();
+  private stairsMaterial = new THREE.MeshStandardMaterial({
+    map: STAIRS_TEX,
+    roughness: 0.7,
+    emissive: 0x1a3a2a,
+    emissiveIntensity: 0.15,
+    side: THREE.DoubleSide,
+  });
   private markers: Marker[] = [];
   private markerTime = 0;
 
@@ -214,17 +237,11 @@ export class DungeonRenderer {
   }
 
   clear(): void {
-    // Dispose all children (textures are shared module-level, kept alive)
-    const seenMats = new Set<THREE.Material>();
+    // Geometry belongs to a generated window. Materials and textures do not:
+    // retaining them keeps WebGL shader programs warm across window swaps.
     this.meshGroup.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.geometry.dispose();
-        for (const m of Array.isArray(child.material) ? child.material : [child.material]) {
-          if (!seenMats.has(m)) {
-            seenMats.add(m);
-            m.dispose();
-          }
-        }
       }
     });
     this.meshGroup.clear();
@@ -241,6 +258,21 @@ export class DungeonRenderer {
     }
   }
 
+  private materialsFor = (key: RegionKey): RegionMaterials => {
+    let m = this.materials.get(key);
+    if (!m) {
+      const tint = REGION_TINTS[key];
+      const emissive = REGION_EMISSIVE[key] ?? 0x000000;
+      m = {
+        wall: makeConcreteMaterial(tint, emissive, 0.9, true),
+        floor: makeConcreteMaterial(tint, emissive, 0.94),
+        ceil: makeConcreteMaterial(tint, emissive, 0.97),
+      };
+      this.materials.set(key, m);
+    }
+    return m;
+  };
+
   /**
    * Build the whole stack. Horizontal surfaces (floors, ceilings) come
    * from each level's height fields, gated by the column model; ALL
@@ -251,31 +283,68 @@ export class DungeonRenderer {
     const cornerFloors = world.levels.map((l) =>
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
 
-    const materials = new Map<RegionKey, RegionMaterials>();
-    const materialsFor = (key: RegionKey): RegionMaterials => {
-      let m = materials.get(key);
-      if (!m) {
-        const tint = REGION_TINTS[key];
-        const emissive = REGION_EMISSIVE[key] ?? 0x000000;
-        m = {
-          wall: makeConcreteMaterial(tint, emissive, 0.9, true),
-          floor: makeConcreteMaterial(tint, emissive, 0.94),
-          ceil: makeConcreteMaterial(tint, emissive, 0.97),
-        };
-        materials.set(key, m);
-      }
-      return m;
-    };
-
     // One contour per level: the marching-squares line is the single
     // authority on organic wall SHAPE — collision segments and the
     // chamfered wall quads both come from it
     const contours = world.levels.map((l) => buildOrganicContour(l));
 
     for (let li = 0; li < world.levels.length; li++) {
-      this.buildLevelSurfaces(world, li, cornerFloors[li]!, contours[li]!, materialsFor);
+      this.buildLevelSurfaces(world, li, cornerFloors[li]!, contours[li]!, this.materialsFor, this.meshGroup);
     }
-    this.buildWalls(world, cornerFloors, contours, materialsFor);
+    this.buildWalls(world, cornerFloors, contours, this.materialsFor, this.meshGroup);
+  }
+
+  /** Build a neighboring window in pillar-cell-sized slices. Each slice
+   * yields to the browser, keeping mesh preparation out of the movement
+   * frame that crosses a streaming boundary. */
+  prepare(world: WorldData, onReady: (prepared: PreparedDungeonRender) => void): PreparedDungeonRender {
+    const prepared: PreparedDungeonRender = {
+      group: new THREE.Group(),
+      world,
+      cancelled: false,
+    };
+    const cornerFloors = world.levels.map((l) =>
+      buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
+    const contours = world.levels.map((l) => buildOrganicContour(l));
+    // 8x8 slices keep each geometry task comfortably below a frame.
+    // These are render-work slices, not world-generation cells; ownership
+    // and LayerProcGen continuity still use the original pillar-cell grid.
+    const slices = 8;
+    const sliceTiles = Math.ceil(world.levels[0]!.width / slices);
+    const jobs: RenderBounds[] = [];
+    for (let cz = 0; cz < slices; cz++) {
+      for (let cx = 0; cx < slices; cx++) {
+        jobs.push({
+          x0: cx * sliceTiles,
+          z0: cz * sliceTiles,
+          x1: Math.min((cx + 1) * sliceTiles, world.levels[0]!.width),
+          z1: Math.min((cz + 1) * sliceTiles, world.levels[0]!.height),
+        });
+      }
+    }
+    const runNext = (): void => {
+      if (prepared.cancelled) return;
+      const bounds = jobs.shift();
+      if (!bounds) {
+        onReady(prepared);
+        return;
+      }
+      for (let li = 0; li < world.levels.length; li++) {
+        this.buildLevelSurfaces(
+          world, li, cornerFloors[li]!, contours[li]!, this.materialsFor,
+          prepared.group, bounds,
+        );
+      }
+      this.buildWalls(world, cornerFloors, contours, this.materialsFor, prepared.group, bounds);
+      requestAnimationFrame(runNext);
+    };
+    requestAnimationFrame(runNext);
+    return prepared;
+  }
+
+  install(prepared: PreparedDungeonRender): void {
+    this.clear();
+    this.meshGroup.add(prepared.group);
   }
 
   /** Floors, ceilings, aprons, stairs and markers of one level —
@@ -286,13 +355,15 @@ export class DungeonRenderer {
     cornerFloor: number[][],
     contour: ReturnType<typeof buildOrganicContour>,
     materialsFor: (key: RegionKey) => RegionMaterials,
+    target: THREE.Group,
+    bounds?: RenderBounds,
   ): void {
     const dungeon = world.levels[li]!;
     const w = dungeon.width;
 
     const group = new THREE.Group();
     group.position.y = dungeon.baseY;
-    this.meshGroup.add(group);
+    target.add(group);
 
     const regionOf = (tx: number, tz: number): RegionKey =>
       tileBiome(dungeon.cellBiomes, tx, tz) ?? 'tunnel';
@@ -339,8 +410,8 @@ export class DungeonRenderer {
       return hasPit && hasGrade;
     };
 
-    for (let y = 0; y < dungeon.height; y++) {
-      for (let x = 0; x < dungeon.width; x++) {
+    for (let y = bounds?.z0 ?? 0; y < (bounds?.z1 ?? dungeon.height); y++) {
+      for (let x = bounds?.x0 ?? 0; x < (bounds?.x1 ?? dungeon.width); x++) {
         const tile = dungeon.tiles[y]![x]!;
         const region = regionOf(x, y);
 
@@ -528,8 +599,7 @@ export class DungeonRenderer {
     }
 
     if (stairs.verts.length > 0) {
-      const stairsMat = new THREE.MeshStandardMaterial({ map: STAIRS_TEX, roughness: 0.7, emissive: 0x1a3a2a, emissiveIntensity: 0.15, side: THREE.DoubleSide });
-      this.addMesh(group, stairs, stairsMat);
+      this.addMesh(group, stairs, this.stairsMaterial);
     }
 
   }
@@ -547,6 +617,8 @@ export class DungeonRenderer {
     cornerFloors: number[][][],
     contours: ReturnType<typeof buildOrganicContour>[],
     materialsFor: (key: RegionKey) => RegionMaterials,
+    target: THREE.Group,
+    bounds?: RenderBounds,
   ): void {
     const w = world.levels[0]!.width;
     const h = world.levels[0]!.height;
@@ -565,7 +637,7 @@ export class DungeonRenderer {
     );
 
     const group = new THREE.Group();
-    this.meshGroup.add(group);
+    target.add(group);
 
     const buffers = new Map<RegionKey, MeshBuffers>();
     const rockFloors = newBuffers();
@@ -620,8 +692,8 @@ export class DungeonRenderer {
     const airRanges = (spans: ColumnSpan[]): [number, number][] =>
       spans.map((s) => [clipY(s.floor), clipY(s.ceil)] as [number, number]);
 
-    for (let z = 0; z < h; z++) {
-      for (let x = 0; x < w; x++) {
+    for (let z = bounds?.z0 ?? 0; z < (bounds?.z1 ?? h); z++) {
+      for (let x = bounds?.x0 ?? 0; x < (bounds?.x1 ?? w); x++) {
         const a = world.columns[z * w + x]!;
 
         // Structural rock floors (a shaft ending on the slab below) and

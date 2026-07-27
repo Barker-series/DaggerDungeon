@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { DungeonRenderer } from './DungeonRenderer';
+import { DungeonRenderer, type PreparedDungeonRender } from './DungeonRenderer';
 import { GridCamera } from './Camera';
 import { LightingSystem } from './LightingSystem';
 import { SpriteManager } from './SpriteManager';
@@ -13,6 +13,7 @@ import { DungeonBot } from '../bot/DungeonBot';
 import { useGameStore } from '../store/gameStore';
 import { TileType, Direction, TILE_SIZE, EYE_HEIGHT, ABYSS_FLOOR } from '../game/types';
 import type { DungeonData, WorldData } from '../game/types';
+import type { WorldWorkerRequest } from '../game/world-worker';
 
 const MOVE_SPEED = 7;
 const SPRINT_MULT = 1.6;
@@ -65,6 +66,20 @@ export class GameEngine {
   private sprites: SpriteManager;
   private input: KeyboardInput;
   private bot: DungeonBot;
+  private worldWorker: Worker;
+  /** Dedicated lane for the exact window the player is approaching.
+   * It must not wait behind speculative cardinal-neighbor generation. */
+  private urgentWorldWorker: Worker;
+  private worldCache = new Map<string, WorldData>();
+  private renderCache = new Map<string, PreparedDungeonRender>();
+  private renderQueue: { key: string; world: WorldData }[] = [];
+  private renderQueued = new Set<string>();
+  private renderPreparing = false;
+  private activeRenderKey: string | null = null;
+  private activeRenderPreparation: PreparedDungeonRender | null = null;
+  private pendingWorlds = new Set<string>();
+  private urgentPendingWorlds = new Set<string>();
+  private readonly maxCachedWorlds = 10;
 
   private world: WorldData | null = null;
   /** Per-level corner-averaged floor fields — physics samples the exact
@@ -109,6 +124,22 @@ export class GameEngine {
       this.input,
       this.gridCamera,
     );
+    this.worldWorker = new Worker(
+      new URL('../game/world-worker.ts', import.meta.url),
+      { type: 'module' },
+    );
+    this.urgentWorldWorker = new Worker(
+      new URL('../game/world-worker.ts', import.meta.url),
+      { type: 'module' },
+    );
+    this.worldWorker.onmessage = (event) => this.acceptPreparedWorld(event, false);
+    this.urgentWorldWorker.onmessage = (event) => this.acceptPreparedWorld(event, true);
+    this.worldWorker.onerror = (event) => {
+      console.error('[stream] background generation failed', event.message);
+    };
+    this.urgentWorldWorker.onerror = (event) => {
+      console.error('[stream] urgent generation failed', event.message);
+    };
     this.timer = new THREE.Timer();
 
     this.handleResize();
@@ -201,23 +232,237 @@ export class GameEngine {
   /** (Re)generate the current window and rebuild everything derived
    *  from it. The world is a 4x4-pillar-cell window onto the endless
    *  plane at (originPcx, originPcz). */
+  private worldKey(stack: number, originPcx: number, originPcz: number): string {
+    return `${this.seed}:${stack}:${originPcx},${originPcz}`;
+  }
+
+  private interruptRenderPreparationFor(key: string): void {
+    if (!this.renderPreparing || this.activeRenderKey === key) return;
+    if (this.activeRenderPreparation) {
+      this.activeRenderPreparation.cancelled = true;
+      this.activeRenderPreparation.group.traverse((child) => {
+        if (child instanceof THREE.Mesh) child.geometry.dispose();
+      });
+    }
+    this.renderPreparing = false;
+    this.activeRenderKey = null;
+    this.activeRenderPreparation = null;
+  }
+
+  private acceptPreparedWorld(
+    event: MessageEvent<{ key: string; world: WorldData; generationMs: number }>,
+    urgent: boolean,
+  ): void {
+    const { key, world, generationMs } = event.data;
+    (urgent ? this.urgentPendingWorlds : this.pendingWorlds).delete(key);
+    // A seed can change while either worker is finishing an old request.
+    if (!key.startsWith(`${this.seed}:`)) return;
+    this.worldCache.delete(key);
+    this.worldCache.set(key, world);
+    if (!this.renderCache.has(key) && !this.renderQueued.has(key)) {
+      this.renderQueued.add(key);
+      if (urgent) this.renderQueue.unshift({ key, world });
+      else this.renderQueue.push({ key, world });
+      if (urgent && this.renderPreparing && this.activeRenderKey !== key) {
+        // Direction changed while speculative geometry was being sliced.
+        // Stop spending frames on the old direction and service the exact
+        // approached boundary immediately.
+        this.interruptRenderPreparationFor(key);
+      }
+      this.prepareNextRender();
+    }
+    while (this.worldCache.size > this.maxCachedWorlds) {
+      const oldest = this.worldCache.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.worldCache.delete(oldest);
+    }
+    if (import.meta.env.DEV) {
+      console.debug(
+        `[stream] ${urgent ? 'urgent ' : ''}prepared ${key} off-thread in `
+        + `${generationMs.toFixed(1)} ms`,
+      );
+    }
+  }
+
+  private prepareNextRender(): void {
+    if (this.renderPreparing || this.stopped) return;
+    const next = this.renderQueue.shift();
+    if (!next) return;
+    this.renderQueued.delete(next.key);
+    if (this.renderCache.has(next.key)) {
+      this.prepareNextRender();
+      return;
+    }
+    this.renderPreparing = true;
+    this.activeRenderKey = next.key;
+    const preparation = this.dungeonRenderer.prepare(next.world, (prepared) => {
+      if (this.stopped) {
+        prepared.cancelled = true;
+        return;
+      }
+      if (!next.key.startsWith(`${this.seed}:`)) {
+        prepared.group.traverse((child) => {
+          if (child instanceof THREE.Mesh) child.geometry.dispose();
+        });
+        this.renderPreparing = false;
+        this.activeRenderKey = null;
+        this.activeRenderPreparation = null;
+        this.prepareNextRender();
+        return;
+      }
+      this.renderCache.set(next.key, prepared);
+      while (this.renderCache.size > 4) {
+        const oldest = this.renderCache.keys().next().value as string | undefined;
+        if (!oldest) break;
+        const stale = this.renderCache.get(oldest);
+        stale?.group.traverse((child) => {
+          if (child instanceof THREE.Mesh) child.geometry.dispose();
+        });
+        this.renderCache.delete(oldest);
+      }
+      this.renderPreparing = false;
+      this.activeRenderKey = null;
+      this.activeRenderPreparation = null;
+      if (import.meta.env.DEV) console.debug(`[stream] geometry ready ${next.key}`);
+      this.prepareNextRender();
+    });
+    this.activeRenderPreparation = preparation;
+  }
+
+  private requestWorld(stack: number, originPcx: number, originPcz: number): void {
+    const key = this.worldKey(stack, originPcx, originPcz);
+    if (this.worldCache.has(key) || this.pendingWorlds.has(key)) return;
+    this.pendingWorlds.add(key);
+    const request: WorldWorkerRequest = {
+      key,
+      seed: this.seed,
+      stack,
+      originPcx,
+      originPcz,
+    };
+    this.worldWorker.postMessage(request);
+  }
+
+  private requestUrgentWorld(stack: number, originPcx: number, originPcz: number): void {
+    const key = this.worldKey(stack, originPcx, originPcz);
+    if (this.renderCache.has(key)) return;
+    if (this.worldCache.has(key)) {
+      // Generation finished speculatively; move its geometry job ahead of
+      // irrelevant windows left over from earlier travel directions.
+      const index = this.renderQueue.findIndex((entry) => entry.key === key);
+      if (index > 0) {
+        const [entry] = this.renderQueue.splice(index, 1);
+        if (entry) this.renderQueue.unshift(entry);
+      } else if (index < 0 && this.activeRenderKey !== key) {
+        const world = this.worldCache.get(key)!;
+        this.renderQueued.add(key);
+        this.renderQueue.unshift({ key, world });
+      }
+      this.interruptRenderPreparationFor(key);
+      this.prepareNextRender();
+      return;
+    }
+    if (this.urgentPendingWorlds.has(key)) return;
+    this.urgentPendingWorlds.add(key);
+    const request: WorldWorkerRequest = {
+      key,
+      seed: this.seed,
+      stack,
+      originPcx,
+      originPcz,
+    };
+    this.urgentWorldWorker.postMessage(request);
+  }
+
+  /** Watch actual player position, including diagonal movement and sudden
+   * direction changes. The exact next window gets a dedicated worker lane
+   * well before the recenter threshold. */
+  private prefetchApproachingWindow(stack: number): void {
+    const PCELL = 168;
+    const margin = PCELL * 0.65;
+    const pos = this.gridCamera.position;
+    let dx = 0;
+    let dz = 0;
+    if (pos.x < PCELL + margin) dx = -1;
+    else if (pos.x >= 3 * PCELL - margin) dx = 1;
+    if (pos.z < PCELL + margin) dz = -1;
+    else if (pos.z >= 3 * PCELL - margin) dz = 1;
+    if (dx !== 0 || dz !== 0) {
+      this.requestUrgentWorld(stack, this.originPcx + dx, this.originPcz + dz);
+    }
+  }
+
+  /** Prepare the four windows reachable at the next boundary. At normal
+   * sprint speed this gives the worker many seconds of lead time. */
+  private prefetchAdjacentWindows(stack: number): void {
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      this.requestWorld(stack, this.originPcx + dx, this.originPcz + dz);
+    }
+  }
+
   private buildWindow(stack: number): void {
-    this.dungeonRenderer.clear();
+    const buildStarted = performance.now();
+    const phaseTimes: Record<string, number> = {};
+    let phaseStarted = buildStarted;
+    const markPhase = (name: string): void => {
+      const now = performance.now();
+      phaseTimes[name] = now - phaseStarted;
+      phaseStarted = now;
+    };
+    const key = this.worldKey(stack, this.originPcx, this.originPcz);
+    const preparedRender = this.renderCache.get(key);
+    if (preparedRender) {
+      this.renderCache.delete(key);
+      this.dungeonRenderer.install(preparedRender);
+    } else {
+      this.dungeonRenderer.clear();
+    }
     this.lighting.clear();
     this.sprites.clear();
     this.bot.reset();
     this.movers?.dispose(this.scene);
-    this.world = generateWorld({
-      seed: this.seed, stack,
-      originPcx: this.originPcx, originPcz: this.originPcz,
-    });
+    markPhase('clear');
+    const preparedWorld = this.worldCache.get(key);
+    if (preparedRender) {
+      this.worldCache.delete(key);
+      this.world = preparedRender.world;
+    } else if (preparedWorld) {
+      this.worldCache.delete(key);
+      this.world = preparedWorld;
+    } else {
+      // Initial load (or movement faster than prefetch) retains a safe
+      // synchronous fallback. Ordinary boundary crossings should be prepared.
+      this.world = generateWorld({
+        seed: this.seed, stack,
+        originPcx: this.originPcx, originPcz: this.originPcz,
+      });
+      if (import.meta.env.DEV && (this.originPcx !== 0 || this.originPcz !== 0)) {
+        console.warn(`[stream] cache miss at ${key}; synchronous fallback`);
+      }
+    }
+    markPhase('world');
     this.cornerFloors = this.world.levels.map((l) =>
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
     this.contours = this.world.levels.map((l) => buildOrganicContour(l));
-    this.dungeonRenderer.build(this.world);
+    markPhase('collision');
+    if (!preparedRender) this.dungeonRenderer.build(this.world);
+    markPhase('geometry');
     this.movers = new Movers(this.world, this.scene);
+    markPhase('movers');
     this.lighting.setup(this.world);
+    markPhase('lighting');
     useGameStore.getState().setWorld(this.world);
+    this.prefetchAdjacentWindows(stack);
+    markPhase('state');
+    if (import.meta.env.DEV) {
+      console.info(
+        `[stream] installed ${key} (${preparedRender || preparedWorld ? 'prefetched' : 'synchronous'}) in `
+        + `${(performance.now() - buildStarted).toFixed(1)} ms `
+        + Object.entries(phaseTimes)
+          .map(([name, ms]) => `${name}=${ms.toFixed(1)}`)
+          .join(' '),
+      );
+    }
   }
 
   /** THE ENDLESS WALK: when the player leaves the center 2x2 pillar
@@ -317,6 +562,17 @@ export class GameEngine {
 
   loadStack(stack: number, seed: number): void {
     this.seed = seed;
+    this.worldCache.clear();
+    this.pendingWorlds.clear();
+    this.urgentPendingWorlds.clear();
+    this.renderQueue = [];
+    this.renderQueued.clear();
+    for (const prepared of this.renderCache.values()) {
+      prepared.group.traverse((child) => {
+        if (child instanceof THREE.Mesh) child.geometry.dispose();
+      });
+    }
+    this.renderCache.clear();
     this.originPcx = 0;
     this.originPcz = 0;
     this.buildWindow(stack);
@@ -363,6 +619,8 @@ export class GameEngine {
     this.sprites.dispose();
     window.removeEventListener('resize', this.handleResize);
     this.renderer.dispose();
+    this.worldWorker.terminate();
+    this.urgentWorldWorker.terminate();
   }
 
   setPaused(paused: boolean): void {
@@ -394,6 +652,7 @@ export class GameEngine {
       if (carry !== 0 && this.isGrounded) pos.y += carry * dt;
     }
     this.processMovement(dt);
+    this.prefetchApproachingWindow(store.currentFloor);
     this.syncGridPos(store);
     this.gridCamera.update();
     // Vertical camera smoothing: while grounded, the eye eases toward
