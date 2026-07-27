@@ -38,6 +38,8 @@ if (!arg || !arg.startsWith('DDSNAP1')) {
 }
 const snap = JSON.parse(arg.slice('DDSNAP1'.length)) as {
   seed: number; stack: number; x: number; y: number; z: number; yaw: number; pitch: number;
+  /** Window origin in pillar cells (endless world; absent = 0,0) */
+  opx?: number; opz?: number;
   /** Click-marked world points — the exact geometry being reported */
   marks?: [number, number, number][];
 };
@@ -47,7 +49,7 @@ console.log('snapshot:', snap);
 
 // ── World + geometry ──
 
-const world = generateWorld({ seed: snap.seed, stack: snap.stack });
+const world = generateWorld({ seed: snap.seed, stack: snap.stack, originPcx: snap.opx ?? 0, originPcz: snap.opz ?? 0 });
 const L = world.levels[0]!;
 const scene = new THREE.Scene();
 new DungeonRenderer(scene).build(world);

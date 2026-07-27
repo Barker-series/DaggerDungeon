@@ -57,6 +57,9 @@ export class GameEngine {
 
   private dungeonRenderer: DungeonRenderer;
   private movers: Movers | null = null;
+  /** Window origin on the infinite plane, in pillar cells */
+  private originPcx = 0;
+  private originPcz = 0;
   private gridCamera: GridCamera;
   private lighting: LightingSystem;
   private sprites: SpriteManager;
@@ -167,6 +170,8 @@ export class GameEngine {
     const snap = `DDSNAP1${JSON.stringify({
       seed: this.seed,
       stack: useGameStore.getState().currentFloor,
+      ...(this.originPcx !== 0 || this.originPcz !== 0
+        ? { opx: this.originPcx, opz: this.originPcz } : {}),
       x: +pos.x.toFixed(2),
       y: +pos.y.toFixed(2),
       z: +pos.z.toFixed(2),
@@ -194,27 +199,65 @@ export class GameEngine {
 
   /** Generate and enter a megastructure stack — one tall floor of
    *  pillars, bridges, and dungeon ground. */
-  loadStack(stack: number, seed: number): void {
-    this.seed = seed;
+  /** (Re)generate the current window and rebuild everything derived
+   *  from it. The world is a 4x4-pillar-cell window onto the endless
+   *  plane at (originPcx, originPcz). */
+  private buildWindow(stack: number): void {
     this.dungeonRenderer.clear();
     this.lighting.clear();
     this.sprites.clear();
     this.bot.reset();
-
     this.movers?.dispose(this.scene);
-    this.world = generateWorld({ seed, stack });
+    this.world = generateWorld({
+      seed: this.seed, stack,
+      originPcx: this.originPcx, originPcz: this.originPcz,
+    });
     this.cornerFloors = this.world.levels.map((l) =>
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
     this.contours = this.world.levels.map((l) => buildOrganicContour(l));
     this.dungeonRenderer.build(this.world);
     this.movers = new Movers(this.world, this.scene);
     this.lighting.setup(this.world);
+    useGameStore.getState().setWorld(this.world);
+  }
+
+  /** THE ENDLESS WALK: when the player leaves the center 2x2 pillar
+   *  cells of the window, shift the window so they are central again
+   *  and regenerate. Field-driven ground is window-stable, so the
+   *  world around the player persists; the horizon is recomputed.
+   *  (v1: a full-window rebuild — a short hitch at each crossing.) */
+  private recenterWindow(): void {
+    if (!this.world) return;
+    const PCELL = 168; // pillar cell in wu (56 tiles * 3)
+    const pos = this.gridCamera.position;
+    let shiftX = 0;
+    let shiftZ = 0;
+    while (pos.x - shiftX * PCELL < PCELL) shiftX--;
+    while (pos.x - shiftX * PCELL >= 3 * PCELL) shiftX++;
+    while (pos.z - shiftZ * PCELL < PCELL) shiftZ--;
+    while (pos.z - shiftZ * PCELL >= 3 * PCELL) shiftZ++;
+    if (shiftX === 0 && shiftZ === 0) return;
+    this.originPcx += shiftX;
+    this.originPcz += shiftZ;
+    pos.x -= shiftX * PCELL;
+    pos.z -= shiftZ * PCELL;
+    for (const m of this.marks) {
+      m.pos.x -= shiftX * PCELL;
+      m.pos.z -= shiftZ * PCELL;
+    }
+    this.buildWindow(useGameStore.getState().currentFloor);
+  }
+
+  loadStack(stack: number, seed: number): void {
+    this.seed = seed;
+    this.originPcx = 0;
+    this.originPcz = 0;
+    this.buildWindow(stack);
 
     const store = useGameStore.getState();
-    store.setWorld(this.world);
     store.setCurrentFloor(stack);
 
-    const top = this.world.levels[0]!;
+    const top = this.world!.levels[0]!;
     const spawnX = top.entrance.x * TILE_SIZE + TILE_SIZE / 2;
     const spawnZ = top.entrance.y * TILE_SIZE + TILE_SIZE / 2;
     this.gridCamera.setPosition(
@@ -259,6 +302,7 @@ export class GameEngine {
     const store = useGameStore.getState();
 
     // Player movement
+    this.recenterWindow();
     this.movers?.update(dt);
     // An elevator under your feet carries you with it
     {
