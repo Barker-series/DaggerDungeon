@@ -47,6 +47,16 @@ const MIN_HEIGHT = 36;
 const MAX_HEIGHT = 80;
 const PILLAR_SALT = 4141;
 
+/**
+ * The shared ELEVATION field: pillar heights read it, and the biome
+ * layer mixes it into wildness so surface districts correlate with the
+ * tall-pillar districts the player can see. Continuous pillar-cell
+ * coordinates (fractional values sample between cells).
+ */
+export function elevationField(worldSeed: number, pcx: number, pcz: number): number {
+  return sampleNoise(pcx, pcz, worldSeed + 909, HEIGHT_NOISE_SCALE);
+}
+
 // ── Output ──
 
 export interface PlacedChunk {
@@ -122,7 +132,7 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   if (density < VOID_THRESHOLD) return null;
 
   const rng = mulberry32(cellSeed(pcx, pcz, worldSeed, PILLAR_SALT));
-  const heightNoise = sampleNoise(pcx, pcz, worldSeed + 909, HEIGHT_NOISE_SCALE);
+  const heightNoise = elevationField(worldSeed, pcx, pcz);
   const targetHeight = MIN_HEIGHT + heightNoise * (MAX_HEIGHT - MIN_HEIGHT);
 
   const crown = CHUNK_BY_ID.get('crown')!;
