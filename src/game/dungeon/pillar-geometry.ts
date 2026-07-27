@@ -136,9 +136,16 @@ function addAllow(
  * landing (at its base — the same height) merge into one flat platform
  * instead of a mismatched step. The spiral chains corner to corner.
  */
-function rampSolids(placed: PlacedChunk, solids: Map<string, TileSolids>, isFirst = false): void {
+function rampSolids(
+  placed: PlacedChunk,
+  solids: Map<string, TileSolids>,
+  isFirst = false,
+  /** Straddler crowns: no climb — the band is a flat sheltered landing
+   *  at the chunk base and the tower continues up as solid mass. */
+  flatten = false,
+): void {
   const b = placed.baseY;
-  const h = placed.def.height;
+  const h = flatten ? 0 : placed.def.height;
   const k = placed.rotation;
   const run = RING.hi - RING.lo; // tiles available across the band
   // STAIRS, NOT A SLOPE. Spreading the chunk height across the whole
@@ -164,12 +171,17 @@ function rampSolids(placed: PlacedChunk, solids: Map<string, TileSolids>, isFirs
   }
 }
 
-function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>, below?: PlacedChunk): void {
+function chunkSolids(
+  placed: PlacedChunk,
+  solids: Map<string, TileSolids>,
+  below?: PlacedChunk,
+  flattenRamp = false,
+): void {
   const b = placed.baseY;
   const k = placed.rotation;
   const top = b + placed.def.height;
 
-  rampSolids(placed, solids, below === undefined);
+  rampSolids(placed, solids, below === undefined, flattenRamp);
 
   switch (placed.def.id) {
     case 'terrace':
@@ -260,9 +272,12 @@ function chunkSolids(placed: PlacedChunk, solids: Map<string, TileSolids>, below
   }
 }
 
-function collectSolids(spec: PillarSpec): Map<string, TileSolids> {
+function collectSolids(spec: PillarSpec, flattenCrownRamp = false): Map<string, TileSolids> {
   const solids = new Map<string, TileSolids>();
-  spec.chunks.forEach((placed, i) => chunkSolids(placed, solids, spec.chunks[i - 1]));
+  spec.chunks.forEach((placed, i) => chunkSolids(
+    placed, solids, spec.chunks[i - 1],
+    flattenCrownRamp && i === spec.chunks.length - 1,
+  ));
   return solids;
 }
 
@@ -301,10 +316,14 @@ export function pillarAirSpans(
    *  allow zones (plazas, interiors, doors), and the crown attic stay
    *  open as enclosed passages. */
   capAt?: (lx: number, lz: number) => number | null,
+  /** Straddler pillars: the crown ramp does not climb — the spiral tops
+   *  out at a sheltered landing at crown base and the tower continues
+   *  up as one solid mass into the boundary cliff. */
+  flattenCrownRamp = false,
 ): Map<string, AirSpanLite[]> {
   const out = new Map<string, AirSpanLite[]>();
   const capTop = spec.totalHeight + CROWN_HEADROOM;
-  for (const [k, t] of collectSolids(spec)) {
+  for (const [k, t] of collectSolids(spec, flattenCrownRamp)) {
     const [lx, lz] = k.split(',').map(Number);
     const ground = Math.max(0, groundAt?.(lx!, lz!) ?? 0);
     // Every footprint tile is founded from below the abyss up to the

@@ -138,20 +138,18 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   // overwrite topFloors as they go, and neighbors must not see that
   const origFloors = topFloors.map((row) => [...row]);
   for (const spec of pillars.values()) {
+    const groundAt = (lx: number, lz: number): number =>
+      topFloors[spec.cz * PILLAR_CELL_TILES + lz]?.[spec.cx * PILLAR_CELL_TILES + lx] ?? 0;
+    const capAt = (lx: number, lz: number): number | null => {
+      const gx = spec.cx * PILLAR_CELL_TILES + lx;
+      const gz = spec.cz * PILLAR_CELL_TILES + lz;
+      if (tileBiome(topBiomes, gx, gz) === 'outside') return null;
+      const cap = capField[gz * GRID_TILES + gx]!;
+      return cap >= 0 ? cap + 0.5 : 8;
+    };
     // Terrain flows under the pillar (footprint tiles carry real ground
     // heights) — the foundation rises to meet it per tile
-    const airSpans = pillarAirSpans(
-      spec,
-      (lx, lz) =>
-        topFloors[spec.cz * PILLAR_CELL_TILES + lz]?.[spec.cx * PILLAR_CELL_TILES + lx] ?? 0,
-      (lx, lz) => {
-        const gx = spec.cx * PILLAR_CELL_TILES + lx;
-        const gz = spec.cz * PILLAR_CELL_TILES + lz;
-        if (tileBiome(topBiomes, gx, gz) === 'outside') return null;
-        const cap = capField[gz * GRID_TILES + gx]!;
-        return cap >= 0 ? cap + 0.5 : 8;
-      },
-    );
+    let airSpans = pillarAirSpans(spec, groundAt, capAt);
     // Sky-open is a PER-PILLAR decision: only a pillar standing entirely
     // in the outside biome gets an open rooftop. A straddler is partly
     // embedded in the boundary cliff — opening its outside tiles would
@@ -165,6 +163,11 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     }
     const fullyOutside = totalTiles > 0 && outsideTiles === totalTiles;
     const straddler = outsideTiles > 0 && !fullyOutside;
+    // A straddler removes the crown attic below (the tower merges into
+    // the cliff) — so its crown ramp must not CLIMB, or the flight dead
+    // ends into the stripped attic as a wall across the stairs. Rebuild
+    // its air with the crown band as a flat sheltered landing instead.
+    if (straddler) airSpans = pillarAirSpans(spec, groundAt, capAt, true);
     for (const [k, air] of airSpans) {
       const [lx, lz] = k.split(',').map(Number);
       const gx = spec.cx * PILLAR_CELL_TILES + lx!;

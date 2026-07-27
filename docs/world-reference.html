@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DaggerDungeon — World Generation Reference</title>
+<style>
+  :root {
+    --bg: #16181d; --panel: #1e2128; --panel2: #262a33; --ink: #d8dbe2;
+    --dim: #8a8f9c; --line: #333845; --accent: #e8b44c;
+    --dungeon: #ffffff; --cave: #d8b494; --crypt: #9fb4cc;
+    --ember: #ff8866; --outside: #aec8d8; --tunnel: #b8b0a8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 system-ui, sans-serif; padding: 0 0 80px;
+  }
+  header {
+    padding: 36px 48px 22px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #1a1d24, var(--bg));
+  }
+  h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: 0.5px; }
+  h1 small { color: var(--dim); font-weight: 400; font-size: 15px; margin-left: 12px; }
+  header p { color: var(--dim); max-width: 900px; margin: 6px 0 0; }
+  main { padding: 0 48px; max-width: 1280px; }
+  h2 {
+    margin: 44px 0 6px; font-size: 20px; color: var(--accent);
+    border-bottom: 1px solid var(--line); padding-bottom: 8px;
+  }
+  h2 .src { float: right; font-size: 12px; color: var(--dim); font-weight: 400; font-family: monospace; margin-top: 6px; }
+  .lede { color: var(--dim); margin: 0 0 18px; max-width: 950px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px; position: relative; overflow: hidden;
+  }
+  .card h3 { margin: 0 0 4px; font-size: 16px; display: flex; align-items: center; gap: 10px; }
+  .swatch { width: 16px; height: 16px; border-radius: 4px; display: inline-block; border: 1px solid #0006; }
+  .tag {
+    font-size: 11px; padding: 1px 8px; border-radius: 20px; border: 1px solid var(--line);
+    color: var(--dim); margin-left: auto; white-space: nowrap;
+  }
+  .card p { margin: 6px 0; color: var(--ink); font-size: 14px; }
+  .card .dim { color: var(--dim); }
+  table.mods { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12.5px; }
+  table.mods td { padding: 3px 6px 3px 0; vertical-align: top; border-top: 1px solid #2a2e38; }
+  table.mods td:first-child { color: var(--dim); white-space: nowrap; width: 118px; }
+  code, .k {
+    font-family: ui-monospace, monospace; font-size: 12.5px;
+    background: var(--panel2); padding: 1px 5px; border-radius: 4px; color: #cfe0b8;
+  }
+  .pipeline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 4px; }
+  .stage {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 12px; font-size: 12.5px; min-width: 120px;
+  }
+  .stage b { display: block; font-size: 13px; color: var(--ink); }
+  .stage span { color: var(--dim); }
+  .arrow { color: var(--dim); font-size: 16px; }
+  .viewer { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; margin-top: 14px; }
+  .viewer .pane { text-align: center; }
+  .viewer canvas { border: 1px solid var(--line); border-radius: 6px; image-rendering: pixelated; width: 288px; height: 288px; background: #000; }
+  .viewer .cap { font-size: 12px; color: var(--dim); margin-top: 5px; }
+  .controls { margin: 10px 0 4px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .controls input[type=number] {
+    background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 10px; width: 160px; font: inherit;
+  }
+  .controls button {
+    background: var(--accent); color: #201a08; border: 0; border-radius: 6px;
+    padding: 7px 16px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--dim); margin-top: 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  svg.chunk { display: block; margin: 8px auto 2px; }
+  .note {
+    background: #22262f; border-left: 3px solid var(--accent); border-radius: 6px;
+    padding: 10px 14px; font-size: 13.5px; color: var(--ink); margin: 14px 0; max-width: 950px;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>DaggerDungeon World Generation <small>living reference — July 2026 · editor-to-be</small></h1>
+  <p>Everything the LayerProcGen pipeline currently produces: the layers in execution order, the five biomes
+  with their per-layer modifiers, the pillar-kebab structures, and the connective systems.
+  Every number here is copied from source — the file is named on each section so this can grow into an editor
+  that writes those values back.</p>
+</header>
+
+<main>
+
+<!-- ══════════════ PIPELINE ══════════════ -->
+<h2>The Layer Pipeline <span class="src">src/game/DungeonGenerator.ts</span></h2>
+<p class="lede">One level, generated in strict order. Every layer is a pure function of
+<code>(stackSeed, cellX, cellZ)</code> plus a bounded neighbor radius — negative coordinates are first-class,
+so a bounded world is just this pipeline evaluated over a window. Grid math:
+<b>1 tile = 3 world units · 1 dungeon cell = 14 tiles · 1 pillar cell = 4×4 dungeon cells = 56 tiles ·
+world = 16×16 cells = 224 tiles = 672 wu</b>.</p>
+
+<div class="pipeline">
+  <div class="stage"><b>0 · Coarse Noise</b><span>active/void per cell<br>3-octave, &gt; 0.45 = active</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><b>1 · Tile Grid</b><span>active cell = all floor;<br>walls form at void edges</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><b>2 · Biomes</b><span>wildness + depth fields<br>(fractal, warped, elevation-tied)</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><b>2b · Spawn/Exit</b><span>farthest-apart cells</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><b>3 · Rooms</b><span>5×5 safe rooms, routed in</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><b>3b · Fine Noise</b><span>cave sculpting, CA ×3</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><b>4 · Connect</b><span>island merge, 3-wide halls</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><b>4.5 · Hall Pillars</b><span>single-tile columns</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><b>5 · Golden Path</b><span>A* spawn→exit guarantee</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><b>6 · Heights</b><span>floors, ceilings, pits</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><b>Pillar Layer</b><span>coarse grid kebabs<br>+ bridges + marriage</span></div>
+  <div class="arrow">→</div>
+  <div class="stage"><b>Columns</b><span>air spans — the single<br>authority for everything</span></div>
+</div>
+
+<div class="note">The <b>column model</b> (<code>columns.ts</code>) is the one source of truth: per-(x,z) sorted AIR
+spans in world Y. Renderer faces, physics, and agents all derive from span differences — a wall face exists
+exactly where air meets solid between neighbors. If it isn't in the columns, it doesn't exist.</div>
+
+<!-- ══════════════ LIVE FIELDS ══════════════ -->
+<h2>Live Field Viewer <span class="src">faithful JS port of noise.ts / layer2-biome.ts / pillar-layer.ts</span></h2>
+<p class="lede">These render from the same math the game runs (same FNV-1a hash, same mulberry32, same fbm and
+thresholds), so what you see here is what a seed builds. This is the seed of the future editor: sliders writing
+back to these constants.</p>
+
+<div class="controls">
+  <label>Seed <input type="number" id="seed" value="42"></label>
+  <button onclick="draw()">Regenerate</button>
+  <button onclick="document.getElementById('seed').value = (Math.random()*1e9)|0; draw()">Random</button>
+</div>
+
+<div class="viewer">
+  <div class="pane"><canvas id="cElev" width="96" height="96"></canvas><div class="cap">Elevation field — pillar heights read this (seed+909, scale 3 pillar cells)</div></div>
+  <div class="pane"><canvas id="cWild" width="96" height="96"></canvas><div class="cap">Wildness — fbm ×3 + domain warp + 30% elevation</div></div>
+  <div class="pane"><canvas id="cBiome" width="64" height="64"></canvas><div class="cap">Biome cells (16×16 world outlined; darker = void)</div></div>
+</div>
+<div class="legend">
+  <span><i class="swatch" style="background:var(--dungeon)"></i>dungeon</span>
+  <span><i class="swatch" style="background:var(--crypt)"></i>crypt</span>
+  <span><i class="swatch" style="background:var(--cave)"></i>cave</span>
+  <span><i class="swatch" style="background:var(--ember)"></i>ember</span>
+  <span><i class="swatch" style="background:var(--outside)"></i>outside</span>
+</div>
+
+<!-- ══════════════ BIOMES ══════════════ -->
+<h2>Biomes <span class="src">src/game/dungeon/layer2-biome.ts</span></h2>
+<p class="lede">Derived, not rolled: two smooth fields — <b>wildness</b> (built ↔ organic ↔ open sky) and
+<b>depth</b> (common ↔ rare variant) — thresholded, then quantized to one biome per 14-tile cell. Both are
+3-octave fractal noise; wildness is domain-warped (±1.6 cells) and mixed 30% with the pillar elevation field.
+Vertical drift <code>LEVEL_Y_STEP 0.45</code> makes regions persist as strata between stacked levels.
+Target mix: dungeon ≈39%, crypt ≈20%, cave ≈17%, outside ≈18%, ember ≈6%.</p>
+
+<div class="cards">
+  <div class="card">
+    <h3><i class="swatch" style="background:var(--dungeon)"></i>Dungeon <span class="tag">built · common</span></h3>
+    <p>Brick halls. Flat floors, clean rectangular walls, mid ceilings. The default civilization.</p>
+    <table class="mods">
+      <tr><td>selector</td><td>wildness ≤ 0.525 and depth ≤ 0.572</td></tr>
+      <tr><td>walls</td><td>rectilinear — untouched by cave sculpting</td></tr>
+      <tr><td>heights</td><td>clearances quantized to <code>HEIGHT_STEP 0.5</code></td></tr>
+      <tr><td>hall pillars</td><td>grid every <code>5</code> tiles, 25% jitter dropout</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3><i class="swatch" style="background:var(--crypt)"></i>Crypt <span class="tag">built · rare</span></h3>
+    <p>Cold blue-grey ossuary. Low, oppressive, dense with columns — a forest of the dead.</p>
+    <table class="mods">
+      <tr><td>selector</td><td>wildness ≤ 0.525 and depth &gt; <code>0.572</code></td></tr>
+      <tr><td>walls</td><td>rectilinear</td></tr>
+      <tr><td>hall pillars</td><td>dense grid every <code>3</code> tiles — the ossuary forest</td></tr>
+      <tr><td>tint</td><td><code>0x9fb4cc</code></td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3><i class="swatch" style="background:var(--cave)"></i>Cave <span class="tag">organic · common</span></h3>
+    <p>Warm earth. Rolling floors, swelling ceilings, marching-squares walls with chamfered corners.</p>
+    <table class="mods">
+      <tr><td>selector</td><td>wildness &gt; 0.525, depth ≤ 0.605 (also: any wilder biome below level 0)</td></tr>
+      <tr><td>sculpting</td><td>fine noise &lt; <code>0.38</code> subtracts tiles; <code>3</code> CA smoothing passes</td></tr>
+      <tr><td>floors</td><td>rolling swell, <code>FLOOR_SWELL_SCALE 9</code> tiles/feature, always walkable</td></tr>
+      <tr><td>ceilings</td><td>swell scale 14 + detail scale 4 — the rolling cave roof</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3><i class="swatch" style="background:var(--ember)"></i>Ember <span class="tag">organic · rare</span></h3>
+    <p>Red-lit rifts. Tall vaults, deep floors, stone that smolders on its own.</p>
+    <table class="mods">
+      <tr><td>selector</td><td>wildness &gt; 0.525 and depth &gt; <code>0.605</code></td></tr>
+      <tr><td>sculpting</td><td>same organic contour as cave</td></tr>
+      <tr><td>rendering</td><td>emissive <code>0x2a0d04</code> under tint <code>0xff8866</code></td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3><i class="swatch" style="background:var(--outside)"></i>Outside <span class="tag">organic · surface only</span></h3>
+    <p>Open sky. Moonlit canyon country between and around the megapillars — no ceiling at all.</p>
+    <table class="mods">
+      <tr><td>selector</td><td>wildness &gt; <code>0.612</code>, level 0 only (below: becomes cave)</td></tr>
+      <tr><td>columns</td><td>top air continues to <code>SKY_CEIL</code>; walls render to <code>RENDER_SKY_TOP 92</code></td></tr>
+      <tr><td>pillars</td><td>fully-outside pillars open their rooftop to sky</td></tr>
+      <tr><td>caps/flaps</td><td>never flap or cap into outside — nothing to hide under</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3><i class="swatch" style="background:var(--tunnel)"></i>Tunnel <span class="tag">not a biome</span></h3>
+    <p>Connective tissue — connectivity hallways and carvings through void that belong to no cell. Drab passage
+    tint <code>0xb8b0a8</code>. Exists only as the fallback region key.</p>
+  </div>
+</div>
+
+<!-- ══════════════ PILLARS ══════════════ -->
+<h2>Pillar Kebabs <span class="src">pillar-layer.ts · pillar-chunks.ts · pillar-geometry.ts</span></h2>
+<p class="lede">The megastructures. One pillar cell = 56 tiles (168 wu); the pillar occupies the central
+~30×30 tiles. A kebab of authored chunks is stacked to a noise-driven target height
+(<code>MIN 36 – MAX 80</code> wu, field scale 3 pillar cells); ~18% of cells are void gaps
+(<code>VOID_THRESHOLD 0.18</code>). Every chunk carries a stair flight up one face and the face advances one
+quarter-turn clockwise per chunk — <b>the spiral from grade to crown is continuous by construction</b>, never verified.</p>
+
+<div class="cards">
+  <div class="card">
+    <h3>Plain <span class="tag">h 8 · weight 3</span></h3>
+    <svg class="chunk" width="150" height="70" viewBox="0 0 150 70">
+      <rect x="35" y="8" width="80" height="54" fill="#4a4f5c"/>
+      <path d="M10 62 L115 62 L115 54 L10 54 Z" fill="#6a7080"/>
+      <path d="M10 54 h13 v-3 h13 v-3 h13 v-3 h13 v-3 h13 v-3 h13" stroke="#e8b44c" fill="none" stroke-width="2"/>
+    </svg>
+    <p class="dim">Solid core (17–38) + the face flight. Nothing else. The connective shaft chunk.</p>
+  </div>
+
+  <div class="card">
+    <h3>Terrace <span class="tag">h 6 · weight 3</span></h3>
+    <svg class="chunk" width="150" height="70" viewBox="0 0 150 70">
+      <rect x="55" y="8" width="40" height="54" fill="#4a4f5c"/>
+      <rect x="20" y="54" width="110" height="8" fill="#6a7080"/>
+      <rect x="30" y="30" width="6" height="24" fill="#5a6070"/>
+      <rect x="114" y="30" width="6" height="24" fill="#5a6070"/>
+    </svg>
+    <p class="dim">Slim waist (21–34) inside a broad flat plaza ring — prime bridge real estate.
+    Plaza omits its band over the arriving flight (stairs climb under open air); colonnade posts on the inner
+    ledge; that face exposes no sockets.</p>
+    <table class="mods"><tr><td>sockets</td><td>bridge + ledge at y 0.5 on 3 faces (not the ramp face)</td></tr></table>
+  </div>
+
+  <div class="card">
+    <h3>Gallery <span class="tag">h 12 · weight 2</span></h3>
+    <svg class="chunk" width="150" height="70" viewBox="0 0 150 70">
+      <rect x="35" y="6" width="80" height="56" fill="#4a4f5c"/>
+      <rect x="45" y="18" width="60" height="38" fill="#22252d"/>
+      <rect x="108" y="40" width="10" height="16" fill="#16181d"/>
+    </svg>
+    <p class="dim">Hollow interior hall carved in the core; doorway (tiles 26–29, 4 high) on the face opposite
+    the ramp — a bridge can enter the pillar's inside.</p>
+    <table class="mods"><tr><td>sockets</td><td>bridge at door face y 0.5; interior ledge</td></tr></table>
+  </div>
+
+  <div class="card">
+    <h3>Crown <span class="tag">h 4 · always last</span></h3>
+    <svg class="chunk" width="150" height="70" viewBox="0 0 150 70">
+      <rect x="35" y="30" width="80" height="32" fill="#4a4f5c"/>
+      <rect x="30" y="24" width="90" height="8" fill="#6a7080"/>
+    </svg>
+    <p class="dim">Solid cap; its top is the rooftop (+<code>CROWN_HEADROOM 4</code> of standing air). Placed
+    explicitly, weight 0. Ledge sockets on all four faces at roof height.</p>
+    <table class="mods">
+      <tr><td>interior pillar</td><td>climbing crown flight + enclosed attic room</td></tr>
+      <tr><td>straddler</td><td>flight flattens to a sheltered landing at crown base; tower continues up solid into the cliff</td></tr>
+      <tr><td>fully outside</td><td>rooftop opens to sky — top air joins <code>SKY_CEIL</code></td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>The Stair Flight <span class="tag">every chunk</span></h3>
+    <p class="dim">Band z 14–16 across the ramp face, tiles 14–41.</p>
+    <table class="mods">
+      <tr><td>rise</td><td><code>RAMP_RISE 0.6</code>/tread — the steepest the engine's <code>STEP_UP 0.65</code> can mount; one tile = one step</td></tr>
+      <tr><td>profile</td><td>3 flat entry treads (the corner handoff landing — load-bearing), climb at fixed rise, top out, flat exit landing</td></tr>
+      <tr><td>ground flight</td><td>+<code>11</code> extra treads descending past the face until buried by terrain</td></tr>
+      <tr><td>headroom</td><td><code>9.5</code> punched clearance, capped <code>4.75</code> over landings</td></tr>
+      <tr><td>slab</td><td>treads are <code>1.0</code> thick — thin floating stairs read as jank</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Footprint Rings <span class="tag">pre-rotation</span></h3>
+    <svg class="chunk" width="150" height="110" viewBox="0 0 150 110">
+      <rect x="20" y="5" width="110" height="100" fill="none" stroke="#3a3f4c" stroke-dasharray="3 3"/>
+      <rect x="33" y="17" width="84" height="76" fill="#3a4050"/>
+      <rect x="45" y="28" width="60" height="54" fill="#4a4f5c"/>
+      <rect x="55" y="37" width="40" height="36" fill="#5a6070"/>
+      <rect x="33" y="17" width="84" height="10" fill="#e8b44c" opacity="0.55"/>
+      <text x="75" y="103" fill="#8a8f9c" font-size="8" text-anchor="middle">cell 56 · ring 14–41 · full 17–38 · slim 21–34 · band (gold)</text>
+    </svg>
+    <p class="dim">Tiles 14–41 touch only the middle 2×2 of the cell's 4×4 dungeon cells — the outer ring of
+    cells stays free for rooms, spawn, and exit. Foundation runs to <code>−40</code>; terrain flows under the
+    footprint and the foundation rises to meet it per tile.</p>
+  </div>
+</div>
+
+<!-- ══════════════ CONNECTIVE ══════════════ -->
+<h2>Connective Systems <span class="src">pillar-bridges.ts · DungeonGenerator.ts</span></h2>
+<div class="grid2">
+  <div class="card">
+    <h3>Bridges <span class="tag">neighbor-pair pass</span></h3>
+    <p class="dim">Pure function of two adjacent specs + the pair's own seed (derived from the lower coordinate
+    — both sides compute identical results independently). Walkway 2 tiles wide at socket height, sloping if
+    sockets differ; solid slab 0.5 + clearance 3.5 carved into columns. Through air it's a bridge; through
+    solid it's a carved passage.</p>
+    <table class="mods">
+      <tr><td>per pair</td><td>max <code>2</code>, chance <code>0.65</code>, vertical separation ≥ <code>10</code></td></tr>
+      <tr><td>socket match</td><td>Δy ≤ <code>10</code> (forced fallback ≤ <code>24</code>), min height <code>6</code></td></tr>
+      <tr><td>degree</td><td>every pillar guaranteed ≥1 bridge via radius-1 forced pass</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Ground &amp; Pits <span class="tag">layer 6</span></h3>
+    <p class="dim">Grade terrain is always walkable — rolling but never needing a jump. Drama comes from HOLES:
+    a 3D noise field (scale 14, shared across a stack) drops whole areas out of the floor; aligned holes become
+    atria or bottomless pits. The golden path relaxes into a walkable channel (max rise 0.7/tile) and crosses
+    pits as narrow causeways. Spawn/exit stay out of holes (radius 3).</p>
+  </div>
+  <div class="card">
+    <h3>Marriage &amp; Seams <span class="tag">the doctrine</span></h3>
+    <p class="dim">Pillar ground surfaces within 1.0 of terrain <b>marry</b> the level: owner 0, written into
+    the height field, propagated across footprints to a fixpoint. Married slabs draw dead flat (structures
+    don't roll with hills), terrain corners bend to meet them, skirts seal flat-vs-blended edges, and stair
+    risers force raw face bounds only on the slab side. Junctions interpenetrate, never abut.</p>
+  </div>
+  <div class="card">
+    <h3>Roofline Cull <span class="tag">interior pillars</span></h3>
+    <p class="dim">A nearest-room BFS cap field (lowest roof wins) makes interior pillars pass through building
+    roofs as one solid mass — no chimneys. Ramp clearances (punching) and plaza/interior allow-zones stay open
+    as enclosed passages; the crown attic survives on interior pillars only.</p>
+  </div>
+</div>
+
+<div class="note"><b>Where the editor goes from here:</b> every constant on this page lives in one named file.
+Phase 1: this document reads a generated JSON dump instead of hand-copied values. Phase 2: the field viewer
+gains sliders for thresholds/scales with live re-render. Phase 3: chunk cards become editable specs the
+assembler consumes. The math ported below (hash, PRNG, fbm, wildness) is already the game's, bit for bit.</p>
+</div>
+
+</main>
+
+<script>
+// ── Faithful ports from src/game/dungeon (rng.ts, noise.ts, layer2-biome.ts, pillar-layer.ts) ──
+function cellSeed(cx, cz, worldSeed, salt) {
+  let h = (2166136261 ^ salt ^ worldSeed) >>> 0;
+  h = Math.imul(h ^ cx, 16777619) >>> 0;
+  h = Math.imul(h ^ cz, 16777619) >>> 0;
+  h = Math.imul(h ^ (cx * 31 + cz * 17), 16777619) >>> 0;
+  return h;
+}
+function mulberry32(seed) {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const hashPoint = (x, z, seed) => mulberry32(cellSeed(x, z, seed, 777))();
+function sampleNoise(cx, cz, worldSeed, scale = 1) {
+  const sx = cx / scale, sz = cz / scale;
+  const x0 = Math.floor(sx), z0 = Math.floor(sz);
+  const fx = sx - x0, fz = sz - z0;
+  const ux = fx * fx * (3 - 2 * fx), uz = fz * fz * (3 - 2 * fz);
+  const v00 = hashPoint(x0, z0, worldSeed), v10 = hashPoint(x0 + 1, z0, worldSeed);
+  const v01 = hashPoint(x0, z0 + 1, worldSeed), v11 = hashPoint(x0 + 1, z0 + 1, worldSeed);
+  return (v00 * (1 - ux) + v10 * ux) * (1 - uz) + (v01 * (1 - ux) + v11 * ux) * uz;
+}
+function sampleNoiseOctaves(cx, cz, worldSeed, octaves = 3, lacunarity = 2, persistence = 0.5) {
+  let value = 0, amplitude = 1, frequency = 1, maxValue = 0;
+  for (let i = 0; i < octaves; i++) {
+    value += sampleNoise(cx, cz, worldSeed + i * 31, 3 / frequency) * amplitude;
+    maxValue += amplitude; amplitude *= persistence; frequency *= lacunarity;
+  }
+  return value / maxValue;
+}
+function sampleNoise3D(x, y, z, worldSeed) {
+  const x0 = Math.floor(x), y0 = Math.floor(y), z0 = Math.floor(z);
+  const fx = x - x0, fy = y - y0, fz = z - z0;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy), uz = fz * fz * (3 - 2 * fz);
+  const h = (dx, dy, dz) => hashPoint(x0 + dx, z0 + dz, worldSeed + (y0 + dy) * 7919);
+  const c00 = h(0, 0, 0) * (1 - ux) + h(1, 0, 0) * ux;
+  const c10 = h(0, 0, 1) * (1 - ux) + h(1, 0, 1) * ux;
+  const c01 = h(0, 1, 0) * (1 - ux) + h(1, 1, 0) * ux;
+  const c11 = h(0, 1, 1) * (1 - ux) + h(1, 1, 1) * ux;
+  return (c00 * (1 - uz) + c10 * uz) * (1 - uy) + (c01 * (1 - uz) + c11 * uz) * uy;
+}
+// layer2-biome.ts constants
+const WILDNESS_SCALE = 3, DEPTH_SCALE = 4, LEVEL_Y_STEP = 0.45, WARP_AMP = 1.6, ELEVATION_MIX = 0.3;
+const ORGANIC_T = 0.525, OUTSIDE_T = 0.612, CRYPT_T = 0.572, EMBER_T = 0.605;
+const PILLAR_FACTOR = 4, HEIGHT_NOISE_SCALE = 3;
+const elevationField = (ws, pcx, pcz) => sampleNoise(pcx, pcz, ws + 909, HEIGHT_NOISE_SCALE);
+function fbm3(x, y, z, seed) {
+  let v = 0, amp = 1, freq = 1, norm = 0;
+  for (let i = 0; i < 3; i++) {
+    v += sampleNoise3D(x * freq, y, z * freq, seed + i * 131) * amp;
+    norm += amp; amp *= 0.5; freq *= 2;
+  }
+  return v / norm;
+}
+function wildnessAt(ss, cxf, czf, level) {
+  const y = level * LEVEL_Y_STEP;
+  const wx = (sampleNoise3D(cxf / WILDNESS_SCALE, y, czf / WILDNESS_SCALE, ss + 3939) - 0.5) * 2 * WARP_AMP;
+  const wz = (sampleNoise3D(cxf / WILDNESS_SCALE, y, czf / WILDNESS_SCALE, ss + 3939 + 77) - 0.5) * 2 * WARP_AMP;
+  const wild = fbm3((cxf + wx) / WILDNESS_SCALE, y, (czf + wz) / WILDNESS_SCALE, ss + 1313);
+  return wild * (1 - ELEVATION_MIX) + elevationField(ss, cxf / PILLAR_FACTOR, czf / PILLAR_FACTOR) * ELEVATION_MIX;
+}
+function biomeOf(ss, cx, cz, level) {
+  const w = wildnessAt(ss, cx, cz, level);
+  const d = fbm3(cx / DEPTH_SCALE, level * LEVEL_Y_STEP, cz / DEPTH_SCALE, ss + 2626);
+  if (w > OUTSIDE_T) return level === 0 ? 'outside' : 'cave';
+  if (w > ORGANIC_T) return d > EMBER_T ? 'ember' : 'cave';
+  return d > CRYPT_T ? 'crypt' : 'dungeon';
+}
+const BIOME_RGB = { dungeon: [235,235,235], crypt: [159,180,204], cave: [216,180,148], ember: [255,136,102], outside: [122,158,190] };
+
+function draw() {
+  const seed = Number(document.getElementById('seed').value) | 0;
+  const stackSeed = seed + 1 * 100000; // stack 1, as generateWorld does
+  const gray = (id, fn) => {
+    const cv = document.getElementById(id), ctx = cv.getContext('2d');
+    const img = ctx.createImageData(cv.width, cv.height);
+    for (let py = 0; py < cv.height; py++) for (let px = 0; px < cv.width; px++) {
+      const v = fn(px * 16 / cv.width, py * 16 / cv.height); // 16 cells across
+      const i = (py * cv.width + px) * 4;
+      const g = Math.max(0, Math.min(255, v * 255)) | 0;
+      img.data[i] = img.data[i+1] = img.data[i+2] = g; img.data[i+3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  };
+  gray('cElev', (cx, cz) => elevationField(stackSeed, cx / PILLAR_FACTOR, cz / PILLAR_FACTOR));
+  gray('cWild', (cx, cz) => (wildnessAt(stackSeed, cx, cz, 0) - 0.35) / 0.35);
+  const cv = document.getElementById('cBiome'), ctx = cv.getContext('2d');
+  const px = cv.width / 16;
+  for (let cz = 0; cz < 16; cz++) for (let cx = 0; cx < 16; cx++) {
+    const active = sampleNoiseOctaves(cx, cz, stackSeed, 3, 2, 0.5) > 0.45; // layer 0
+    const [r, g, b] = BIOME_RGB[biomeOf(stackSeed, cx, cz, 0)];
+    const dim = active ? 1 : 0.25;
+    ctx.fillStyle = `rgb(${r*dim|0},${g*dim|0},${b*dim|0})`;
+    ctx.fillRect(cx * px, cz * px, px, px);
+  }
+}
+draw();
+</script>
+</body>
+</html>
