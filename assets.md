@@ -8,6 +8,20 @@ First-person dungeon crawler with a retro Daggerfall aesthetic. Dark, moody, 199
 
 Seamless tileable textures. 512x512 PNG. These tile across walls, floors, and ceilings — must be seamless in all directions.
 
+### Brutalist megastructure material system
+
+| Filename | Use |
+|----------|-----|
+| `concrete-clean-base.png` | Neutral, unstained concrete; R splat layer |
+| `concrete-fine-aggregate.png` | Fine exposed aggregate variation; G splat layer |
+| `concrete-smooth-precast.png` | Smooth, lightly clouded precast variation; B splat layer |
+| `brutalist-board-concrete.png` | Board-form seams and tie holes reserved for authored trim/details |
+
+The three base materials are closely matched in average value and blended by
+procedural RGB weights across generated geometry. Large seams, joints, and
+fasteners should be placed through trim sheets or dedicated geometry, not baked
+into terrain textures that repeat on every tile.
+
 | # | Filename | Description | Reference |
 |---|----------|-------------|-----------|
 | 1 | `wall-stone.png` | Rough-cut stone or brick dungeon wall. Dark grey tones, mortar lines visible. Daggerfall crypt style. | Daggerfall dungeon walls, Dark Souls undead burg walls |

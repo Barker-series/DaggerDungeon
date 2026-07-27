@@ -24,10 +24,12 @@ function loadTex(path: string): THREE.Texture {
   return tex;
 }
 
-// Shared textures — loaded once, tinted per biome via material color
-const WALL_TEX = loadTex('/textures/wall-stone.png');
-const FLOOR_TEX = loadTex('/textures/floor-dirt.png');
-const CEIL_TEX = loadTex('/textures/ceiling-dark.png');
+// Closely value-matched concrete bases. The renderer blends these with
+// per-vertex RGB weights; construction seams belong to trim geometry rather
+// than the infinitely repeating terrain material.
+const CONCRETE_CLEAN_TEX = loadTex('/textures/concrete-clean-base.png');
+const CONCRETE_AGGREGATE_TEX = loadTex('/textures/concrete-fine-aggregate.png');
+const CONCRETE_PRECAST_TEX = loadTex('/textures/concrete-smooth-precast.png');
 const STAIRS_TEX = loadTex('/textures/stairs-down.png');
 
 /** Region key: a biome, or 'tunnel' for connections carved through void */
@@ -46,6 +48,121 @@ const REGION_TINTS: Record<RegionKey, number> = {
 const REGION_EMISSIVE: Partial<Record<RegionKey, number>> = {
   ember: 0x2a0d04,
 };
+
+/**
+ * Standard-lit concrete with three albedo layers mixed by the geometry's
+ * `splatWeight` RGB attribute. Offsetting and scaling the secondary samples
+ * prevents their features from lining up with the base texture's repetition.
+ */
+function makeConcreteMaterial(
+  tint: number,
+  emissive: number,
+  roughness: number,
+  constructionSeams = false,
+): THREE.MeshStandardMaterial {
+  const material = new THREE.MeshStandardMaterial({
+    map: CONCRETE_CLEAN_TEX,
+    color: tint,
+    emissive,
+    roughness,
+    side: THREE.DoubleSide,
+  });
+
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms['concreteAggregate'] = { value: CONCRETE_AGGREGATE_TEX };
+    shader.uniforms['concretePrecast'] = { value: CONCRETE_PRECAST_TEX };
+    shader.uniforms['constructionSeams'] = { value: constructionSeams ? 1 : 0 };
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+attribute vec3 splatWeight;
+varying vec3 vSplatWeight;
+varying vec3 vConcretePosition;
+varying vec3 vConcreteNormal;`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+vSplatWeight = splatWeight;
+vConcretePosition = position;
+vConcreteNormal = normal;`,
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+varying vec3 vSplatWeight;
+varying vec3 vConcretePosition;
+varying vec3 vConcreteNormal;
+uniform sampler2D concreteAggregate;
+uniform sampler2D concretePrecast;
+uniform float constructionSeams;`,
+      )
+      .replace(
+        '#include <map_fragment>',
+        `#ifdef USE_MAP
+          vec3 weights = max(vSplatWeight, vec3(0.001));
+          weights /= weights.r + weights.g + weights.b;
+          vec4 cleanSample = texture2D(map, vMapUv);
+          vec4 aggregateSample = texture2D(concreteAggregate, vMapUv * 0.83 + vec2(0.173, 0.319));
+          vec4 precastSample = texture2D(concretePrecast, vMapUv * 1.17 + vec2(0.437, 0.113));
+          diffuseColor *= cleanSample * weights.r
+            + aggregateSample * weights.g
+            + precastSample * weights.b;
+
+          // Large staggered formwork panels are anchored in structure space,
+          // not texture UVs, so joints continue across generated tile edges.
+          if (constructionSeams > 0.5) {
+            vec3 axisWeight = abs(normalize(vConcreteNormal));
+            float wallU = axisWeight.x > axisWeight.z
+              ? vConcretePosition.z
+              : vConcretePosition.x;
+            float wallV = vConcretePosition.y;
+            float panelHeight = 6.0;
+            float panelWidth = 12.0;
+            float row = floor(wallV / panelHeight);
+            float stagger = mod(row, 2.0) * panelWidth * 0.5;
+            vec2 panelCell = vec2(
+              mod(wallU + stagger, panelWidth),
+              mod(wallV, panelHeight)
+            );
+            vec2 edgeDistance = min(
+              panelCell,
+              vec2(panelWidth, panelHeight) - panelCell
+            );
+            // Distance LOD: fine joints up close, broader silhouettes far
+            // away. Screen-space derivatives provide a minimum filtered
+            // width so distant seams do not flicker between pixels.
+            float cameraDistance = length(vViewPosition);
+            float lodWidth = mix(
+              0.035,
+              0.075,
+              smoothstep(10.0, 90.0, cameraDistance)
+            );
+            float pixelWidth = max(fwidth(wallU), fwidth(wallV));
+            float jointWidth = max(lodWidth, pixelWidth * 0.35);
+            float jointFeather = max(0.02, pixelWidth * 0.55);
+            float verticalJoint = 1.0 - smoothstep(
+              jointWidth,
+              jointWidth + jointFeather,
+              edgeDistance.x
+            );
+            float horizontalJoint = 1.0 - smoothstep(
+              jointWidth,
+              jointWidth + jointFeather,
+              edgeDistance.y
+            );
+            float joint = max(verticalJoint, horizontalJoint);
+            diffuseColor.rgb *= mix(1.0, 0.76, joint);
+          }
+        #endif`,
+      );
+  };
+  material.customProgramCacheKey = () =>
+    constructionSeams ? 'rgb-concrete-splat-seams-v2' : 'rgb-concrete-splat-v2';
+  return material;
+}
 
 /** MINIMUM sky-clip altitude for canyon walls in open-sky spans. The
  *  megastructure has no uniform ceiling: the real clip is derived per
@@ -141,9 +258,9 @@ export class DungeonRenderer {
         const tint = REGION_TINTS[key];
         const emissive = REGION_EMISSIVE[key] ?? 0x000000;
         m = {
-          wall: new THREE.MeshStandardMaterial({ map: WALL_TEX, color: tint, emissive, roughness: 0.85, side: THREE.DoubleSide }),
-          floor: new THREE.MeshStandardMaterial({ map: FLOOR_TEX, color: tint, emissive, roughness: 0.9, side: THREE.DoubleSide }),
-          ceil: new THREE.MeshStandardMaterial({ map: CEIL_TEX, color: tint, emissive, roughness: 0.95, side: THREE.DoubleSide }),
+          wall: makeConcreteMaterial(tint, emissive, 0.9, true),
+          floor: makeConcreteMaterial(tint, emissive, 0.94),
+          ceil: makeConcreteMaterial(tint, emissive, 0.97),
         };
         materials.set(key, m);
       }
@@ -949,6 +1066,20 @@ export class DungeonRenderer {
     geom.setAttribute('position', new THREE.Float32BufferAttribute(buf.verts, 3));
     geom.setAttribute('uv', new THREE.Float32BufferAttribute(buf.uvs, 2));
     geom.setAttribute('normal', new THREE.Float32BufferAttribute(buf.norms, 3));
+    const splatWeights: number[] = [];
+    for (let i = 0; i < buf.verts.length; i += 3) {
+      const x = buf.verts[i]!;
+      const y = buf.verts[i + 1]!;
+      const z = buf.verts[i + 2]!;
+      // Broad, deterministic fields act like procedural terrain-paint strokes.
+      // Multiple incommensurate waves avoid a visible square or checker grid.
+      const r = 0.55 + 0.30 * Math.sin(x * 0.071 + z * 0.043);
+      const g = 0.50 + 0.32 * Math.sin(z * 0.059 - y * 0.083 + 1.9);
+      const b = 0.48 + 0.29 * Math.sin(x * 0.037 + y * 0.067 - z * 0.031 + 4.1);
+      const sum = r + g + b;
+      splatWeights.push(r / sum, g / sum, b / sum);
+    }
+    geom.setAttribute('splatWeight', new THREE.Float32BufferAttribute(splatWeights, 3));
     geom.setIndex(buf.idxs);
     const mesh = new THREE.Mesh(geom, material);
     parent.add(mesh);
