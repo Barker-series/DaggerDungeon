@@ -12,6 +12,7 @@
 import { TileType } from '../types';
 import { getCell, isOrganicBiome } from './cells';
 import { sampleNoiseOctaves } from './noise';
+import { windowOrigin } from './cells';
 
 const FINE_THRESHOLD = 0.38;
 const SMOOTH_PASSES = 3; // cellular automata iterations
@@ -34,7 +35,8 @@ export function applyFineNoise(
       const cell = getCell(cx, cz);
       if (!cell || !isOrganicBiome(cell.biome)) continue;
 
-      const noise = sampleNoiseOctaves(tx, tz, fineSeed, 2, 2.5, 0.6);
+      const { ocx, ocz } = windowOrigin();
+      const noise = sampleNoiseOctaves(ocx * 14 + tx, ocz * 14 + tz, fineSeed, 2, 2.5, 0.6);
       if (noise < FINE_THRESHOLD) {
         tiles[tz]![tx] = TileType.Wall;
       }

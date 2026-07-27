@@ -68,9 +68,12 @@ const RING_HI = 41;
 const GAP_TILES = 28;
 
 export interface BridgeSpec {
-  /** Lower cell of the pair */
+  /** Lower cell of the pair (window-local; tile math) */
   cx: number;
   cz: number;
+  /** Absolute pillar-grid coords of the owner (seeding) */
+  acx: number;
+  acz: number;
   /** 'east' = toward (cx+1, cz); 'south' = toward (cx, cz+1) */
   dir: 'east' | 'south';
   /** Walk height at the near (this cell's) core face */
@@ -118,7 +121,7 @@ export function planBridges(
   const candidates = pairCandidates(a, b, dir);
   if (candidates.length === 0) return [];
 
-  const rng = mulberry32(cellSeed(a.cx, a.cz, worldSeed, BRIDGE_SALT + (dir === 'east' ? 0 : 1)));
+  const rng = mulberry32(cellSeed(a.acx, a.acz, worldSeed, BRIDGE_SALT + (dir === 'east' ? 0 : 1)));
 
   const bridges: BridgeSpec[] = [];
   for (const c of candidates) {
@@ -129,7 +132,7 @@ export function planBridges(
       Math.abs(br.yA - c.sa.yAbs) < MIN_SEPARATION ||
       Math.abs(br.yB - c.sb.yAbs) < MIN_SEPARATION)) continue;
     if (rng() > BRIDGE_CHANCE) continue;
-    bridges.push({ cx: a.cx, cz: a.cz, dir, yA: c.sa.yAbs, yB: c.sb.yAbs, pipe: rng() < PIPE_CHANCE });
+    bridges.push({ cx: a.cx, cz: a.cz, acx: a.acx, acz: a.acz, dir, yA: c.sa.yAbs, yB: c.sb.yAbs, pipe: rng() < PIPE_CHANCE });
   }
   return bridges;
 }
@@ -153,12 +156,12 @@ export function planOwnedArches(
   for (const dir of ['east', 'south'] as const) {
     const b = at(dir === 'east' ? cx + 1 : cx, dir === 'south' ? cz + 1 : cz);
     if (!b) continue;
-    const rng = mulberry32(cellSeed(cx, cz, worldSeed, ARCH_SALT + (dir === 'east' ? 0 : 1)));
+    const rng = mulberry32(cellSeed(a.acx, a.acz, worldSeed, ARCH_SALT + (dir === 'east' ? 0 : 1)));
     if (rng() > chance) continue;
     // Above BOTH pillars' walkable tops so the beam can never block a
     // flight or an attic — pure skyline
     const y = Math.max(a.totalHeight, b.totalHeight) + 6 + rng() * 10;
-    out.push({ cx, cz, dir, yA: y, yB: y, pipe: false });
+    out.push({ cx, cz, acx: a.acx, acz: a.acz, dir, yA: y, yB: y, pipe: false });
   }
   return out;
 }
@@ -198,9 +201,9 @@ export function planOwnedSubways(
   for (const dir of ['east', 'south'] as const) {
     const b = at(dir === 'east' ? cx + 1 : cx, dir === 'south' ? cz + 1 : cz);
     if (!b || b.baseDepth > -8) continue;
-    const rng = mulberry32(cellSeed(cx, cz, worldSeed, SUBWAY_SALT + (dir === 'east' ? 0 : 1)));
+    const rng = mulberry32(cellSeed(a.acx, a.acz, worldSeed, SUBWAY_SALT + (dir === 'east' ? 0 : 1)));
     if (rng() > SUBWAY_CHANCE) continue;
-    out.push({ cx, cz, dir, yA: SUBWAY_Y, yB: SUBWAY_Y, pipe: true });
+    out.push({ cx, cz, acx: a.acx, acz: a.acz, dir, yA: SUBWAY_Y, yB: SUBWAY_Y, pipe: true });
   }
   return out;
 }
@@ -258,7 +261,7 @@ function forcedBridge(
   if (!best) return null;
   // Forced (guarantee) bridges are never pipes: the one guaranteed
   // route onto a pillar should read as an open walkway
-  return { cx: a.cx, cz: a.cz, dir, yA: best.sa.yAbs, yB: best.sb.yAbs, pipe: false };
+  return { cx: a.cx, cz: a.cz, acx: a.acx, acz: a.acz, dir, yA: best.sa.yAbs, yB: best.sb.yAbs, pipe: false };
 }
 
 /**

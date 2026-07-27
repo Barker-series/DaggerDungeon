@@ -35,6 +35,29 @@ const logged: string[] = [];
 const origError = console.error;
 console.error = (...args: unknown[]) => { logged.push(args.join(' ')); origError(...args); };
 
+// ── Window seam agreement: two windows offset by one pillar cell must
+// agree on nearly all shared columns (field-driven layers are exactly
+// window-stable; per-window passes — rooms, hallways, golden path —
+// account for the small remainder). Guards the endless-world plumbing.
+{
+  const seed = SEEDS[0]!;
+  const A = generateWorld({ seed, stack: 1 });
+  const B = generateWorld({ seed, stack: 1, originPcx: 1, originPcz: 0 });
+  const W = A.levels[0]!.width;
+  let same = 0, total = 0;
+  for (let tz = 0; tz < W; tz++) {
+    for (let tx = 56; tx < W; tx++) {
+      total++;
+      const ka = A.columns[tz * W + tx]!.map((s) => `${s.floor.toFixed(2)}..${s.ceil.toFixed(2)}`).join('|');
+      const kb = B.columns[tz * W + (tx - 56)]!.map((s) => `${s.floor.toFixed(2)}..${s.ceil.toFixed(2)}`).join('|');
+      if (ka === kb) same++;
+    }
+  }
+  const pct = (100 * same) / total;
+  console.log(`window seam: ${pct.toFixed(1)}% of overlap columns identical`);
+  if (pct < 90) fail(`window seam agreement ${pct.toFixed(1)}% < 90%`);
+}
+
 for (const seed of SEEDS) {
   const t0 = Date.now();
   const before = logged.length;

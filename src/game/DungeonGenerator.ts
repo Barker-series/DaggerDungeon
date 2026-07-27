@@ -24,7 +24,7 @@
  */
 
 import { TileType, SKY_CEIL, type DungeonData, type WorldData, type RoomData, type GridPos } from './types';
-import { getOrCreateCell, getCell, getAllCells, resetCells, snapshotCellBiomes, tileBiome } from './dungeon/cells';
+import { getOrCreateCell, getCell, getAllCells, resetCells, snapshotCellBiomes, setWindowOrigin, tileBiome } from './dungeon/cells';
 import { buildColumns, validateColumns } from './dungeon/columns';
 import { generateLayer0 } from './dungeon/layer0-noise';
 import { generateLayer1TileGrid } from './dungeon/layer1-tilegrid';
@@ -36,7 +36,7 @@ import { connectIslands } from './dungeon/layer4-connect';
 import { computeGoldenPath, goldenPath } from './dungeon/layer5-goldenpath';
 import { computeHeightFields, computePitMask, PIT_FLOOR } from './dungeon/layer6-heights';
 import { placePillars } from './dungeon/layer45-pillars';
-import { buildPillarField, PILLAR_CELL_TILES, type PillarSpec } from './dungeon/pillar-layer';
+import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
 import { pillarFootprint, pillarAirSpans } from './dungeon/pillar-geometry';
 import {
   planOwnedBridges, planOwnedSubways, planOwnedArches,
@@ -56,16 +56,28 @@ interface GenerateOpts {
   seed: number;
   /** Which megastructure segment — the exit stairs regenerate stack+1 */
   stack: number;
+  /** WINDOW ORIGIN on the infinite plane, in PILLAR cells. The window
+   *  generates the same slice of the same endless megastructure for
+   *  any origin — overlapping windows agree on shared ground (field-
+   *  driven layers exactly; window-scoped passes like hallways and the
+   *  golden path are per-window). Default (0,0) = the classic map. */
+  originPcx?: number;
+  originPcz?: number;
 }
 
 export function generateWorld(opts: GenerateOpts): WorldData {
   const { seed, stack } = opts;
+  const originPcx = opts.originPcx ?? 0;
+  const originPcz = opts.originPcz ?? 0;
   const stackSeed = seed + stack * 100000;
+  // Every noise/RNG/region sample in the level pipeline offsets by the
+  // window origin (dungeon cells = 4 per pillar cell)
+  setWindowOrigin(originPcx * PILLAR_FACTOR, originPcz * PILLAR_FACTOR);
 
   // ── Pillar kebabs — the coarse pillar layer's pure function over
   // this window (one pillar cell = 4x4 dungeon cells) ──
   const pillarGrid = Math.floor(GRID_TILES / PILLAR_CELL_TILES);
-  const pillars = buildPillarField(stackSeed, 0, 0, pillarGrid, pillarGrid);
+  const pillars = buildPillarField(stackSeed, 0, 0, pillarGrid, pillarGrid, originPcx, originPcz);
 
   // Footprint tiles are WALL in the tile grid: connectivity, the golden
   // path, and pathfinding route around pillars by construction. Dungeon
@@ -299,7 +311,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     console.error(`[generateWorld] column model invariant violations (seed ${seed}, stack ${stack}):`, errs);
   }
 
-  return { seed, stack, levels, columns, pillars, bridges, subways };
+  return { seed, stack, originPcx, originPcz, levels, columns, pillars, bridges, subways };
 }
 
 // ── The floor pipeline ──

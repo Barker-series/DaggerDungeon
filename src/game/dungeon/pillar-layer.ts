@@ -95,9 +95,13 @@ export interface ResolvedSocket extends ChunkSocket {
 }
 
 export interface PillarSpec {
-  /** PILLAR-grid coordinates */
+  /** WINDOW-LOCAL pillar-grid coordinates (all tile/placement math) */
   cx: number;
   cz: number;
+  /** ABSOLUTE pillar-grid coordinates on the infinite plane (all
+   *  seeding/sampling — two overlapping windows agree) */
+  acx: number;
+  acz: number;
   /** Top of the crown, above grade */
   totalHeight: number;
   /** Base of the lowest chunk — 0 for surface-only pillars, negative
@@ -258,7 +262,7 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
     }
   });
 
-  return { cx: pcx, cz: pcz, totalHeight: base, baseDepth: -downTotal, chunks, sockets };
+  return { cx: pcx, cz: pcz, acx: pcx, acz: pcz, totalHeight: base, baseDepth: -downTotal, chunks, sockets };
 }
 
 /**
@@ -272,12 +276,20 @@ export function buildPillarField(
   cz0: number,
   cx1: number,
   cz1: number,
+  /** Absolute pillar-cell origin of the window — assembly samples the
+   *  infinite plane there while keys/placement stay window-local */
+  originPcx = 0,
+  originPcz = 0,
 ): Map<string, PillarSpec> {
   const field = new Map<string, PillarSpec>();
   for (let cz = cz0; cz < cz1; cz++) {
     for (let cx = cx0; cx < cx1; cx++) {
-      const spec = assemblePillar(worldSeed, cx, cz);
-      if (spec) field.set(`${cx},${cz}`, spec);
+      const spec = assemblePillar(worldSeed, originPcx + cx, originPcz + cz);
+      if (spec) {
+        spec.cx = cx;
+        spec.cz = cz;
+        field.set(`${cx},${cz}`, spec);
+      }
     }
   }
   return field;

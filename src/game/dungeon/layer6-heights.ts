@@ -26,6 +26,7 @@ import { TileType, type GridPos } from '../types';
 import { PIT_LEVEL } from './heightfield';
 import { getCell, isOrganicBiome, type BiomeType } from './cells';
 import { sampleNoise, sampleNoise3D } from './noise';
+import { windowOrigin } from './cells';
 import { goldenPath } from './layer5-goldenpath';
 
 const TUNNEL_CLEARANCE = 3.5;
@@ -118,7 +119,7 @@ export function computePitMask(
       if (!biome) continue;
       const p = PROFILES[biome];
       if (p.pitThreshold <= 0 || isSafe(tx, tz)) continue;
-      const voidNoise = sampleNoise3D(tx / PIT_SCALE, 0, tz / PIT_SCALE, voidSeed);
+      const voidNoise = sampleNoise3D((windowOrigin().ocx * 14 + tx) / PIT_SCALE, 0, (windowOrigin().ocz * 14 + tz) / PIT_SCALE, voidSeed);
       if (voidNoise < p.pitThreshold) mask[tz]![tx] = true;
     }
   }
@@ -173,7 +174,7 @@ export function computeHeightFields(
       }
       const biome = biomeAt(tx, tz);
       if (!biome || !isOrganicBiome(biome)) continue; // built floors stay flat between breaches
-      const swell = sampleNoise(tx, tz, heightSeed + 55, FLOOR_SWELL_SCALE);
+      const swell = sampleNoise(windowOrigin().ocx * 14 + tx, windowOrigin().ocz * 14 + tz, heightSeed + 55, FLOOR_SWELL_SCALE);
       floor[tz]![tx] = swell * PROFILES[biome].rollAmp;
     }
   }
@@ -264,13 +265,13 @@ export function computeHeightFields(
       const p = PROFILES[biome];
       let clearance: number;
       if (isOrganicBiome(biome)) {
-        const swell = sampleNoise(tx, tz, heightSeed, CEIL_SWELL_SCALE);
-        const detail = sampleNoise(tx, tz, heightSeed + 99, CEIL_DETAIL_SCALE);
+        const swell = sampleNoise(windowOrigin().ocx * 14 + tx, windowOrigin().ocz * 14 + tz, heightSeed, CEIL_SWELL_SCALE);
+        const detail = sampleNoise(windowOrigin().ocx * 14 + tx, windowOrigin().ocz * 14 + tz, heightSeed + 99, CEIL_DETAIL_SCALE);
         clearance = p.clearMin + swell * (p.clearMax - p.clearMin) + (detail - 0.5) * 1.5;
         clearance = Math.max(TUNNEL_CLEARANCE, clearance);
       } else {
         const cell = getCell(Math.floor(tx / cellTileSize), Math.floor(tz / cellTileSize))!;
-        const cellNoise = sampleNoise(cell.cx, cell.cz, heightSeed + 7, 2);
+        const cellNoise = sampleNoise(windowOrigin().ocx + cell.cx, windowOrigin().ocz + cell.cz, heightSeed + 7, 2);
         const raw = p.clearMin + cellNoise * (p.clearMax - p.clearMin);
         clearance = Math.round(raw / HEIGHT_STEP) * HEIGHT_STEP;
       }

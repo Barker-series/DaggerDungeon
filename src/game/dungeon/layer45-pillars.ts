@@ -17,6 +17,7 @@
 import { TileType, type GridPos } from '../types';
 import { getCell } from './cells';
 import { cellSeed, mulberry32 } from './rng';
+import { windowOrigin } from './cells';
 
 const DUNGEON_SPACING = 5; // tiles between pillars
 const CRYPT_SPACING = 3;
@@ -40,7 +41,7 @@ export function placePillars(
       if (cell.biome !== 'dungeon' && cell.biome !== 'crypt') continue;
 
       const spacing = cell.biome === 'crypt' ? CRYPT_SPACING : DUNGEON_SPACING;
-      const rng = mulberry32(cellSeed(cx, cz, worldSeed, 4545));
+      const rng = mulberry32(cellSeed(windowOrigin().ocx + cx, windowOrigin().ocz + cz, worldSeed, 4545));
 
       const baseX = cx * cellTileSize;
       const baseZ = cz * cellTileSize;

@@ -65,7 +65,7 @@ export class Movers {
 
     for (const spec of world.pillars.values()) {
       if (spec.totalHeight < ELEVATOR_MIN_HEIGHT) continue;
-      const rng = mulberry32(cellSeed(spec.cx, spec.cz, seed, 9191));
+      const rng = mulberry32(cellSeed(spec.acx, spec.acz, seed, 9191));
       if (rng() > ELEVATOR_CHANCE) continue;
       // East face, center of the pillar — just off the ring edge (tile
       // 42 of the cell), riding open air beside the wall
@@ -79,8 +79,8 @@ export class Movers {
       });
     }
 
-    world.subways.forEach((sw, i) => {
-      const rng = mulberry32(cellSeed(sw.cx, sw.cz, seed, 9292 + i));
+    world.subways.forEach((sw) => {
+      const rng = mulberry32(cellSeed(sw.acx, sw.acz, seed, 9292 + (sw.dir === 'east' ? 0 : 1)));
       if (rng() > TRAIN_CHANCE) return;
       const axis: 'x' | 'z' = sw.dir === 'east' ? 'x' : 'z';
       // The bore runs across the gap between the two cores (tiles 42..69

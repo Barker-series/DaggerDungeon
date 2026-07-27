@@ -38,6 +38,22 @@ export interface DungeonCell {
 
 const cellMap = new Map<string, DungeonCell>();
 
+// ── The window ──
+// Generation-time singleton like the cell map: which slice of the
+// INFINITE plane this window generates. Cells/tiles stay window-local
+// (0..grid); every noise/RNG/region SAMPLE adds the origin so two
+// overlapping windows agree on shared ground. Units: dungeon cells.
+let windowOcx = 0;
+let windowOcz = 0;
+export function setWindowOrigin(ocx: number, ocz: number): void {
+  windowOcx = ocx;
+  windowOcz = ocz;
+}
+/** Absolute dungeon-cell coords of this window's origin */
+export function windowOrigin(): { ocx: number; ocz: number } {
+  return { ocx: windowOcx, ocz: windowOcz };
+}
+
 export function getCellKey(cx: number, cz: number): string {
   return `${cx},${cz}`;
 }

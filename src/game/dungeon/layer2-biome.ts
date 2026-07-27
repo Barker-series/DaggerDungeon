@@ -31,7 +31,7 @@
  *   (the wildest extreme of the wildness field)
  */
 
-import { getAllCells } from './cells';
+import { getAllCells, windowOrigin } from './cells';
 import { sampleNoise3D } from './noise';
 import { elevationField, PILLAR_FACTOR } from './pillar-layer';
 import { regionAtCell, regionPalette } from './region-layer';
@@ -101,10 +101,13 @@ export function assignBiomes(_cellTileSize: number, stackSeed: number, level: nu
   for (const cell of getAllCells()) {
     if (!cell.active) continue;
 
-    const wildness = wildnessAt(stackSeed, cell.cx, cell.cz, level);
-    const depth = fbm3(cell.cx / DEPTH_SCALE, y, cell.cz / DEPTH_SCALE, depthSeed);
+    const { ocx, ocz } = windowOrigin();
+    const acx = ocx + cell.cx;
+    const acz = ocz + cell.cz;
+    const wildness = wildnessAt(stackSeed, acx, acz, level);
+    const depth = fbm3(acx / DEPTH_SCALE, y, acz / DEPTH_SCALE, depthSeed);
     // The district's zoning: same continuous fields, region thresholds
-    const pal = regionPalette(regionAtCell(stackSeed, cell.cx, cell.cz));
+    const pal = regionPalette(regionAtCell(stackSeed, acx, acz));
 
     if (wildness > pal.outside) {
       cell.biome = level === 0 ? 'outside' : 'cave';
