@@ -366,7 +366,19 @@ function generateLevel(
 
   // ── Layer 3: Spawn & exit — far-apart rooms, never in pillar cells ──
   const center = Math.floor(CELL_GRID_SIZE / 2);
-  const spawnCell = pickFarthestCell(center, center, pillarCells);
+  // The streaming window recenters around its middle 2x2 pillar cells.
+  // Starting outside that region causes an immediate window rebuild while
+  // the player is still at the old local coordinates, which can put the
+  // first frame over a void. Keep the entrance inside the safe center;
+  // the exit remains free to use the whole window for a long route.
+  const centerMargin = PILLAR_FACTOR;
+  const spawnCell = pickFarthestCell(
+    center,
+    center,
+    pillarCells,
+    centerMargin,
+    CELL_GRID_SIZE - centerMargin,
+  );
   const spawnCx = spawnCell.cx;
   const spawnCz = spawnCell.cz;
   let entrance: GridPos = {
@@ -448,8 +460,20 @@ function generateLevel(
 
 /** Farthest active cell from a fixed anchor (distance × noise score),
  *  never an excluded (pillar) cell. */
-function pickFarthestCell(fromCx: number, fromCz: number, exclude: Set<string>): { cx: number; cz: number } {
-  const active = getAllCells().filter((c) => c.active && !exclude.has(`${c.cx},${c.cz}`));
+function pickFarthestCell(
+  fromCx: number,
+  fromCz: number,
+  exclude: Set<string>,
+  minCell = 0,
+  maxCell = CELL_GRID_SIZE,
+): { cx: number; cz: number } {
+  const inBounds = (cx: number, cz: number): boolean =>
+    cx >= minCell && cz >= minCell && cx < maxCell && cz < maxCell;
+  const active = getAllCells().filter((c) =>
+    c.active &&
+    inBounds(c.cx, c.cz) &&
+    !exclude.has(`${c.cx},${c.cz}`),
+  );
   let best: { cx: number; cz: number } | null = null;
   let bestScore = -1;
   for (const c of active) {
@@ -466,8 +490,8 @@ function pickFarthestCell(fromCx: number, fromCz: number, exclude: Set<string>):
     // fall back into an excluded cell: a room punched inside a pillar
     // footprint is sealed off forever.)
     let fallbackScore = -1;
-    for (let cz = 0; cz < CELL_GRID_SIZE; cz++) {
-      for (let cx = 0; cx < CELL_GRID_SIZE; cx++) {
+    for (let cz = minCell; cz < maxCell; cz++) {
+      for (let cx = minCell; cx < maxCell; cx++) {
         if (exclude.has(`${cx},${cz}`)) continue;
         if (cx === fromCx && cz === fromCz) continue;
         const score = Math.abs(cx - fromCx) + Math.abs(cz - fromCz);
@@ -476,6 +500,11 @@ function pickFarthestCell(fromCx: number, fromCz: number, exclude: Set<string>):
           best = { cx, cz };
         }
       }
+    }
+    // A bounded region could theoretically be entirely occupied by pillar
+    // footprints. Preserve the old whole-window fallback in that case.
+    if (!best && (minCell !== 0 || maxCell !== CELL_GRID_SIZE)) {
+      return pickFarthestCell(fromCx, fromCz, exclude);
     }
     best ??= { cx: 1, cz: 1 };
   }

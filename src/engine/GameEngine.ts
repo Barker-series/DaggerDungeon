@@ -54,6 +54,7 @@ export class GameEngine {
   private timer: THREE.Timer;
   private animFrameId = 0;
   private stopped = false;
+  private paused = false;
 
   private dungeonRenderer: DungeonRenderer;
   private movers: Movers | null = null;
@@ -84,6 +85,7 @@ export class GameEngine {
    *  so the viewer highlights the exact geometry being reported */
   private marks: { pos: THREE.Vector3; mesh: THREE.Mesh }[] = [];
   private bobOffset = 0;
+  private playerSpeedMultiplier = 1;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -278,7 +280,7 @@ export class GameEngine {
       this.animFrameId = requestAnimationFrame(loop);
       this.timer.update(timestamp);
       const dt = Math.min(this.timer.getDelta(), 0.1);
-      this.update(dt);
+      if (!this.paused) this.update(dt);
       this.renderer.render(this.scene, this.threeCamera);
     };
     // Store the FIRST frame's id too — stop() before the first frame fires
@@ -296,6 +298,22 @@ export class GameEngine {
     this.sprites.dispose();
     window.removeEventListener('resize', this.handleResize);
     this.renderer.dispose();
+  }
+
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+  }
+
+  setBrightness(exposure: number): void {
+    this.renderer.toneMappingExposure = exposure;
+  }
+
+  setMouseSensitivity(multiplier: number): void {
+    this.gridCamera.setMouseSensitivity(multiplier);
+  }
+
+  setPlayerSpeed(multiplier: number): void {
+    this.playerSpeedMultiplier = multiplier;
   }
 
   private update(dt: number): void {
@@ -446,6 +464,7 @@ export class GameEngine {
 
     if (isMoving) {
       const speed = MOVE_SPEED
+        * this.playerSpeedMultiplier
         * (this.input.isSprinting() ? SPRINT_MULT : 1)
         * (1 - (1 - CROUCH_SPEED_MULT) * this.crouchAmount);
       this.gridCamera.getForward(_forward);

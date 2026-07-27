@@ -68,6 +68,15 @@ for (const seed of SEEDS) {
 
   if (logged.slice(before).some((m) => m.includes('invariant'))) fail(`seed ${seed}: column invariant violations`);
 
+  // ── Spawn streaming safety ──
+  // A spawn outside the center 2x2 pillar cells triggers an immediate
+  // recenter, leaving its window-local coordinates over regenerated ground.
+  const spawnPcx = Math.floor(L.entrance.x / PILLAR_CELL_TILES);
+  const spawnPcz = Math.floor(L.entrance.y / PILLAR_CELL_TILES);
+  if (spawnPcx < 1 || spawnPcx > 2 || spawnPcz < 1 || spawnPcz > 2) {
+    fail(`seed ${seed}: spawn outside streaming-safe center (${spawnPcx},${spawnPcz})`);
+  }
+
   // ── Route ──
   const route = findWorldPathToExit(world, { level: 0, x: L.entrance.x, y: L.entrance.y });
   if (route.length === 0) fail(`seed ${seed}: no spawn→exit route`);

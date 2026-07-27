@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { EYE_HEIGHT, Direction } from '../game/types';
 
-const MOUSE_SENSITIVITY = 0.002;
+const DEFAULT_MOUSE_SENSITIVITY = 0.002;
 const PITCH_LIMIT = Math.PI * 0.45;
 
 /**
@@ -24,6 +24,7 @@ export class GridCamera {
   // Pointer lock
   private canvas: HTMLElement | null = null;
   private isPointerLocked = false;
+  private mouseSensitivity = DEFAULT_MOUSE_SENSITIVITY;
 
   constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -51,6 +52,11 @@ export class GridCamera {
 
   getIsPointerLocked(): boolean {
     return this.isPointerLocked;
+  }
+
+  /** Set a multiplier around the default mouse sensitivity. */
+  setMouseSensitivity(multiplier: number): void {
+    this.mouseSensitivity = DEFAULT_MOUSE_SENSITIVITY * multiplier;
   }
 
   /** Set position directly */
@@ -102,7 +108,10 @@ export class GridCamera {
 
   private requestPointerLock = () => {
     if (!this.isPointerLocked) {
-      this.canvas?.requestPointerLock();
+      void this.canvas?.requestPointerLock().catch(() => {
+        // Some embedded browsers do not expose pointer lock. GameScreen
+        // handles that case by removing its blocking overlay.
+      });
     }
   };
 
@@ -116,8 +125,8 @@ export class GridCamera {
 
   private onMouseMove = (e: MouseEvent) => {
     if (!this.isPointerLocked) return;
-    this.yaw -= e.movementX * MOUSE_SENSITIVITY;
-    this.pitch -= e.movementY * MOUSE_SENSITIVITY;
+    this.yaw -= e.movementX * this.mouseSensitivity;
+    this.pitch -= e.movementY * this.mouseSensitivity;
     this.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, this.pitch));
   };
 }
