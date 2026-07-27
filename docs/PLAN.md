@@ -45,7 +45,7 @@ derive from span differences. If it isn't in the columns, it doesn't exist.
 | **M3 Endless world v1** | `generateWorld({originPcx, originPcz})` windows the infinite plane; engine `recenterWindow()` re-centers as the player walks; DDSNAP carries `opx/opz`; seam invariant ≥90% overlap-column identity (measured 94–97.7%) | `cd2ecc4`, `5cc083a` |
 
 **Verification:** `npx tsx tools/verify-world.ts` — 16 seeds × (climbability BFS,
-descendability, bridge walkability, spawn→exit route, seam agreement, crack
+descendability, bridge walkability, permanent-network reachability, seam agreement, crack
 pairs, column invariants). All green at head. `tools/debug-view.ts` renders any
 DDSNAP repro string headlessly (F8 in game copies one).
 
@@ -58,7 +58,57 @@ behind the player:
 - **Marriage fixpoint** → bound to per-pillar-footprint radius
 - **capField roofline BFS** → bound to room neighborhoods
 - **Island connectivity + hallways** → per-cell-pair local corridor guarantees
-- **Spawn/exit + golden path** → rethink for endless play (see item 3)
+- **Spawn/exit + golden path** → exit removed; spawn is construction-neutral
+
+Completed locally in the current M3 pass:
+- **Marriage fixpoint:** exact queue per owned pillar footprint; invariant verifies
+  that no eligible tile remains unsettled.
+- **capField roofline:** each pillar reads only its one-tile room perimeter and
+  propagates caps inside its owned footprint.
+
+#### Permanent navigation contract
+
+`connectIslands()` is a finite-map repair and must be removed. A tunnel created
+because two components happen to be disconnected inside one temporary window
+has no permanent world identity and may disappear when that window moves.
+
+The endless replacement is a LayerProcGen navigation stack:
+
+1. **Pillar-cell transit layer:** every absolute pillar cell owns a deterministic
+   local hub. Every adjacent cell pair has one shared deterministic socket,
+   owned by the west/north cell. Local corridors join the hub to its four
+   sockets, creating a permanent infinite coarse network.
+2. **Local attachment layer:** each pillar cell labels traversable components
+   inside its own bounds and joins them to its hub. Routing may read bounded
+   padding but publishes tiles only inside the owner cell.
+3. **Regional intent layer:** later, region chunks select which connections are
+   grand galleries, vents, subways, bridges, or deliberately sealed routes.
+   The coarse graph must retain a connectivity guarantee even as vocabulary
+   changes.
+4. **Render/physics layer:** columns and meshes consume the permanent corridor
+   output. A moving window only materializes existing cells; it never decides
+   whether a connection exists.
+
+Required invariants:
+- Shared sockets agree from both adjacent cells and from shifted windows.
+- Every traversable local component reaches its pillar-cell hub.
+- Every hub reaches neighboring hubs through permanent owned connections.
+- Overlapping windows have identical transit tiles.
+
+First production slice completed locally:
+- The whole-window `connectIslands()` repair has been replaced by permanent
+  absolute pillar-cell hubs, pair-owned shared sockets, owned A* routes, and
+  bounded local component attachment.
+- Permanent transit tiles are sacred downstream: decorative pillars and the
+  void field cannot overwrite them.
+- Verification now checks both sides of every internal socket and proves every
+  ordinary terrain tile is in the entrance-connected network.
+- Spawn no longer carves a room or reserves terrain. It is a window-scoped
+  marker snapped onto safe permanent transit in the streaming-safe center.
+- The bounded-map exit, stairs, crystal, beacon, interaction, golden path, and
+  live exit route have been removed. The HUD compass now indicates true north.
+- Decorative pillars and the void mask contain no objective exceptions.
+- Shifted-window column agreement improved from 97.7% to 99.1% on the seam seed.
 
 ### 2. Kill the re-center hitch
 v1 rebuilds the whole window on crossing (~150–250 ms). Move to incremental
@@ -66,13 +116,34 @@ chunk streaming: per-pillar-cell mesh groups, generate/evict at the edges,
 corner-field consistency via 1-cell overlap. The generation side is already
 window-pure; this is renderer/engine work.
 
+Interim handoff guarantee completed locally: a grounded recenter now validates
+support in the replacement column model and recovers to the nearest compatible
+same-height span within 16 tiles. If no bounded continuation exists it returns
+to the entrance instead of dropping the player into the void. The verifier
+checks support availability across the east recenter boundary.
+
 ### 3. Purpose in the endless world
-Spawn/exit + golden path assume a bounded map. Decide the endless-play loop:
-landmark navigation (visible supertowers as goals), region-gated progression,
-or expedition objectives placed on pillar sockets. The old exit-stairs → next
-stack loop still works but fights the endless framing.
+There is intentionally no exit now: spawn in, explore, and use the north
+compass to retain orientation. Add purpose later through landmark navigation,
+region-gated progression, or expedition objectives placed on pillar sockets;
+none of those should author terrain from a temporary window.
 
 ### 4. Deepen the vocabulary (M4 wave 2)
+- **Pillar rhythm pass, slice 1 completed locally:** kebab occupancy now uses
+  district-aware local + macro fields instead of one near-always-on threshold.
+  City districts cluster around courts, machine districts form broken rows,
+  canyons leave broad cuts, and frontiers scatter monuments. Measured
+  large-area occupancy is roughly 36–45%, while individual 4×4 play windows
+  may range from empty plazas to dense walls. The 56-tile grid remains an
+  invisible ownership system, not the visible composition.
+- Next: bounded in-cell placement offsets, then rare multi-cell landmarks.
+- **Regional identity pass completed locally:** City is restricted to
+  dungeon/crypt and grows taller; Machine is cave/ember with shorter,
+  deeper kebabs; Canyon is cave/outside with sparse tall remnants; Frontier
+  alone retains the full transitional mix. Verification enforces these biome
+  vocabularies. Non-cave ceilings are taller, open-sky walls render at least
+  300 units high and extend 300 units above the tallest crown, and bottomless
+  pit walls render 300 units below the deepest built structure.
 - Buried gallery halls + plazas below grade (deepPickable currently plain/shaft only)
 - Mega-elevator SHAFTS through pillar cores (current elevators ride exterior faces)
 - Subway STATIONS where bores meet pillar galleries; trains that stop

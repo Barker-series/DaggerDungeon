@@ -8,7 +8,7 @@
  *   - CLIMBABLE: every pillar's highest walkable surface is reachable
  *     from grade by a walker stepping ≤0.7 between column spans
  *   - BRIDGES: every bridge tile has a walkable span at its height
- *   - ROUTE: spawn → exit is navigable, never crossing an open pit
+ *   - NETWORK: every terrain tile belongs to the permanent reachable network
  *   - SEAMS: zero crack pairs (adjacent structural/terrain columns at
  *     near-equal height drawn by different systems)
  *   - COLUMNS: no invariant violations logged by the generator
@@ -16,9 +16,13 @@
 
 /* eslint-disable no-console */
 import { generateWorld } from '../src/game/DungeonGenerator';
-import { findWorldPathToExit } from '../src/game/pathfinding';
 import { bridgeTiles } from '../src/game/dungeon/pillar-bridges';
-import { PILLAR_CELL_TILES } from '../src/game/dungeon/pillar-layer';
+import { PILLAR_CELL_TILES, PILLAR_FACTOR, pillarOccupied } from '../src/game/dungeon/pillar-layer';
+import { pillarFootprint } from '../src/game/dungeon/pillar-geometry';
+import { transitSocketOffset } from '../src/game/dungeon/layer4-connect';
+import { regionAtCell, type RegionType } from '../src/game/dungeon/region-layer';
+import type { BiomeType } from '../src/game/dungeon/cells';
+import { findForwardExplorationPath } from '../src/game/pathfinding';
 import { TileType } from '../src/game/types';
 
 const DEFAULT_SEEDS = [1, 7, 42, 99, 137, 500, 999, 1234, 4096, 7777, 12345, 31337, 55555, 90210, 2024, 13];
@@ -56,6 +60,40 @@ console.error = (...args: unknown[]) => { logged.push(args.join(' ')); origError
   const pct = (100 * same) / total;
   console.log(`window seam: ${pct.toFixed(1)}% of overlap columns identical`);
   if (pct < 90) fail(`window seam agreement ${pct.toFixed(1)}% < 90%`);
+
+  // A grounded player crossing the east recenter line must have compatible
+  // support in the shifted window, either at the same column or within the
+  // engine's bounded 16-tile recovery neighborhood. This specifically guards
+  // the legacy case where a window-scoped tunnel disappears at handoff.
+  const crossingTxA = PILLAR_CELL_TILES * 3;
+  const crossingTxB = crossingTxA - PILLAR_CELL_TILES;
+  let unsupportedCrossings = 0;
+  for (let tz = 0; tz < W; tz++) {
+    const oldSpans = A.columns[tz * W + crossingTxA]!;
+    for (const oldSpan of oldSpans) {
+      if (oldSpan.ceil - oldSpan.floor < 1.8 || oldSpan.floor < -900) continue;
+      let recovered = false;
+      for (let radius = 0; radius <= 16 && !recovered; radius++) {
+        for (let dz = -radius; dz <= radius && !recovered; dz++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            if (radius > 0 && Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
+            const tx = crossingTxB + dx;
+            const nz = tz + dz;
+            if (tx < 0 || nz < 0 || tx >= W || nz >= W) continue;
+            recovered = B.columns[nz * W + tx]!.some((s) =>
+              s.floor > -900
+              && s.ceil - s.floor >= 1.8
+              && Math.abs(s.floor - oldSpan.floor) <= 2);
+            if (recovered) break;
+          }
+        }
+      }
+      if (!recovered) unsupportedCrossings++;
+    }
+  }
+  if (unsupportedCrossings > 0) {
+    fail(`${unsupportedCrossings} east-window crossing spans lack bounded recovery support`);
+  }
 }
 
 for (const seed of SEEDS) {
@@ -65,6 +103,46 @@ for (const seed of SEEDS) {
   const ms = Date.now() - t0;
   const L = world.levels[0]!;
   const W = L.width;
+  const occupancySeed = seed + world.stack * 100000;
+
+  // ── Large-area composition ──
+  // A play window may intentionally be an empty court or dense block, so
+  // measure the authored rhythm across a larger 64x64 pillar-cell tract.
+  let occupied = 0;
+  const sampleSide = 64;
+  for (let pcz = -sampleSide / 2; pcz < sampleSide / 2; pcz++) {
+    for (let pcx = -sampleSide / 2; pcx < sampleSide / 2; pcx++) {
+      if (pillarOccupied(occupancySeed, pcx, pcz)) occupied++;
+    }
+  }
+  const occupancyPercent = occupied / (sampleSide * sampleSide) * 100;
+  if (occupancyPercent < 25 || occupancyPercent > 60) {
+    fail(`seed ${seed}: large-area pillar occupancy ${occupancyPercent.toFixed(1)}% outside 25–60%`);
+  }
+
+  // ── Region vocabulary ──
+  const allowedBiomes: Record<RegionType, ReadonlySet<BiomeType>> = {
+    city: new Set(['dungeon', 'crypt']),
+    machine: new Set(['cave', 'ember']),
+    canyon: new Set(['cave', 'outside']),
+    frontier: new Set(['dungeon', 'crypt', 'cave', 'ember', 'outside']),
+  };
+  let wrongRegionBiomes = 0;
+  for (let cz = 0; cz < L.cellBiomes.length; cz++) {
+    for (let cx = 0; cx < L.cellBiomes[cz]!.length; cx++) {
+      const biome = L.cellBiomes[cz]![cx];
+      if (!biome) continue;
+      const region = regionAtCell(
+        occupancySeed,
+        world.originPcx * PILLAR_FACTOR + cx,
+        world.originPcz * PILLAR_FACTOR + cz,
+      );
+      if (!allowedBiomes[region].has(biome)) wrongRegionBiomes++;
+    }
+  }
+  if (wrongRegionBiomes > 0) {
+    fail(`seed ${seed}: ${wrongRegionBiomes} cells violate their region vocabulary`);
+  }
 
   if (logged.slice(before).some((m) => m.includes('invariant'))) fail(`seed ${seed}: column invariant violations`);
 
@@ -77,12 +155,85 @@ for (const seed of SEEDS) {
     fail(`seed ${seed}: spawn outside streaming-safe center (${spawnPcx},${spawnPcz})`);
   }
 
-  // ── Route ──
-  const route = findWorldPathToExit(world, { level: 0, x: L.entrance.x, y: L.entrance.y });
-  if (route.length === 0) fail(`seed ${seed}: no spawn→exit route`);
-  const overPit = route.filter((p) =>
-    L.tiles[p.y]![p.x] !== TileType.Wall && L.floorHeights[p.y]![p.x]! <= -999).length;
-  if (overPit > 0) fail(`seed ${seed}: route crosses ${overPit} open pit tiles`);
+  // ── AUTO exploration ──
+  const northPath = findForwardExplorationPath(
+    world,
+    { level: 0, x: L.entrance.x, y: L.entrance.y },
+    0,
+  );
+  const northTarget = northPath[northPath.length - 1];
+  if (!northTarget || northTarget.y >= L.entrance.y) {
+    fail(`seed ${seed}: AUTO cannot find reachable terrain north of spawn`);
+  }
+  const southeastPath = findForwardExplorationPath(
+    world,
+    { level: 0, x: L.entrance.x, y: L.entrance.y },
+    -Math.PI * 0.75,
+  );
+  const southeastTarget = southeastPath[southeastPath.length - 1];
+  if (!southeastTarget ||
+      southeastTarget.x <= L.entrance.x ||
+      southeastTarget.y <= L.entrance.y) {
+    fail(`seed ${seed}: AUTO quantized or lost a southeast heading`);
+  }
+
+  // ── Permanent transit sockets: both sides of every owned pair are open ──
+  let brokenTransitSockets = 0;
+  const pillarGrid = Math.floor(W / PILLAR_CELL_TILES);
+  const transitSeed = seed + world.stack * 100000;
+  const walkableTile = (tx: number, tz: number): boolean =>
+    L.tiles[tz]?.[tx] !== TileType.Wall
+    && world.columns[tz * W + tx]!.some((s) => s.floor > -900 && s.ceil - s.floor >= 1.8);
+  for (let pcz = 0; pcz < pillarGrid; pcz++) {
+    for (let pcx = 0; pcx < pillarGrid; pcx++) {
+      const apx = world.originPcx + pcx;
+      const apz = world.originPcz + pcz;
+      if (pcx + 1 < pillarGrid) {
+        const z = pcz * PILLAR_CELL_TILES
+          + transitSocketOffset(transitSeed, apx, apz, 'east');
+        const x = (pcx + 1) * PILLAR_CELL_TILES;
+        if (!walkableTile(x - 1, z) || !walkableTile(x, z)) brokenTransitSockets++;
+      }
+      if (pcz + 1 < pillarGrid) {
+        const x = pcx * PILLAR_CELL_TILES
+          + transitSocketOffset(transitSeed, apx, apz, 'south');
+        const z = (pcz + 1) * PILLAR_CELL_TILES;
+        if (!walkableTile(x, z - 1) || !walkableTile(x, z)) brokenTransitSockets++;
+      }
+    }
+  }
+  if (brokenTransitSockets > 0) {
+    fail(`seed ${seed}: ${brokenTransitSockets} permanent transit socket pairs are broken`);
+  }
+
+  // Every ordinary terrain floor belongs to one connected network. Pillar
+  // interiors are column-owned and verified separately by climbability.
+  const connected = new Uint8Array(W * W);
+  const terrainQueue: number[] = [L.entrance.y * W + L.entrance.x];
+  connected[terrainQueue[0]!] = 1;
+  for (let head = 0; head < terrainQueue.length; head++) {
+    const key = terrainQueue[head]!;
+    const tx = key % W;
+    const tz = Math.floor(key / W);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const nx = tx + dx;
+      const nz = tz + dz;
+      if (nx < 0 || nz < 0 || nx >= W || nz >= W) continue;
+      const nk = nz * W + nx;
+      if (connected[nk] || L.tiles[nz]![nx] === TileType.Wall) continue;
+      connected[nk] = 1;
+      terrainQueue.push(nk);
+    }
+  }
+  let unreachableTerrain = 0;
+  for (let tz = 0; tz < W; tz++) {
+    for (let tx = 0; tx < W; tx++) {
+      if (L.tiles[tz]![tx] !== TileType.Wall && !connected[tz * W + tx]) unreachableTerrain++;
+    }
+  }
+  if (unreachableTerrain > 0) {
+    fail(`seed ${seed}: ${unreachableTerrain} terrain tiles are outside the permanent transit network`);
+  }
 
   // ── Climbability ──
   let climbable = 0;
@@ -175,7 +326,36 @@ for (const seed of SEEDS) {
   }
   if (cracks > 0) fail(`seed ${seed}: ${cracks} crack pairs`);
 
-  console.log(`seed ${seed}: deep=${descendable}/${deepPillars} ${ms}ms pillars=${world.pillars.size} climbable=${climbable} bridges=${world.bridges.length} bridgeTiles=${total} route=${route.length} cracks=${cracks}`);
+  // ── Pillar marriage reached its bounded per-footprint fixpoint ──
+  let unsettledMarriage = 0;
+  for (const spec of world.pillars.values()) {
+    const footprint = new Set(pillarFootprint(spec).map(([x, z]) => `${x},${z}`));
+    for (const key of footprint) {
+      const [lx, lz] = key.split(',').map(Number);
+      const tx = spec.cx * PILLAR_CELL_TILES + lx!;
+      const tz = spec.cz * PILLAR_CELL_TILES + lz!;
+      if (L.pillarGround[tz]?.[tx]) continue;
+      const s0 = world.columns[tz * W + tx]?.[0];
+      if (!s0 || s0.owner === 0 || s0.floor < -100 || s0.floor > 30) continue;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nlx = lx! + dx;
+        const nlz = lz! + dz;
+        if (!footprint.has(`${nlx},${nlz}`)) continue;
+        const nx = spec.cx * PILLAR_CELL_TILES + nlx;
+        const nz = spec.cz * PILLAR_CELL_TILES + nlz;
+        if (!L.pillarGround[nz]?.[nx]) continue;
+        if (Math.abs(L.floorHeights[nz]![nx]! - s0.floor) <= 0.6) {
+          unsettledMarriage++;
+          break;
+        }
+      }
+    }
+  }
+  if (unsettledMarriage > 0) {
+    fail(`seed ${seed}: ${unsettledMarriage} pillar-ground tiles remain before marriage fixpoint`);
+  }
+
+  console.log(`seed ${seed}: density=${occupancyPercent.toFixed(1)}% deep=${descendable}/${deepPillars} ${ms}ms pillars=${world.pillars.size} climbable=${climbable} bridges=${world.bridges.length} bridgeTiles=${total} sockets=${brokenTransitSockets} unreachable=${unreachableTerrain} cracks=${cracks} unsettled=${unsettledMarriage}`);
 }
 
 console.log(failures === 0 ? `ALL CHECKS PASSED (${SEEDS.length} seeds)` : `${failures} FAILURES`);

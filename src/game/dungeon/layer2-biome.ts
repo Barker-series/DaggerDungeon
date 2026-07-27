@@ -34,7 +34,7 @@
 import { getAllCells, windowOrigin } from './cells';
 import { sampleNoise3D } from './noise';
 import { elevationField, PILLAR_FACTOR } from './pillar-layer';
-import { regionAtCell, regionPalette } from './region-layer';
+import { regionAtCell } from './region-layer';
 
 const WILDNESS_SCALE = 3; // cells per region feature
 const DEPTH_SCALE = 4;
@@ -106,15 +106,30 @@ export function assignBiomes(_cellTileSize: number, stackSeed: number, level: nu
     const acz = ocz + cell.cz;
     const wildness = wildnessAt(stackSeed, acx, acz, level);
     const depth = fbm3(acx / DEPTH_SCALE, y, acz / DEPTH_SCALE, depthSeed);
-    // The district's zoning: same continuous fields, region thresholds
-    const pal = regionPalette(regionAtCell(stackSeed, acx, acz));
+    const region = regionAtCell(stackSeed, acx, acz);
 
-    if (wildness > pal.outside) {
-      cell.biome = level === 0 ? 'outside' : 'cave';
-    } else if (wildness > pal.organic) {
-      cell.biome = depth > pal.ember ? 'ember' : 'cave';
-    } else {
-      cell.biome = depth > pal.crypt ? 'crypt' : 'dungeon';
+    // Regions own distinct vocabularies. Shared continuous fields still
+    // shape boundaries and rare/common variants, but no longer turn every
+    // district into the same five-biome soup.
+    switch (region) {
+      case 'city':
+        cell.biome = depth > 0.52 ? 'crypt' : 'dungeon';
+        break;
+      case 'machine':
+        cell.biome = depth > 0.48 ? 'ember' : 'cave';
+        break;
+      case 'canyon':
+        cell.biome = wildness > 0.43 && level === 0 ? 'outside' : 'cave';
+        break;
+      case 'frontier':
+        if (wildness > 0.612) {
+          cell.biome = level === 0 ? 'outside' : 'cave';
+        } else if (wildness > 0.525) {
+          cell.biome = depth > 0.605 ? 'ember' : 'cave';
+        } else {
+          cell.biome = depth > 0.572 ? 'crypt' : 'dungeon';
+        }
+        break;
     }
   }
 }

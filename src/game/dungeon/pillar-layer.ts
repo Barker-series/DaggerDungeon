@@ -40,10 +40,12 @@ export const PILLAR_CELL_TILES = 56;
 
 // ── Tuning ──
 
-/** Fraction of pillar cells (roughly) with no pillar — void gaps */
-const VOID_THRESHOLD = 0.18;
 /** Pillar cells per height-noise feature */
 const HEIGHT_NOISE_SCALE = 3;
+/** Occupancy works at two scales: local variation breaks up silhouettes,
+ * while the broad field creates whole clusters and negative-space tracts. */
+const OCCUPANCY_LOCAL_SCALE = 1.8;
+const OCCUPANCY_MACRO_SCALE = 7;
 const MIN_HEIGHT = 36;
 const MAX_HEIGHT = 80;
 /** HEAVY TAIL — the slab-breakers. A few pillars ignore the common
@@ -74,6 +76,46 @@ const PILLAR_SALT = 4141;
  */
 export function elevationField(worldSeed: number, pcx: number, pcz: number): number {
   return sampleNoise(pcx, pcz, worldSeed + 909, HEIGHT_NOISE_SCALE);
+}
+
+/**
+ * Whether an absolute pillar cell contains a kebab.
+ *
+ * The grid remains the invisible ownership layer, but no longer dictates a
+ * visible checkerboard. Districts compose their mass differently:
+ * city clusters around courts, machine districts form broken structural rows,
+ * canyons leave broad empty cuts, and frontiers scatter isolated monuments.
+ */
+export function pillarOccupied(worldSeed: number, pcx: number, pcz: number): boolean {
+  const district = regionAtCell(
+    worldSeed,
+    pcx * PILLAR_FACTOR + Math.floor(PILLAR_FACTOR / 2),
+    pcz * PILLAR_FACTOR + Math.floor(PILLAR_FACTOR / 2),
+  );
+  const local = sampleNoise(pcx, pcz, worldSeed + 707, OCCUPANCY_LOCAL_SCALE);
+  const macro = sampleNoise(pcx, pcz, worldSeed + 1707, OCCUPANCY_MACRO_SCALE);
+
+  switch (district) {
+    case 'city':
+      // Dense blocks separated by coherent courts and demolition tracts.
+      return local * 0.55 + macro * 0.45 >= 0.47;
+    case 'machine': {
+      // Long but broken processional rows. Orientation changes only across
+      // broad tracts so the rhythm reads as infrastructure, not a pattern.
+      const northSouth = sampleNoise(pcx, pcz, worldSeed + 2707, 12) >= 0.5;
+      const axis = northSouth ? pcx : pcz;
+      const phase = Math.floor(sampleNoise(pcx, pcz, worldSeed + 3707, 9) * 4);
+      const onRow = ((axis + phase) % 4 + 4) % 4 === 0;
+      const rowBias = onRow ? 0.78 : 0.25;
+      return local * 0.35 + macro * 0.35 + rowBias * 0.3 >= 0.5;
+    }
+    case 'canyon':
+      // Most cells are the cut; surviving mass gathers in chunky escarpments.
+      return local * 0.4 + macro * 0.6 >= 0.59;
+    case 'frontier':
+      // Looser isolated monuments and small, irregular groups.
+      return local * 0.6 + macro * 0.4 >= 0.55;
+  }
 }
 
 // ── Output ──
@@ -156,12 +198,10 @@ function chunkSockets(placed: PlacedChunk): ChunkSocket[] {
  * Deterministic in (worldSeed, pcx, pcz) and nothing else.
  */
 export function assemblePillar(worldSeed: number, pcx: number, pcz: number): PillarSpec | null {
-  // Density and height come from smooth noise so districts read
-  // coherently; composition comes from the cell's own RNG stream.
-  const density = sampleNoise(pcx, pcz, worldSeed + 707, HEIGHT_NOISE_SCALE);
-  if (density < VOID_THRESHOLD) return null;
+  if (!pillarOccupied(worldSeed, pcx, pcz)) return null;
 
   const rng = mulberry32(cellSeed(pcx, pcz, worldSeed, PILLAR_SALT));
+  const district = regionAtCell(worldSeed, pcx * PILLAR_FACTOR + 2, pcz * PILLAR_FACTOR + 2);
   const heightNoise = elevationField(worldSeed, pcx, pcz);
   let targetHeight = MIN_HEIGHT + heightNoise * (MAX_HEIGHT - MIN_HEIGHT);
   // The DOWN direction has its own smooth field, so sunken districts
@@ -170,10 +210,22 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   let targetDown = downNoise < DOWN_THRESHOLD
     ? 0
     : MIN_DOWN + ((downNoise - DOWN_THRESHOLD) / (1 - DOWN_THRESHOLD)) * (MAX_DOWN - MIN_DOWN);
+  // Regional silhouettes need to read from a distance, not merely change
+  // decoration odds: cities rise, machines squat and burrow, canyon remnants
+  // stand as sparse escarpments, and frontier structures stay lower.
+  const heightMult = district === 'city' ? 1.25
+    : district === 'machine' ? 0.82
+      : district === 'canyon' ? 1.45
+        : 0.78;
+  const depthMult = district === 'city' ? 0.7
+    : district === 'machine' ? 1.5
+      : district === 'canyon' ? 0.45
+        : 1;
+  targetHeight *= heightMult;
+  targetDown *= depthMult;
   // Heavy tails, weighted by district: the city grows supertowers,
   // the machine sinks the deepest wells. rng draws happen for every
   // pillar so the stream stays aligned regardless of district.
-  const district = regionAtCell(worldSeed, pcx * PILLAR_FACTOR + 2, pcz * PILLAR_FACTOR + 2);
   const towerRoll = rng();
   const towerMult = rng();
   const wellRoll = rng();

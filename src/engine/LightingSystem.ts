@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { TILE_SIZE, WALL_HEIGHT, TileType } from '../game/types';
+import { TILE_SIZE, WALL_HEIGHT } from '../game/types';
 import type { DungeonData, WorldData } from '../game/types';
 import { tileBiome, type BiomeType } from '../game/dungeon/cells';
 
@@ -173,19 +173,6 @@ export class LightingSystem {
         }
       }
     }
-
-    // Exit beacon — the way down: blue at stairwell doors, green at the
-    // real stairs out of the stack (bottom level only)
-    let exitFloor = dungeon.floorHeights[dungeon.exit.y]?.[dungeon.exit.x] ?? 0;
-    if (exitFloor <= -100) exitFloor = 0;
-    const stairsOut = dungeon.tiles[dungeon.exit.y]?.[dungeon.exit.x] === TileType.StairsDown;
-    const beacon = new THREE.PointLight(stairsOut ? 0x33ff88 : 0x5599ff, 3, TILE_SIZE * 7, 1.2);
-    beacon.position.set(
-      dungeon.exit.x * TILE_SIZE + TILE_SIZE / 2,
-      baseY + exitFloor + 2.2,
-      dungeon.exit.y * TILE_SIZE + TILE_SIZE / 2,
-    );
-    add(beacon);
 
     // Add dim lights along corridors (at door positions) so corridors aren't pitch black
     for (const room of dungeon.rooms) {

@@ -15,9 +15,8 @@
  *   Layer 0:  Noise — decides which cells are active
  *   Layer 1:  Tile grid + fine-noise sculpting of organic cells
  *   Layer 2:  Biome — noise per cell
- *   Layer 3:  Spawn/exit rooms; the exit stairs regenerate stack+1
- *   Layer 4:  Island connection (batch per pass)
- *   Layer 5:  Golden path entrance → exit, routed around unstable ground
+ *   Layer 3:  Spawn marker (the endless world currently has no exit)
+ *   Layer 4:  Permanent pillar-cell transit and local attachments
  *   Layer 6:  Height fields with the void mask; terrain flows under
  *             pillar footprints
  *   Columns:  the column model, then pillar air spans, then bridges
@@ -30,10 +29,7 @@ import { generateLayer0 } from './dungeon/layer0-noise';
 import { generateLayer1TileGrid } from './dungeon/layer1-tilegrid';
 import { assignBiomes } from './dungeon/layer2-biome';
 import { applyFineNoise } from './dungeon/layer1-finenoise';
-import { generateLayer2SpawnExit } from './dungeon/layer2-spawnexit';
-import { generateLayer3SpawnRooms } from './dungeon/layer3-spawnrooms';
-import { connectIslands } from './dungeon/layer4-connect';
-import { computeGoldenPath, goldenPath } from './dungeon/layer5-goldenpath';
+import { connectPermanentTransit, permanentTransitTiles } from './dungeon/layer4-connect';
 import { computeHeightFields, computePitMask, PIT_FLOOR } from './dungeon/layer6-heights';
 import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
@@ -54,13 +50,12 @@ const GRID_TILES = CELL_GRID_SIZE * CELL_TILE_SIZE;
 
 interface GenerateOpts {
   seed: number;
-  /** Which megastructure segment — the exit stairs regenerate stack+1 */
+  /** Megastructure segment seed offset (legacy save compatibility). */
   stack: number;
   /** WINDOW ORIGIN on the infinite plane, in PILLAR cells. The window
    *  generates the same slice of the same endless megastructure for
-   *  any origin — overlapping windows agree on shared ground (field-
-   *  driven layers exactly; window-scoped passes like hallways and the
-   *  golden path are per-window). Default (0,0) = the classic map. */
+   *  any origin — overlapping windows agree on shared permanent
+   *  construction. Default (0,0) = the classic map. */
   originPcx?: number;
   originPcz?: number;
 }
@@ -95,7 +90,9 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     }
   }
 
-  const level = generateLevel(seed, stack, stackSeed, pillarCells, pillarWall);
+  const level = generateLevel(
+    seed, stack, stackSeed, pillarCells, pillarWall, originPcx, originPcz,
+  );
   const levels: DungeonData[] = [level];
 
   // ── The column model — built LAST; nothing mutates the world after ──
@@ -108,60 +105,72 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   const topFloors = level.floorHeights;
   const topCeils = level.ceilingHeights;
 
-  // ── LOCAL ROOFLINE FIELD: each interior room's ceiling, propagated
-  // into pillar footprints by nearest-room BFS (lowest roof wins on
-  // contested tiles). Interior pillar tiles cull generic air above this
-  // cap, so a pillar passes through whatever roof it actually pierces
-  // as one solid mass — no open chimneys above the ceiling. ──
-  const capField = new Float64Array(GRID_TILES * GRID_TILES).fill(-1);
-  {
-    let frontier: number[] = [];
-    for (let tz = 0; tz < GRID_TILES; tz++) {
-      for (let tx = 0; tx < GRID_TILES; tx++) {
-        if (pillarWall[tz]![tx] || level.tiles[tz]![tx] === TileType.Wall) continue;
-        if (tileBiome(topBiomes, tx, tz) === 'outside') continue;
-        capField[tz * GRID_TILES + tx] = topCeils[tz]![tx]!;
-        frontier.push(tz * GRID_TILES + tx);
-      }
-    }
-    while (frontier.length > 0) {
-      const next: number[] = [];
-      for (const k of frontier) {
-        const tx = k % GRID_TILES;
-        const tz = Math.floor(k / GRID_TILES);
-        const v = capField[k]!;
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const nx = tx + dx!;
-          const nz = tz + dz!;
-          if (nx < 0 || nz < 0 || nx >= GRID_TILES || nz >= GRID_TILES) continue;
-          if (!pillarWall[nz]![nx]) continue;
-          const nk = nz * GRID_TILES + nx;
-          if (capField[nk]! >= 0) {
-            // Contested: the LOWEST adjacent roof wins — sealing below a
-            // tall vault just draws the pillar lower; an opening above a
-            // low roof is a visible chimney
-            capField[nk] = Math.min(capField[nk]!, v);
-            continue;
-          }
-          capField[nk] = v;
-          next.push(nk);
-        }
-      }
-      frontier = next;
-    }
-  }
   // Marry decisions read the ORIGINAL terrain field — married tiles
   // overwrite topFloors as they go, and neighbors must not see that
   const origFloors = topFloors.map((row) => [...row]);
+  const pillarFootprints = new Map<PillarSpec, Set<string>>();
   for (const spec of pillars.values()) {
+    // ── BOUNDED ROOFLINE DEPENDENCY ──
+    // A pillar may only read room ceilings immediately bordering its own
+    // footprint. Those boundary samples propagate through this footprint,
+    // never through the whole moving window. This is the LayerProcGen
+    // effect-distance contract for roof culling: the pillar is the owned
+    // output bounds; its one-tile perimeter is the complete dependency
+    // padding. Equal-distance contests choose the lower roof.
+    const footprint = new Set(pillarFootprint(spec).map(([lx, lz]) => `${lx},${lz}`));
+    pillarFootprints.set(spec, footprint);
+    const capDistance = new Map<string, number>();
+    const localCaps = new Map<string, number>();
+    let capFrontier: [number, number][] = [];
+    for (const key of footprint) {
+      const [lx, lz] = key.split(',').map(Number);
+      const gx = spec.cx * PILLAR_CELL_TILES + lx!;
+      const gz = spec.cz * PILLAR_CELL_TILES + lz!;
+      let boundaryCap = Infinity;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nx = gx + dx;
+        const nz = gz + dz;
+        if (nx < 0 || nz < 0 || nx >= GRID_TILES || nz >= GRID_TILES) continue;
+        if (pillarWall[nz]![nx] || level.tiles[nz]![nx] === TileType.Wall) continue;
+        if (tileBiome(topBiomes, nx, nz) === 'outside') continue;
+        boundaryCap = Math.min(boundaryCap, topCeils[nz]![nx]!);
+      }
+      if (Number.isFinite(boundaryCap)) {
+        capDistance.set(key, 0);
+        localCaps.set(key, boundaryCap);
+        capFrontier.push([lx!, lz!]);
+      }
+    }
+    for (let head = 0; head < capFrontier.length; head++) {
+      const [lx, lz] = capFrontier[head]!;
+      const key = `${lx},${lz}`;
+      const distance = capDistance.get(key)!;
+      const cap = localCaps.get(key)!;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nx = lx + dx;
+        const nz = lz + dz;
+        const nextKey = `${nx},${nz}`;
+        if (!footprint.has(nextKey)) continue;
+        const nextDistance = distance + 1;
+        const knownDistance = capDistance.get(nextKey);
+        const knownCap = localCaps.get(nextKey);
+        if (knownDistance !== undefined
+          && (knownDistance < nextDistance
+            || (knownDistance === nextDistance && knownCap! <= cap))) continue;
+        capDistance.set(nextKey, nextDistance);
+        localCaps.set(nextKey, cap);
+        capFrontier.push([nx, nz]);
+      }
+    }
+
     const groundAt = (lx: number, lz: number): number =>
       topFloors[spec.cz * PILLAR_CELL_TILES + lz]?.[spec.cx * PILLAR_CELL_TILES + lx] ?? 0;
     const capAt = (lx: number, lz: number): number | null => {
       const gx = spec.cx * PILLAR_CELL_TILES + lx;
       const gz = spec.cz * PILLAR_CELL_TILES + lz;
       if (tileBiome(topBiomes, gx, gz) === 'outside') return null;
-      const cap = capField[gz * GRID_TILES + gx]!;
-      return cap >= 0 ? cap + 0.5 : 8;
+      const cap = localCaps.get(`${lx},${lz}`);
+      return cap !== undefined ? cap + 0.5 : 8;
     };
     // Terrain flows under the pillar (footprint tiles carry real ground
     // heights) — the foundation rises to meet it per tile
@@ -231,7 +240,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     }
   }
 
-  // ── MARRIAGE PROPAGATES ACROSS THE FOOTPRINT. A pillar ground tile
+  // ── MARRIAGE PROPAGATES ONLY ACROSS ITS OWNED FOOTPRINT. A pillar ground tile
   // drawn FLAT (structural, owner -1) beside one drawn CORNER-BLENDED
   // (married, owner 0) at the same height is the crack condition: the
   // blended surface climbs away from the flat one and no wall face
@@ -239,35 +248,37 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   // wedge-shaped hole. The per-tile marry test compares against
   // terrain, so neighbours can land on opposite sides of its threshold.
   // Pull any unmarried ground surface in when it sits within a step of
-  // an already-married neighbour. ──
-  for (let pass = 0; pass < 4; pass++) {
-    let changed = false;
-    for (const spec of pillars.values()) {
-      for (let lz = 0; lz < PILLAR_CELL_TILES; lz++) {
-        for (let lx = 0; lx < PILLAR_CELL_TILES; lx++) {
-          const gx = spec.cx * PILLAR_CELL_TILES + lx;
-          const gz = spec.cz * PILLAR_CELL_TILES + lz;
-          if (gx < 0 || gz < 0 || gx >= GRID_TILES || gz >= GRID_TILES) continue;
-          if (!pillarWall[gz]![gx] || level.pillarGround[gz]![gx]) continue;
-          const spans = columns[gz * GRID_TILES + gx]!;
-          const s0 = spans[0];
-          if (!s0 || s0.owner === 0 || s0.floor < -100 || s0.floor > 30) continue;
-          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            const nx = gx + dx!;
-            const nz = gz + dz!;
-            if (nx < 0 || nz < 0 || nx >= GRID_TILES || nz >= GRID_TILES) continue;
-            if (!level.pillarGround[nz]![nx]) continue;
-            if (Math.abs(topFloors[nz]![nx]! - s0.floor) > 0.6) continue;
-            s0.owner = 0;
-            topFloors[gz]![gx] = s0.floor;
-            level.pillarGround[gz]![gx] = true;
-            changed = true;
-            break;
-          }
-        }
+  // an already-married neighbour. A per-footprint queue reaches the exact
+  // fixpoint without reading another pillar or depending on window scan order. ──
+  for (const spec of pillars.values()) {
+    const footprint = pillarFootprints.get(spec)!;
+    const frontier: [number, number][] = [];
+    for (const key of footprint) {
+      const [lx, lz] = key.split(',').map(Number);
+      const gx = spec.cx * PILLAR_CELL_TILES + lx!;
+      const gz = spec.cz * PILLAR_CELL_TILES + lz!;
+      if (level.pillarGround[gz]?.[gx]) frontier.push([lx!, lz!]);
+    }
+    for (let head = 0; head < frontier.length; head++) {
+      const [lx, lz] = frontier[head]!;
+      const gx = spec.cx * PILLAR_CELL_TILES + lx;
+      const gz = spec.cz * PILLAR_CELL_TILES + lz;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nx = lx + dx;
+        const nz = lz + dz;
+        if (!footprint.has(`${nx},${nz}`)) continue;
+        const ngx = spec.cx * PILLAR_CELL_TILES + nx;
+        const ngz = spec.cz * PILLAR_CELL_TILES + nz;
+        if (level.pillarGround[ngz]?.[ngx]) continue;
+        const s0 = columns[ngz * GRID_TILES + ngx]?.[0];
+        if (!s0 || s0.owner === 0 || s0.floor < -100 || s0.floor > 30) continue;
+        if (Math.abs(topFloors[gz]![gx]! - s0.floor) > 0.6) continue;
+        s0.owner = 0;
+        topFloors[ngz]![ngx] = s0.floor;
+        level.pillarGround[ngz]![ngx] = true;
+        frontier.push([nx, nz]);
       }
     }
-    if (!changed) break;
   }
 
   // ── Bridges: the neighbor-pair pass with the local degree guarantee.
@@ -322,6 +333,8 @@ function generateLevel(
   stackSeed: number,
   pillarCells: Set<string>,
   pillarWall: boolean[][],
+  originPcx: number,
+  originPcz: number,
 ): DungeonData {
   const levelSeed = stackSeed;
   resetCells();
@@ -364,13 +377,12 @@ function generateLevel(
     }
   }
 
-  // ── Layer 3: Spawn & exit — far-apart rooms, never in pillar cells ──
+  // ── Layer 3: Spawn anchor — never in a pillar cell ──
   const center = Math.floor(CELL_GRID_SIZE / 2);
   // The streaming window recenters around its middle 2x2 pillar cells.
   // Starting outside that region causes an immediate window rebuild while
   // the player is still at the old local coordinates, which can put the
   // first frame over a void. Keep the entrance inside the safe center;
-  // the exit remains free to use the whole window for a long route.
   const centerMargin = PILLAR_FACTOR;
   const spawnCell = pickFarthestCell(
     center,
@@ -385,50 +397,32 @@ function generateLevel(
     x: spawnCx * CELL_TILE_SIZE + Math.floor(CELL_TILE_SIZE / 2),
     y: spawnCz * CELL_TILE_SIZE + Math.floor(CELL_TILE_SIZE / 2),
   };
-  const exitCell = pickFarthestCell(spawnCx, spawnCz, pillarCells);
-  const exitCx = exitCell.cx;
-  const exitCz = exitCell.cz;
-  let exit: GridPos = {
-    x: exitCx * CELL_TILE_SIZE + Math.floor(CELL_TILE_SIZE / 2),
-    y: exitCz * CELL_TILE_SIZE + Math.floor(CELL_TILE_SIZE / 2),
-  };
 
-  for (let cz = 0; cz < CELL_GRID_SIZE; cz++) {
-    for (let cx = 0; cx < CELL_GRID_SIZE; cx++) {
-      const cell = getCell(cx, cz);
-      if (!cell) continue;
-      const result = generateLayer2SpawnExit(
-        cell, tiles, rooms,
-        spawnCx, spawnCz, exitCx, exitCz,
-        CELL_TILE_SIZE, GRID_TILES, 2, true,
-      );
-      if (result.entrance) entrance = result.entrance;
-      if (result.exit) exit = result.exit;
-    }
-  }
-  for (let cz = 0; cz < CELL_GRID_SIZE; cz++) {
-    for (let cx = 0; cx < CELL_GRID_SIZE; cx++) {
-      const cell = getCell(cx, cz);
-      if (!cell) continue;
-      generateLayer3SpawnRooms(
-        cell, tiles, rooms,
-        spawnCx, spawnCz, exitCx, exitCz,
-        CELL_TILE_SIZE, GRID_TILES, 3, true, pillarWall,
-      );
-    }
-  }
-
-  // ── Layer 4: Connect disconnected islands into one network ──
-  connectIslands(tiles, rooms, entrance, GRID_TILES, CELL_TILE_SIZE, pillarWall);
+  // ── Layer 4: Permanent pillar-cell transit. Absolute cell-pair sockets
+  // and owned local routes replace the old whole-window island repair. ──
+  connectPermanentTransit(
+    tiles, rooms, stackSeed, originPcx, originPcz,
+    GRID_TILES, CELL_TILE_SIZE, pillarWall,
+  );
+  // Spawn is a marker on the already-owned permanent graph. It never
+  // carves rooms, clears pits, or changes decorative construction.
+  entrance = nearestPermanentTransit(
+    entrance,
+    permanentTransitTiles,
+    PILLAR_CELL_TILES,
+    GRID_TILES - PILLAR_CELL_TILES,
+  ) ?? entrance;
 
   // ── Layer 4.5: Decorative pillars in built biomes ──
-  placePillars(tiles, entrance, exit, GRID_TILES, CELL_TILE_SIZE, levelSeed, pillarWall);
+  placePillars(
+    tiles, GRID_TILES, CELL_TILE_SIZE,
+    levelSeed, pillarWall, permanentTransitTiles,
+  );
 
-  // ── Layer 5: Golden path — routed AROUND unstable ground: the same
-  // void mask the heights will use makes hole tiles expensive, so the
-  // route prefers solid floor and bridges a void only where it must ──
-  const pitMask = computePitMask(tiles, GRID_TILES, CELL_TILE_SIZE, entrance, exit, stackSeed);
-  computeGoldenPath(tiles, entrance, exit, GRID_TILES, (x, z) => pitMask[z]![x]!);
+  // ── Layer 6: permanent transit reserves safe terrain. ──
+  const pitMask = computePitMask(
+    tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed, permanentTransitTiles,
+  );
 
   // ── Layer 6: Height fields (terrain flows under pillar footprints) ──
   const { floor: floorHeights, ceiling: ceilingHeights } = computeHeightFields(
@@ -444,18 +438,45 @@ function generateLevel(
     ceilingHeights,
     rooms,
     entrance,
-    exit,
+    // Legacy field retained while save/debug data migrates. There is no
+    // exit tile or gameplay attached to it.
+    exit: entrance,
     seed,
     floor: stack,
     level: 0,
     baseY: 0,
     cellBiomes: snapshotCellBiomes(CELL_GRID_SIZE),
-    goldenPath: [...goldenPath],
+    goldenPath: [],
     pillarWall,
     // Filled in by generateWorld once pillar spans are applied
     pillarGround: Array.from({ length: GRID_TILES }, () =>
       Array.from({ length: GRID_TILES }, () => false)),
   };
+}
+
+function nearestPermanentTransit(
+  target: GridPos,
+  transit: ReadonlySet<string>,
+  minCoordinate = 0,
+  maxCoordinate = Infinity,
+): GridPos | null {
+  let best: GridPos | null = null;
+  let bestDistance = Infinity;
+  for (const key of transit) {
+    const comma = key.indexOf(',');
+    const x = Number(key.slice(0, comma));
+    const y = Number(key.slice(comma + 1));
+    if (x < minCoordinate || y < minCoordinate || x >= maxCoordinate || y >= maxCoordinate) continue;
+    const distance = Math.abs(x - target.x) + Math.abs(y - target.y);
+    if (distance < bestDistance || (
+      distance === bestDistance &&
+      (best === null || y < best.y || (y === best.y && x < best.x))
+    )) {
+      best = { x, y };
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 /** Farthest active cell from a fixed anchor (distance × noise score),

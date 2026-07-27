@@ -168,11 +168,11 @@ uniform float constructionSeams;`,
  *  megastructure has no uniform ceiling: the real clip is derived per
  *  build from the tallest structure actually present (supertowers push
  *  it up), never below this floor value. */
-const RENDER_SKY_TOP_MIN = 92;
+const RENDER_SKY_TOP_MIN = 300;
 /** Clearance above the tallest crown before the sky clip */
-const RENDER_SKY_MARGIN = 8;
+const RENDER_SKY_MARGIN = 300;
 /** How deep a bottomless pit's walls render below the lowest level */
-const RENDER_ABYSS_DROP = 24;
+const RENDER_ABYSS_DROP = 300;
 
 interface MeshBuffers {
   verts: number[];
@@ -289,7 +289,6 @@ export class DungeonRenderer {
   ): void {
     const dungeon = world.levels[li]!;
     const w = dungeon.width;
-    const isBottom = li === world.levels.length - 1;
 
     const group = new THREE.Group();
     group.position.y = dungeon.baseY;
@@ -533,25 +532,6 @@ export class DungeonRenderer {
       this.addMesh(group, stairs, stairsMat);
     }
 
-    // Exit crystal — only where the way out really is: the bottom stairs
-    if (isBottom) {
-      const exitX = dungeon.exit.x * TILE_SIZE + TILE_SIZE / 2;
-      const exitZ = dungeon.exit.y * TILE_SIZE + TILE_SIZE / 2;
-      const exitFloor = dungeon.floorHeights[dungeon.exit.y]?.[dungeon.exit.x] ?? 0;
-      const markerGeom = new THREE.BoxGeometry(1.1, 1.1, 1.1);
-      const markerMat = new THREE.MeshStandardMaterial({
-        color: 0x0a2a1a,
-        emissive: 0x22ff88,
-        emissiveIntensity: 0.9,
-        roughness: 0.4,
-      });
-      const marker = new THREE.Mesh(markerGeom, markerMat);
-      const markerBaseY = exitFloor + 1.5;
-      marker.position.set(exitX, markerBaseY, exitZ);
-      marker.rotation.set(Math.PI / 5, Math.PI / 4, 0);
-      group.add(marker);
-      this.markers.push({ mesh: marker, baseY: markerBaseY });
-    }
   }
 
   /**

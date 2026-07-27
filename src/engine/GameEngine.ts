@@ -41,7 +41,6 @@ const FALL_DROP = 0.5; // ground falling away further than this puts you airborn
 // walkable rise, never far enough to grab the level overhead
 const CLIMB_HEADROOM = 1.0;
 // How close (world units) the player must be to the stairs to use them
-const INTERACT_RADIUS = TILE_SIZE * 1.6;
 
 const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
@@ -73,7 +72,6 @@ export class GameEngine {
   private cornerFloors: number[][][] = [];
   private contours: OrganicContour[] = [];
   private seed = 0;
-  private bobPhase = 0;
   private vy = 0; // vertical velocity; gridCamera.position.y is the feet
   /** Camera-only smoothed feet height. Physics snaps up stair risers
    *  tile by tile; the EYE eases onto each new level instead of popping
@@ -84,7 +82,6 @@ export class GameEngine {
   /** Debug marks: click-tagged world points, embedded in DDSNAP strings
    *  so the viewer highlights the exact geometry being reported */
   private marks: { pos: THREE.Vector3; mesh: THREE.Mesh }[] = [];
-  private bobOffset = 0;
   private playerSpeedMultiplier = 1;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -239,6 +236,8 @@ export class GameEngine {
     while (pos.z - shiftZ * PCELL < PCELL) shiftZ--;
     while (pos.z - shiftZ * PCELL >= 3 * PCELL) shiftZ++;
     if (shiftX === 0 && shiftZ === 0) return;
+    const wasGrounded = this.isGrounded;
+    const previousFeetY = pos.y;
     this.originPcx += shiftX;
     this.originPcz += shiftZ;
     pos.x -= shiftX * PCELL;
@@ -248,6 +247,72 @@ export class GameEngine {
       m.pos.z -= shiftZ * PCELL;
     }
     this.buildWindow(useGameStore.getState().currentFloor);
+    if (wasGrounded) this.stabilizeGroundedHandoff(previousFeetY);
+  }
+
+  /**
+   * A few legacy whole-window passes can still disagree in overlap: a tunnel
+   * present in the old window may be solid in the new one. Recenter is a
+   * transaction for a grounded player — do not resume physics until the new
+   * column model supplies compatible walkable air. Prefer the exact position;
+   * otherwise recover to the nearest same-height span in a bounded radius.
+   */
+  private stabilizeGroundedHandoff(previousFeetY: number): void {
+    if (!this.world) return;
+    const pos = this.gridCamera.position;
+    const w = this.world.levels[0]!.width;
+    const startTx = Math.floor(pos.x / TILE_SIZE);
+    const startTz = Math.floor(pos.z / TILE_SIZE);
+    const MAX_HANDOFF_RADIUS_TILES = 16;
+    const MAX_VERTICAL_DELTA = 2;
+
+    let best: { x: number; z: number; y: number; score: number } | null = null;
+    for (let radius = 0; radius <= MAX_HANDOFF_RADIUS_TILES; radius++) {
+      for (let dz = -radius; dz <= radius; dz++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          if (radius > 0 && Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
+          const tx = startTx + dx;
+          const tz = startTz + dz;
+          if (tx < 0 || tz < 0 || tx >= w || tz >= w) continue;
+          const exactColumn = dx === 0 && dz === 0;
+          const x = exactColumn ? pos.x : tx * TILE_SIZE + TILE_SIZE / 2;
+          const z = exactColumn ? pos.z : tz * TILE_SIZE + TILE_SIZE / 2;
+          for (const span of this.world.columns[tz * w + tx]!) {
+            if (span.floor === ABYSS_FLOOR || span.ceil - span.floor < EYE_HEIGHT + 0.2) continue;
+            const y = span.owner < 0
+              ? span.floor
+              : this.world.levels[span.owner]!.baseY
+                + sampleCornerField(this.cornerFloors[span.owner]!, x, z);
+            const verticalDelta = Math.abs(y - previousFeetY);
+            if (verticalDelta > MAX_VERTICAL_DELTA) continue;
+            const score = dx * dx + dz * dz + verticalDelta * verticalDelta * 4;
+            if (!best || score < best.score) best = { x, z, y, score };
+          }
+        }
+      }
+      if (best) break;
+    }
+
+    const recovery = best as { x: number; z: number; y: number; score: number } | null;
+    if (!recovery) {
+      // No compatible continuation exists nearby. Returning to the known-safe
+      // entrance is preferable to silently dropping through a regenerated
+      // solid/void boundary.
+      console.warn('[stream] no compatible overlap support; returning to entrance');
+      this.respawn();
+      return;
+    }
+
+    const moved = Math.hypot(recovery.x - pos.x, recovery.z - pos.z) > TILE_SIZE * 0.75;
+    pos.set(recovery.x, recovery.y, recovery.z);
+    this.vy = 0;
+    this.isGrounded = true;
+    this.smoothFeetY = recovery.y;
+    if (moved) {
+      console.warn(
+        `[stream] overlap changed at tunnel handoff; recovered ${Math.sqrt(recovery.score).toFixed(1)} units away`,
+      );
+    }
   }
 
   loadStack(stack: number, seed: number): void {
@@ -342,9 +407,7 @@ export class GameEngine {
       const rate = this.isGrounded ? 14 : 40;
       this.smoothFeetY += diff * (1 - Math.exp(-rate * dt));
     }
-    // Head-bob goes on AFTER the camera writes its position —
-    // applying it earlier gets overwritten and never shows
-    this.threeCamera.position.y += (this.smoothFeetY - feetY) + this.bobOffset;
+    this.threeCamera.position.y += this.smoothFeetY - feetY;
 
     // Sprites + animated dungeon elements (exit markers)
     this.sprites.update(dt, this.threeCamera);
@@ -496,10 +559,6 @@ export class GameEngine {
           if (g >= pos.y - FALL_DROP) pos.y = g;
         }
       }
-
-      if (this.isGrounded) this.bobPhase += dt * speed * 0.7;
-    } else {
-      this.bobPhase *= 0.9;
     }
 
     // Vertical resolution
@@ -523,7 +582,6 @@ export class GameEngine {
       }
     }
 
-    this.bobOffset = this.isGrounded && isMoving ? Math.sin(this.bobPhase * 2) * 0.04 : 0;
   }
 
   private collidesAt(x: number, z: number): boolean {
@@ -620,7 +678,6 @@ export class GameEngine {
   private processAction(action: InputAction): void {
     switch (action) {
       case 'interact':
-        this.tryInteract();
         break;
       case 'respawn':
         this.respawn();
@@ -653,22 +710,6 @@ export class GameEngine {
     if (!this.world) return;
     this.teleport(this.world.levels[0]!.entrance.x, this.world.levels[0]!.entrance.y, undefined, 0);
     this.bot.reset();
-  }
-
-  private tryInteract(): void {
-    const dungeon = this.currentLevel();
-    if (!dungeon || !this.world) return;
-    // Stairs down exist only on the bottom level — upper levels descend by
-    // shaft. Radius-based: standing anywhere by the stairs works, no need
-    // to be on the exact tile.
-    if (dungeon.level !== this.world.levels.length - 1) return;
-    if (dungeon.tiles[dungeon.exit.y]?.[dungeon.exit.x] !== TileType.StairsDown) return;
-    const pos = this.gridCamera.position;
-    const ex = dungeon.exit.x * TILE_SIZE + TILE_SIZE / 2;
-    const ez = dungeon.exit.y * TILE_SIZE + TILE_SIZE / 2;
-    if ((pos.x - ex) ** 2 + (pos.z - ez) ** 2 <= INTERACT_RADIUS ** 2) {
-      this.loadStack(useGameStore.getState().currentFloor + 1, this.seed);
-    }
   }
 
   private botMovePulse(action: InputAction): void {

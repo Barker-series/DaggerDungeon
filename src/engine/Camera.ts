@@ -91,10 +91,11 @@ export class GridCamera {
   /** Get the closest cardinal direction the camera faces */
   getFacingDirection(): Direction {
     const y = ((this.yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-    if (y >= Math.PI * 0.25 && y < Math.PI * 0.75) return Direction.East;
-    if (y >= Math.PI * 0.75 && y < Math.PI * 1.25) return Direction.North;
-    if (y >= Math.PI * 1.25 && y < Math.PI * 1.75) return Direction.West;
-    return Direction.South;
+    // Forward is (-sin(yaw), -cos(yaw)): yaw 0 = north, +PI/2 = west.
+    if (y >= Math.PI * 0.25 && y < Math.PI * 0.75) return Direction.West;
+    if (y >= Math.PI * 0.75 && y < Math.PI * 1.25) return Direction.South;
+    if (y >= Math.PI * 1.25 && y < Math.PI * 1.75) return Direction.East;
+    return Direction.North;
   }
 
   /** Apply position + rotation to the Three.js camera. Call every frame. */

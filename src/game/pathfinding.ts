@@ -159,22 +159,51 @@ export function findWorldPath(
   return reverse.reverse();
 }
 
-// ── Live route to the stack exit (memoized per tile for compass + maps) ──
+/**
+ * Route to a temporary destination ahead of the player. This is deliberately
+ * the old exit model with a disposable target: choose a walkable tile near a
+ * point `distance` tiles forward, then let the normal A* own all pathfinding.
+ */
+export function findForwardExplorationPath(
+  world: WorldData,
+  from: WorldStep,
+  headingYaw: number,
+  distance = 64,
+): WorldStep[] {
+  const L = world.levels[from.level];
+  if (!L || !passable(world, from.level, from.x, from.y)) return [];
+  // Match GridCamera exactly: forward = (-sin(yaw), -cos(yaw)). Never
+  // quantize the player's chosen view to a cardinal direction.
+  const hx = -Math.sin(headingYaw);
+  const hy = -Math.cos(headingYaw);
+  const idealX = Math.max(0, Math.min(L.width - 1, Math.round(from.x + hx * distance)));
+  const idealY = Math.max(0, Math.min(L.height - 1, Math.round(from.y + hy * distance)));
 
-let cacheKey = '';
-let cachePath: WorldStep[] = [];
-
-/** Route from a position to the bottom level's stairs — the real way out
- *  of the stack, down every stairwell in between. */
-export function findWorldPathToExit(world: WorldData, from: WorldStep): WorldStep[] {
-  const k = `${world.seed}:${world.stack}:${from.level}:${from.x},${from.y}`;
-  if (k === cacheKey) return cachePath;
-  cacheKey = k;
-  const bottom = world.levels[world.levels.length - 1]!;
-  cachePath = findWorldPath(world, from, {
-    level: bottom.level,
-    x: bottom.exit.x,
-    y: bottom.exit.y,
-  });
-  return cachePath;
+  // Search concentric rings around the ideal waypoint. Prefer candidates
+  // that remain ahead of the starting tile, then hand the first reachable
+  // one to the same A* previously used for exits.
+  for (let radius = 0; radius < Math.max(L.width, L.height); radius++) {
+    const candidates: GridPos[] = [];
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (radius > 0 && Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+        const x = idealX + dx;
+        const y = idealY + dy;
+        if (!passable(world, from.level, x, y)) continue;
+        const forward = (x - from.x) * hx + (y - from.y) * hy;
+        if (forward <= 0) continue;
+        candidates.push({ x, y });
+      }
+    }
+    candidates.sort((a, b) => {
+      const aLateral = Math.abs((a.x - from.x) * hy - (a.y - from.y) * hx);
+      const bLateral = Math.abs((b.x - from.x) * hy - (b.y - from.y) * hx);
+      return aLateral - bLateral;
+    });
+    for (const target of candidates) {
+      const path = findWorldPath(world, from, { level: from.level, x: target.x, y: target.y });
+      if (path.length > 0) return path;
+    }
+  }
+  return [];
 }

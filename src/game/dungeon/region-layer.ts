@@ -34,14 +34,6 @@ export const REGION_CELLS = 8;
 
 export type RegionType = 'city' | 'machine' | 'canyon' | 'frontier';
 
-/** Biome-selector thresholds a region imposes (see layer2-biome) */
-export interface RegionPalette {
-  organic: number;
-  outside: number;
-  crypt: number;
-  ember: number;
-}
-
 /** Weighted character of each district type */
 const REGION_WEIGHTS: [RegionType, number][] = [
   ['city', 0.35],
@@ -49,25 +41,6 @@ const REGION_WEIGHTS: [RegionType, number][] = [
   ['canyon', 0.2],
   ['frontier', 0.15],
 ];
-
-/**
- * Palettes push the shared wildness/depth fields toward the district's
- * character without abandoning them — the fields stay continuous across
- * borders, so a canyon region still runs its open cut where wildness is
- * highest, and a city region puts its rare crypt strata where depth
- * peaks. Same geography, different zoning.
- */
-const PALETTES: Record<RegionType, RegionPalette> = {
-  // Mostly built: organic pockets are rare intrusions; sky is rarer;
-  // compressed residential (crypt) claims more of the depth range
-  city: { organic: 0.6, outside: 0.68, crypt: 0.555, ember: 0.605 },
-  // The builders' domain: organic carving dominates, heat is common
-  machine: { organic: 0.44, outside: 0.66, crypt: 0.572, ember: 0.55 },
-  // Open cuts: the surface breaks easily; what stays enclosed is carved
-  canyon: { organic: 0.5, outside: 0.545, crypt: 0.572, ember: 0.605 },
-  // The current global mix — everything meets here
-  frontier: { organic: 0.525, outside: 0.612, crypt: 0.572, ember: 0.605 },
-};
 
 const REGION_SALT = 7373;
 /** Dungeon cells of meander applied to the region lookup */
@@ -95,8 +68,4 @@ export function regionAtCell(worldSeed: number, cx: number, cz: number): RegionT
   const rcx = Math.floor((cx + wx) / REGION_CELLS);
   const rcz = Math.floor((cz + wz) / REGION_CELLS);
   return regionType(worldSeed, rcx, rcz);
-}
-
-export function regionPalette(type: RegionType): RegionPalette {
-  return PALETTES[type];
 }

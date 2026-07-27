@@ -3,8 +3,9 @@ import { useGameStore } from '../store/gameStore';
 import { getAllCells, tileBiome, type DungeonCell } from '../game/dungeon/cells';
 import { hallwayCells } from '../game/dungeon/layer4-connect';
 import { PIT_LEVEL } from '../game/dungeon/heightfield';
-import { findWorldPathToExit, startLevelFor } from '../game/pathfinding';
 import { sliceAt } from '../game/mapslice';
+import { PILLAR_FACTOR } from '../game/dungeon/pillar-layer';
+import { regionAtCell, type RegionType } from '../game/dungeon/region-layer';
 
 const PIT_COLOR = '#601525';
 
@@ -18,8 +19,15 @@ const BIOME_COLORS = {
   outside: '#3a7a3a',
 } as const;
 
-type ViewMode = 'slice' | 'tiles' | 'biome' | 'noise' | 'content' | 'pillars';
-const VIEW_MODES: ViewMode[] = ['slice', 'tiles', 'biome', 'noise', 'content', 'pillars'];
+const REGION_COLORS: Record<RegionType, string> = {
+  city: '#6f7389',
+  machine: '#8b653c',
+  canyon: '#78453b',
+  frontier: '#486a55',
+};
+
+type ViewMode = 'slice' | 'tiles' | 'biome' | 'region' | 'noise' | 'content' | 'pillars';
+const VIEW_MODES: ViewMode[] = ['slice', 'tiles', 'biome', 'region', 'noise', 'content', 'pillars'];
 
 export function DebugMap() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -197,37 +205,6 @@ export function DebugMap() {
         ctx.beginPath(); ctx.moveTo(0, z); ctx.lineTo(dungeon.width * tilePx, z); ctx.stroke();
       }
 
-      // Golden path — yellow line from spawn to exit (this level's own)
-      const golden = dungeon.goldenPath;
-      if (golden.length > 1) {
-        ctx.strokeStyle = '#ff0';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(golden[0]!.x * tilePx + tilePx / 2, golden[0]!.y * tilePx + tilePx / 2);
-        for (let i = 1; i < golden.length; i++) {
-          ctx.lineTo(golden[i]!.x * tilePx + tilePx / 2, golden[i]!.y * tilePx + tilePx / 2);
-        }
-        ctx.stroke();
-      }
-
-      // Live route — green line from the player toward the stack exit
-      // (what the compass follows); only this level's segment is drawn
-      if (playerPos && world) {
-        const li = startLevelFor(world, playerPos, playerY) ?? currentLevel;
-        const route = findWorldPathToExit(world, { level: li, x: playerPos.x, y: playerPos.y });
-        if (route.length > 0) {
-          ctx.strokeStyle = '#3dd68c';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(playerPos.x * tilePx + tilePx / 2, playerPos.y * tilePx + tilePx / 2);
-          for (const p of route) {
-            if (p.level !== currentLevel) break; // continues on the next level
-            ctx.lineTo(p.x * tilePx + tilePx / 2, p.y * tilePx + tilePx / 2);
-          }
-          ctx.stroke();
-        }
-      }
-
       // Spawn marker
       const spx = dungeon.entrance.x * tilePx + tilePx / 2;
       const spz = dungeon.entrance.y * tilePx + tilePx / 2;
@@ -235,14 +212,6 @@ export function DebugMap() {
       ctx.beginPath(); ctx.arc(spx, spz, 4, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#000'; ctx.font = 'bold 8px monospace';
       ctx.fillText('S', spx - 3, spz + 3);
-
-      // Exit marker
-      const epx = dungeon.exit.x * tilePx + tilePx / 2;
-      const epz = dungeon.exit.y * tilePx + tilePx / 2;
-      ctx.fillStyle = '#f00';
-      ctx.beginPath(); ctx.arc(epx, epz, 4, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 8px monospace';
-      ctx.fillText('X', epx - 3, epz + 3);
 
       // Player
       if (playerPos) {
@@ -261,8 +230,8 @@ export function DebugMap() {
       ctx.fillText('Tab cycle mode', legendX, 71);
       let ly = 94;
       const legendItems = mode === 'biome'
-        ? [['#1a1a1a', 'Wall'], [BIOME_COLORS.dungeon, 'Dungeon'], [BIOME_COLORS.cave, 'Cave'], [BIOME_COLORS.crypt, 'Crypt'], [BIOME_COLORS.ember, 'Ember'], [BIOME_COLORS.outside, 'Outside'], [PIT_COLOR, 'Hole'], ['#2a8a2a', 'Stairs'], ['#5599ff', 'Stairwell'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const
-        : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], [PIT_COLOR, 'Hole'], ['#2a8a2a', 'Stairs'], ['#5599ff', 'Stairwell'], ['#ff0', 'Golden Path'], ['#3dd68c', 'Live Route'], ['#0f0', 'Spawn'], ['#f00', 'Exit']] as const;
+        ? [['#1a1a1a', 'Wall'], [BIOME_COLORS.dungeon, 'Dungeon'], [BIOME_COLORS.cave, 'Cave'], [BIOME_COLORS.crypt, 'Crypt'], [BIOME_COLORS.ember, 'Ember'], [BIOME_COLORS.outside, 'Outside'], [PIT_COLOR, 'Hole'], ['#0f0', 'Spawn'], ['#fff', 'Player']] as const
+        : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], ['#5a4a2a', 'Door'], [PIT_COLOR, 'Hole'], ['#0f0', 'Spawn'], ['#fff', 'Player']] as const;
       for (const [c, text] of legendItems) {
         ctx.fillStyle = c; ctx.fillRect(legendX, ly - 8, 12, 12);
         ctx.fillStyle = '#ccc'; ctx.fillText(text, legendX + 18, ly + 2);
@@ -297,10 +266,10 @@ export function DebugMap() {
             break;
           }
           case 'content': {
-            const isHallway = hallwayCells.has(`${cell.cx},${cell.cz}`);
-            if (isHallway) {
+            const isTransit = hallwayCells.has(`${cell.cx},${cell.cz}`);
+            if (isTransit) {
               color = '#4a3a1a';
-              label = 'HALL';
+              label = 'TRANSIT';
             } else if (cell.active) {
               color = '#2a3a2a';
               label = `${cell.noise.toFixed(2)}`;
@@ -317,33 +286,24 @@ export function DebugMap() {
             label = '';
             break;
           }
+          case 'region': {
+            if (world) {
+              const absoluteCx = world.originPcx * PILLAR_FACTOR + cell.cx;
+              const absoluteCz = world.originPcz * PILLAR_FACTOR + cell.cz;
+              const region = regionAtCell(
+                world.seed + world.stack * 100000,
+                absoluteCx,
+                absoluteCz,
+              );
+              color = REGION_COLORS[region];
+              label = region.toUpperCase();
+            }
+            break;
+          }
         }
 
         ctx.fillStyle = color;
         ctx.fillRect(px, pz, CELL_PX - 1, CELL_PX - 1);
-
-        // Waypoint marker — diamond shape
-        if (cell.isWaypoint) {
-          const wcx = px + CELL_PX / 2;
-          const wcz = pz + CELL_PX / 2;
-          const ws = 6;
-          ctx.fillStyle = cell.waypointRole === 'spawn' ? '#0f0'
-            : cell.waypointRole === 'exit' ? '#f00'
-            : cell.waypointRole === 'major' ? '#ff0'
-            : '#fa0';
-          ctx.beginPath();
-          ctx.moveTo(wcx, wcz - ws);
-          ctx.lineTo(wcx + ws, wcz);
-          ctx.lineTo(wcx, wcz + ws);
-          ctx.lineTo(wcx - ws, wcz);
-          ctx.closePath();
-          ctx.fill();
-
-          // Waypoint order number
-          ctx.fillStyle = '#000';
-          ctx.font = 'bold 8px monospace';
-          ctx.fillText(`${cell.waypointOrder}`, wcx - 3, wcz + 3);
-        }
 
         // Label
         ctx.fillStyle = '#ccc';
@@ -402,7 +362,7 @@ export function DebugMap() {
       }
     }
 
-    // Draw spawn and exit markers
+    // Draw spawn marker
     if (dungeon) {
       const cellTileSize = 14; // must match CELL_TILE_SIZE in DungeonGenerator
 
@@ -417,16 +377,6 @@ export function DebugMap() {
       ctx.font = 'bold 12px monospace';
       ctx.fillText('S', spawnCx * CELL_PX + CELL_PX / 2 - 4, spawnCz * CELL_PX + CELL_PX / 2 + 4);
 
-      // Exit — red circle with X
-      const exitCx = Math.floor(dungeon.exit.x / cellTileSize);
-      const exitCz = Math.floor(dungeon.exit.y / cellTileSize);
-      ctx.fillStyle = '#f00';
-      ctx.beginPath();
-      ctx.arc(exitCx * CELL_PX + CELL_PX / 2, exitCz * CELL_PX + CELL_PX / 2, 8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 12px monospace';
-      ctx.fillText('X', exitCx * CELL_PX + CELL_PX / 2 - 4, exitCz * CELL_PX + CELL_PX / 2 + 4);
     }
 
     // Draw player position
@@ -453,10 +403,12 @@ export function DebugMap() {
     ctx.fillText('', legendX, 75);
 
     const legendItems: Array<[string, string]> = mode === 'content'
-      ? [['#2a3a2a', 'Active'], ['#4a3a1a', 'Hallway'], ['#1a1a1a', 'Void'], ['#0f0', 'Spawn (S)'], ['#f00', 'Exit (X)'], ['#fff', 'Player']]
+      ? [['#2a3a2a', 'Active'], ['#4a3a1a', 'Permanent transit'], ['#1a1a1a', 'Inactive'], ['#0f0', 'Spawn'], ['#fff', 'Player']]
       : mode === 'pillars'
         ? [['#8ac6dc', 'Tall pillar'], ['#38326a', 'Short pillar'], ['#14101c', 'Void (no pillar)'], ['#ffd24a', 'Bridge socket'], ['#3ce6c8', 'Bridge'], ['#fff', 'Player']]
-        : [['#0f0', 'High noise'], ['#300', 'Low noise'], ['#fff', 'Player']];
+        : mode === 'region'
+          ? [[REGION_COLORS.city, 'City'], [REGION_COLORS.machine, 'Machine'], [REGION_COLORS.canyon, 'Canyon'], [REGION_COLORS.frontier, 'Frontier'], ['#0f0', 'Spawn'], ['#fff', 'Player']]
+          : [['#0f0', 'High noise'], ['#300', 'Low noise'], ['#fff', 'Player']];
 
     let ly = 80;
     for (const [c, text] of legendItems) {
@@ -473,8 +425,7 @@ export function DebugMap() {
     const stats = {
       total: cells.length,
       active: cells.filter((c) => c.active).length,
-      waypoints: cells.filter((c) => c.isWaypoint).length,
-      hallways: hallwayCells.size,
+      transitCells: hallwayCells.size,
       pillars: pillarSpecs.length,
       avgHeight: pillarSpecs.length
         ? (pillarSpecs.reduce((s, p) => s + p.totalHeight, 0) / pillarSpecs.length).toFixed(1)

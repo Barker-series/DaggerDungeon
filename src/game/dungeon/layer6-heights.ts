@@ -1,7 +1,7 @@
 /**
  * Layer 6 — Height Fields (floor + ceiling)
  *
- * Reads: final tile grid, cell biomes (Layer 2), golden path (Layer 5)
+ * Reads: final tile grid and cell biomes (Layer 2)
  * Writes: per-tile floor elevation and ceiling height.
  *
  * Grade-level terrain is ALWAYS walkable — rolling, lumpy, but never
@@ -13,9 +13,8 @@
  * several levels the holes align into vast vertical atria.
  * Smoothing never crosses a hole rim, so edges stay knife-sharp.
  *
- * The golden path is still relaxed into a walkable channel — where it
- * crosses a pit, that becomes a narrow causeway over the void.
- * Spawn and exit neighborhoods are always kept out of pits.
+ * Permanent transit tiles are kept out of pits. Objective routes are
+ * observations of this terrain; they never reshape it.
  *
  * Ceiling = floor + biome clearance. Outside has no drawn ceiling but a
  * huge clearance value, and interior ceilings within a few tiles of an
@@ -27,7 +26,6 @@ import { PIT_LEVEL } from './heightfield';
 import { getCell, isOrganicBiome, type BiomeType } from './cells';
 import { sampleNoise, sampleNoise3D } from './noise';
 import { windowOrigin } from './cells';
-import { goldenPath } from './layer5-goldenpath';
 
 const TUNNEL_CLEARANCE = 3.5;
 const HEIGHT_STEP = 0.5; // built-biome clearances quantize to this
@@ -36,9 +34,6 @@ const FLOOR_SMOOTH_PASSES = 2;
 const FLOOR_SWELL_SCALE = 9; // tiles per rolling-floor feature
 const PIT_SCALE = 14; // tiles per hole feature
 export const PIT_FLOOR = -1000; // hole sentinel: no floor slab at this tile
-const SAFE_RADIUS = 3; // spawn/exit neighborhoods never sink into holes
-const RAMP_STEP = 0.7; // max per-tile rise along the golden-path channel
-const PATH_SHOULDER = 1.0; // neighbors of the golden path stay within this
 
 const CEIL_SWELL_SCALE = 14;
 const CEIL_DETAIL_SCALE = 4;
@@ -62,12 +57,12 @@ interface BiomeHeightProfile {
 // path and forced bridges as the guaranteed crossings.
 const PROFILES: Record<BiomeType, BiomeHeightProfile> = {
   // Even built floors breach — the structure is failing
-  dungeon: { rollAmp: 0, pitThreshold: 0.2, clearMin: 12, clearMax: 20 },
-  crypt: { rollAmp: 0, pitThreshold: 0.14, clearMin: 8, clearMax: 12 },
+  dungeon: { rollAmp: 0, pitThreshold: 0.2, clearMin: 18, clearMax: 30 },
+  crypt: { rollAmp: 0, pitThreshold: 0.14, clearMin: 12, clearMax: 20 },
   cave: { rollAmp: 1.2, pitThreshold: 0.36, clearMin: 10, clearMax: 28 },
   // Ember is hole country
-  ember: { rollAmp: 1.2, pitThreshold: 0.48, clearMin: 16, clearMax: 34 },
-  outside: { rollAmp: 1.6, pitThreshold: 0.38, clearMin: 34, clearMax: 40 },
+  ember: { rollAmp: 1.2, pitThreshold: 0.48, clearMin: 24, clearMax: 44 },
+  outside: { rollAmp: 1.6, pitThreshold: 0.38, clearMin: 60, clearMax: 90 },
 };
 
 export interface HeightFields {
@@ -77,25 +72,22 @@ export interface HeightFields {
 
 /**
  * Where the 3D void field opens holes on this level. Computed separately
- * from the height fields so the golden path can be routed AROUND unstable
- * ground before heights are finalized — the same mask then drives the
- * height computation, so route and world always agree.
+ * from the height fields so permanent construction can reserve stable
+ * crossings before heights are finalized.
  */
 export function computePitMask(
   tiles: TileType[][],
   gridTiles: number,
   cellTileSize: number,
-  entrance: GridPos,
-  exit: GridPos,
   stackSeed: number,
+  protectedTiles?: ReadonlySet<string>,
 ): boolean[][] {
   const voidSeed = stackSeed + 21;
   const mask: boolean[][] = Array.from({ length: gridTiles }, () =>
     Array.from({ length: gridTiles }, () => false),
   );
   const isSafe = (tx: number, tz: number): boolean =>
-    (Math.abs(tx - entrance.x) <= SAFE_RADIUS && Math.abs(tz - entrance.y) <= SAFE_RADIUS) ||
-    (Math.abs(tx - exit.x) <= SAFE_RADIUS && Math.abs(tz - exit.y) <= SAFE_RADIUS);
+    protectedTiles?.has(`${tx},${tz}`) ?? false;
 
   for (let tz = 0; tz < gridTiles; tz++) {
     for (let tx = 0; tx < gridTiles; tx++) {
@@ -131,8 +123,7 @@ export function computeHeightFields(
   gridTiles: number,
   cellTileSize: number,
   worldSeed: number,
-  /** Where the void field opens holes (from computePitMask — the same
-   *  mask the golden path was routed with) */
+  /** Where the void field opens holes (from computePitMask). */
   pitMask: boolean[][],
   /** Pillar footprint tiles — terrain flows under them and they carry
    *  real ground heights */
@@ -199,52 +190,6 @@ export function computeHeightFields(
       }
     }
   }
-
-  // ── Guarantee: the golden path is always walkable ──
-  // Where the route crosses a void (the router already avoids them where
-  // it can), the crossing becomes a FLAT BRIDGE spanning rim to rim — a
-  // level walkway over the drop, never a causeway sagging down into the
-  // band below.
-  for (let i = 0; i < goldenPath.length; i++) {
-    const p = goldenPath[i]!;
-    if (floor[p.y]![p.x]! > PIT_LEVEL) continue;
-    let j = i;
-    while (j < goldenPath.length) {
-      const q = goldenPath[j]!;
-      if (floor[q.y]![q.x]! > PIT_LEVEL) break;
-      j++;
-    }
-    const before = goldenPath[i - 1];
-    const after = goldenPath[j];
-    const hA = before ? floor[before.y]![before.x]! : 0;
-    const hB = after ? floor[after.y]![after.x]! : hA;
-    for (let k = i; k < j; k++) {
-      const t = (k - i + 1) / (j - i + 1);
-      const b = goldenPath[k]!;
-      floor[b.y]![b.x] = hA + (hB - hA) * t;
-      pit[b.y]![b.x] = false;
-    }
-    i = j;
-  }
-
-  // Relax heights along the path, then pull its shoulders in.
-  relaxChannel(goldenPath, floor);
-  for (const p of goldenPath) {
-    const h = floor[p.y]?.[p.x];
-    if (h === undefined) continue;
-    for (let dz = -1; dz <= 1; dz++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const nx = p.x + dx;
-        const nz = p.y + dz;
-        if (!isFloor(nx, nz)) continue;
-        floor[nz]![nx] = Math.max(h - PATH_SHOULDER, Math.min(h + PATH_SHOULDER, floor[nz]![nx]!));
-      }
-    }
-  }
-  // The shoulder pass can re-clamp path tiles (they neighbor each other),
-  // reopening steps up to PATH_SHOULDER — relax once more so the channel
-  // itself is guaranteed back under RAMP_STEP
-  relaxChannel(goldenPath, floor);
 
   // ── Ceiling = grade + biome clearance ──
   // Referenced to grade (not the pit floor), so the airspace over a pit
@@ -362,26 +307,6 @@ export function computeHeightFields(
   }
 
   return { floor, ceiling };
-}
-
-/** Clamp successive heights along a tile chain to a walkable ramp. */
-function relaxChannel(chain: GridPos[], floor: number[][]): void {
-  for (let i = 1; i < chain.length; i++) {
-    const prev = chain[i - 1]!;
-    const cur = chain[i]!;
-    const ph = floor[prev.y]?.[prev.x];
-    const ch = floor[cur.y]?.[cur.x];
-    if (ph === undefined || ch === undefined) continue;
-    floor[cur.y]![cur.x] = Math.max(ph - RAMP_STEP, Math.min(ph + RAMP_STEP, ch));
-  }
-  for (let i = chain.length - 2; i >= 0; i--) {
-    const next = chain[i + 1]!;
-    const cur = chain[i]!;
-    const nh = floor[next.y]?.[next.x];
-    const ch = floor[cur.y]?.[cur.x];
-    if (nh === undefined || ch === undefined) continue;
-    floor[cur.y]![cur.x] = Math.max(nh - RAMP_STEP, Math.min(nh + RAMP_STEP, ch));
-  }
 }
 
 /** Interior ceilings sweep upward as they approach an outside region. */

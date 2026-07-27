@@ -1,33 +1,26 @@
-import { TileType, TILE_SIZE } from '../game/types';
+import { TILE_SIZE } from '../game/types';
 import { spanAt } from '../game/dungeon/columns';
-import { findWorldPath, startLevelFor, type WorldStep } from '../game/pathfinding';
+import { findForwardExplorationPath, startLevelFor, type WorldStep } from '../game/pathfinding';
 import type { InputAction, KeyboardInput } from '../engine/InputManager';
 import type { GridCamera } from '../engine/Camera';
 import type { GameState } from '../store/gameStore';
 
 export enum BotState {
-  ToExit = 'toExit',
-  Arrived = 'arrived',
+  Exploring = 'exploring',
 }
 
 const ARRIVE_RADIUS = 0.9; // world units to a waypoint before advancing
-const TURN_RATE = 10; // yaw damping factor — higher turns faster
 // A fall (or anything else that teleports us off-route) leaves the next
 // waypoint far away — drop the path and replan from where we actually are
 const OFF_ROUTE_TILES = 6;
 
-/** Shortest-arc angle from a to b, in (-PI, PI] */
-function angleDelta(a: number, b: number): number {
-  return ((b - a + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-}
-
 /**
- * Speedrunner bot: sprints the fastest walkable route down the whole
- * stack — through rooms, down stairwell ramps, level after level — to the
- * bottom stairs, then stops and hands control back.
+ * Exploration bot: captures the player's exact camera heading when enabled,
+ * then repeatedly finds the farthest reachable point in that direction.
+ * It routes around walls and pits without inventing a destination.
  */
 export class DungeonBot {
-  currentState = BotState.ToExit;
+  currentState = BotState.Exploring;
   private path: WorldStep[] = [];
   private tickAccumulator = 0;
   private readonly TICK_RATE = 0.12;
@@ -42,9 +35,7 @@ export class DungeonBot {
   private lastZ = 0;
   private stuckTimer = 0;
 
-  // Arrival is announced exactly once — plan() ticks several times while
-  // crossing the stairs tile, and a second toggle would switch auto back on
-  private announcedArrival = false;
+  private headingYaw: number | null = null;
 
   constructor(
     pushAction: (action: InputAction) => void,
@@ -66,7 +57,7 @@ export class DungeonBot {
     }
 
     // Steering runs every frame so turning is smooth; planning is tick-gated
-    this.steer(dt);
+    this.steer();
 
     this.tickAccumulator += dt;
     if (this.tickAccumulator < this.TICK_RATE) return;
@@ -77,8 +68,8 @@ export class DungeonBot {
   reset(): void {
     this.path = [];
     this.stuckTimer = 0;
-    this.currentState = BotState.ToExit;
-    this.announcedArrival = false;
+    this.currentState = BotState.Exploring;
+    this.headingYaw = null;
     this.stop();
   }
 
@@ -90,7 +81,7 @@ export class DungeonBot {
 
   // ── Per-frame steering ──
 
-  private steer(dt: number): void {
+  private steer(): void {
     let next = this.path[0];
     if (!next) {
       this.stop();
@@ -115,21 +106,28 @@ export class DungeonBot {
       tz = next.y * TILE_SIZE + TILE_SIZE / 2;
     }
 
-    // Damped turn toward the waypoint; movement follows facing, so the
-    // walk curves smoothly through corners instead of snapping
-    const desiredYaw = Math.atan2(-(tx - pos.x), -(tz - pos.z));
-    const blend = 1 - Math.exp(-TURN_RATE * dt);
-    this.camera.yaw += angleDelta(this.camera.yaw, desiredYaw) * blend;
+    // AUTO never owns the camera. Convert the world-space direction to
+    // forward/strafe input relative to the player's fixed view instead of
+    // rotating that view toward every waypoint.
+    const dx = tx - pos.x;
+    const dz = tz - pos.z;
+    const distance = Math.hypot(dx, dz);
+    const moveX = distance > 0 ? dx / distance : 0;
+    const moveZ = distance > 0 ? dz / distance : 0;
+    const forwardX = -Math.sin(this.camera.yaw);
+    const forwardZ = -Math.cos(this.camera.yaw);
+    const rightX = Math.cos(this.camera.yaw);
+    const rightZ = -Math.sin(this.camera.yaw);
+    const forwardInput = moveX * forwardX + moveZ * forwardZ;
+    const rightInput = moveX * rightX + moveZ * rightZ;
 
-    // Cliff sense — the route never crosses a drop, but the smooth curve
-    // can carry the BODY over one. Check the column a body-length ahead
-    // along the actual heading; over a drop, turn in place until the
-    // heading points back at the (safe) waypoint.
+    // Cliff sense — check a body-length toward the next waypoint so even
+    // strafe/backward route segments never enter a drop.
     const state = this.getState();
     const world = state.world;
     if (world) {
-      const fx = pos.x - Math.sin(this.camera.yaw) * 1.2;
-      const fz = pos.z - Math.cos(this.camera.yaw) * 1.2;
+      const fx = pos.x + moveX * 1.2;
+      const fz = pos.z + moveZ * 1.2;
       const ftx = Math.floor(fx / TILE_SIZE);
       const ftz = Math.floor(fz / TILE_SIZE);
       const w = world.levels[0]!.width;
@@ -139,16 +137,18 @@ export class DungeonBot {
       const ahead = spans ? spanAt(spans, state.playerY + 1) : null;
       const dropAhead = !ahead || ahead.floor < state.playerY - 3.0;
       if (dropAhead) {
-        // NEVER advance toward a drop — even an on-course heading can be
-        // a corner-cut across a hole the route went around. Turn in place;
-        // if the heading can't clear, the stuck detector replans.
+        // NEVER advance toward a drop. The stuck detector will discard the
+        // route and request another; the camera remains untouched.
         this.input.clearMovementOverride();
         this.input.setSprintOverride(false);
         return;
       }
     }
 
-    this.input.setMovementOverride(1, 0);
+    this.input.setMovementOverride(
+      Math.abs(forwardInput) > 0.5 ? Math.sign(forwardInput) : 0,
+      Math.abs(rightInput) > 0.5 ? Math.sign(rightInput) : 0,
+    );
     this.input.setSprintOverride(true);
   }
 
@@ -179,19 +179,6 @@ export class DungeonBot {
       this.path = [];
     }
 
-    // On the bottom stairs -> arrived: release controls and switch auto off
-    const tile = state.dungeon?.tiles[state.playerPos.y]?.[state.playerPos.x];
-    if (tile === TileType.StairsDown) {
-      this.currentState = BotState.Arrived;
-      this.stop();
-      this.path = [];
-      if (!this.announcedArrival) {
-        this.announcedArrival = true;
-        this.pushAction('toggleAutoPlay');
-      }
-      return;
-    }
-
     // Fell into the abyss — do what a player would: respawn and retry
     if (state.world && state.playerY < state.world.levels[state.world.levels.length - 1]!.baseY - 25) {
       this.pushAction('respawn');
@@ -199,16 +186,16 @@ export class DungeonBot {
       return;
     }
 
-    // No path -> route across the whole stack to the bottom stairs
+    // No path -> continue exploring in the heading captured when AUTO began.
     if (this.path.length === 0 && state.world) {
-      this.currentState = BotState.ToExit;
+      this.currentState = BotState.Exploring;
       const li = startLevelFor(state.world, state.playerPos, state.playerY);
       if (li === null) return; // over a void — wait for the landing
-      const bottom = state.world.levels[state.world.levels.length - 1]!;
-      this.path = findWorldPath(
+      this.headingYaw ??= this.camera.yaw;
+      this.path = findForwardExplorationPath(
         state.world,
         { level: li, x: state.playerPos.x, y: state.playerPos.y },
-        { level: bottom.level, x: bottom.exit.x, y: bottom.exit.y },
+        this.headingYaw,
       );
     }
   }
