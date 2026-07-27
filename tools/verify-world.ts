@@ -68,8 +68,9 @@ for (const seed of SEEDS) {
         const tz = z0 + dz;
         if (tx >= W || tz >= W) continue;
         // Climb target: highest habitable floor ON the structure (ring
-        // 13..42). Gap columns hold arches — skyline mass, never walked.
-        const onRing = dx >= 13 && dx <= 42 && dz >= 13 && dz <= 42;
+        // 14..41). Gap columns hold arches — skyline mass, never walked
+        // (an arch's end tile sits at 42/13, just outside the ring).
+        const onRing = dx >= 14 && dx <= 41 && dz >= 14 && dz <= 41;
         for (const s of world.columns[tz * W + tx]!) {
           if (onRing && s.ceil - s.floor >= 1.5 && s.floor > targetY && s.floor < 1e8) targetY = s.floor;
           if (s.floor > -2 && s.floor < 2 && s.ceil - s.floor >= 1.5) {

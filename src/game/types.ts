@@ -129,6 +129,9 @@ export interface WorldData {
   pillars: Map<string, PillarSpec>;
   /** Planned pillar-to-pillar walkways (carved into `columns`) */
   bridges: BridgeSpec[];
+  /** Deep transit bores between below-grade pillars — a few still
+   *  carry functioning trains (runtime movers) */
+  subways: BridgeSpec[];
 }
 
 // ── Constants ──

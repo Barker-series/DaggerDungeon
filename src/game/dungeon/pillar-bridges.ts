@@ -138,10 +138,6 @@ export function planBridges(
  * Arches OWNED by cell (cx,cz): high solid beams spanning to the east
  * and south neighbors' crowns. Silhouette mass only — carved as solid,
  * never walked. Canyon districts grow forests of them.
- *
- * WIP — NOT YET APPLIED in DungeonGenerator: carving these breaks
- * spiral climbability on several seeds (mechanism not yet diagnosed).
- * Resolve before wiring the apply loop back in.
  */
 export function planOwnedArches(
   worldSeed: number,

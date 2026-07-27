@@ -39,8 +39,8 @@ import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, type PillarSpec } from './dungeon/pillar-layer';
 import { pillarFootprint, pillarAirSpans } from './dungeon/pillar-geometry';
 import {
-  planOwnedBridges, planOwnedSubways,
-  bridgeTiles, carveBridgeIntoColumn,
+  planOwnedBridges, planOwnedSubways, planOwnedArches,
+  bridgeTiles, carveBridgeIntoColumn, carveArchIntoColumn,
   type BridgeSpec,
 } from './dungeon/pillar-bridges';
 
@@ -266,13 +266,19 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   for (const spec of pillars.values()) {
     bridges.push(...planOwnedBridges(stackSeed, spec.cx, spec.cz, specAt));
   }
-  // Subways: deep bores between below-grade pillars, riding the same
-  // pair machinery. (Canyon ARCHES are planned in pillar-bridges but
-  // NOT yet applied: carving them breaks spiral climbability on some
-  // seeds — unresolved; see planOwnedArches.)
+  // Subways: deep bores between below-grade pillars; ARCHES: skyline
+  // mass over canyon districts. Both ride the same pair machinery.
   const subways: BridgeSpec[] = [];
+  const arches: BridgeSpec[] = [];
   for (const spec of pillars.values()) {
     subways.push(...planOwnedSubways(stackSeed, spec.cx, spec.cz, specAt));
+    arches.push(...planOwnedArches(stackSeed, spec.cx, spec.cz, specAt));
+  }
+  for (const ar of arches) {
+    for (const { tx, tz, h } of bridgeTiles(ar)) {
+      if (tx < 0 || tz < 0 || tx >= GRID_TILES || tz >= GRID_TILES) continue;
+      columns[tz * GRID_TILES + tx] = carveArchIntoColumn(columns[tz * GRID_TILES + tx]!, h);
+    }
   }
   for (const sw of subways) {
     for (const { tx, tz, h } of bridgeTiles(sw)) {
@@ -293,7 +299,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     console.error(`[generateWorld] column model invariant violations (seed ${seed}, stack ${stack}):`, errs);
   }
 
-  return { seed, stack, levels, columns, pillars, bridges };
+  return { seed, stack, levels, columns, pillars, bridges, subways };
 }
 
 // ── The floor pipeline ──

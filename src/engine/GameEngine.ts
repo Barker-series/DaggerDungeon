@@ -5,6 +5,7 @@ import { LightingSystem } from './LightingSystem';
 import { SpriteManager } from './SpriteManager';
 import { KeyboardInput, type InputAction } from './InputManager';
 import { generateWorld } from '../game/DungeonGenerator';
+import { Movers } from './Movers';
 import { buildCornerField, sampleCornerField } from '../game/dungeon/heightfield';
 import { spanAt } from '../game/dungeon/columns';
 import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
@@ -55,6 +56,7 @@ export class GameEngine {
   private stopped = false;
 
   private dungeonRenderer: DungeonRenderer;
+  private movers: Movers | null = null;
   private gridCamera: GridCamera;
   private lighting: LightingSystem;
   private sprites: SpriteManager;
@@ -199,11 +201,13 @@ export class GameEngine {
     this.sprites.clear();
     this.bot.reset();
 
+    this.movers?.dispose(this.scene);
     this.world = generateWorld({ seed, stack });
     this.cornerFloors = this.world.levels.map((l) =>
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
     this.contours = this.world.levels.map((l) => buildOrganicContour(l));
     this.dungeonRenderer.build(this.world);
+    this.movers = new Movers(this.world, this.scene);
     this.lighting.setup(this.world);
 
     const store = useGameStore.getState();
@@ -255,6 +259,13 @@ export class GameEngine {
     const store = useGameStore.getState();
 
     // Player movement
+    this.movers?.update(dt);
+    // An elevator under your feet carries you with it
+    {
+      const pos = this.gridCamera.position;
+      const carry = this.movers?.carryVelocity(pos.x, pos.z, pos.y) ?? 0;
+      if (carry !== 0 && this.isGrounded) pos.y += carry * dt;
+    }
     this.processMovement(dt);
     this.syncGridPos(store);
     this.gridCamera.update();
@@ -362,6 +373,9 @@ export class GameEngine {
       const g = this.pocketGround(li, tx, tz, x, z);
       if (g !== null && g <= limitY + 0.6 && g > best) best = g;
     }
+    // Kinetic movers: an elevator platform top is real ground
+    const mg = this.movers?.groundAt(x, z, limitY);
+    if (mg !== null && mg !== undefined && mg > best) best = mg;
     return best;
   }
 
