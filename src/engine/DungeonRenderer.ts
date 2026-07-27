@@ -47,10 +47,13 @@ const REGION_EMISSIVE: Partial<Record<RegionKey, number>> = {
   ember: 0x2a0d04,
 };
 
-/** How high canyon walls render into an open sky span. Must clear the
- *  tallest pillar (~84 incl. crown headroom) or upper pillar faces fall
- *  outside the clip and vanish. */
-const RENDER_SKY_TOP = 92;
+/** MINIMUM sky-clip altitude for canyon walls in open-sky spans. The
+ *  megastructure has no uniform ceiling: the real clip is derived per
+ *  build from the tallest structure actually present (supertowers push
+ *  it up), never below this floor value. */
+const RENDER_SKY_TOP_MIN = 92;
+/** Clearance above the tallest crown before the sky clip */
+const RENDER_SKY_MARGIN = 8;
 /** How deep a bottomless pit's walls render below the lowest level */
 const RENDER_ABYSS_DROP = 24;
 
@@ -450,7 +453,19 @@ export class DungeonRenderer {
   ): void {
     const w = world.levels[0]!.width;
     const h = world.levels[0]!.height;
-    const worldBottom = world.levels[world.levels.length - 1]!.baseY - RENDER_ABYSS_DROP;
+    // Clips derive from what was BUILT: the sky plane sits above the
+    // tallest crown in this window, the abyss below the deepest well
+    let tallest = 0;
+    let deepest = 0;
+    for (const spec of world.pillars.values()) {
+      tallest = Math.max(tallest, spec.totalHeight);
+      deepest = Math.min(deepest, spec.baseDepth);
+    }
+    const skyTop = Math.max(RENDER_SKY_TOP_MIN, tallest + 4 + RENDER_SKY_MARGIN);
+    const worldBottom = Math.min(
+      world.levels[world.levels.length - 1]!.baseY - RENDER_ABYSS_DROP,
+      deepest - RENDER_ABYSS_DROP,
+    );
 
     const group = new THREE.Group();
     this.meshGroup.add(group);
@@ -467,7 +482,7 @@ export class DungeonRenderer {
     };
 
     const clipY = (y: number): number =>
-      y >= SKY_CEIL ? RENDER_SKY_TOP : (y <= ABYSS_FLOOR ? worldBottom : y);
+      y >= SKY_CEIL ? skyTop : (y <= ABYSS_FLOOR ? worldBottom : y);
 
     /** World-space height of a face bound at a grid corner. A bound that
      *  EQUALS a span's clipped floor/ceiling IS that surface — the cut
@@ -531,7 +546,7 @@ export class DungeonRenderer {
         // is the price of unrepresentable leaks.)
         const reachesSky = a.length > 0 && a[a.length - 1]!.ceil >= SKY_CEIL;
         if (!reachesSky) {
-          addHorizontalQuad(rockFloors, x * TILE_SIZE, z * TILE_SIZE, RENDER_SKY_TOP, RENDER_SKY_TOP, RENDER_SKY_TOP, RENDER_SKY_TOP, true);
+          addHorizontalQuad(rockFloors, x * TILE_SIZE, z * TILE_SIZE, skyTop, skyTop, skyTop, skyTop, true);
         }
 
         // Two directed boundaries per column (east, south) — plus the

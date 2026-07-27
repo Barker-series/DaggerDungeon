@@ -53,6 +53,9 @@ export interface PillarChunkDef {
  *            ramp — bridge entry into the pillar's inside
  * - shaft:   core + a CONTINUOUS flight — the same stairs with no
  *            landings, climbing without stops. The express meat.
+ * - residential: Kowloon-compressed living strata — low stacked floors
+ *            inside the core, each with a doorway slit onto the spiral
+ *            where the flight passes its height. City-district meat.
  * - crown:   solid cap; its top is the rooftop. Every pillar ends in
  *            exactly one (placed explicitly, weight 0).
  */
@@ -66,6 +69,12 @@ export const CHUNK_LIBRARY: PillarChunkDef[] = [
   // stop. (Corners MUST stay flat: a climbing tread in the shared square
   // gets erased by the neighboring flight's headroom punch.)
   { id: 'shaft', height: 13.8, weight: 2 },
+  // 4 strata at 2.5 pitch + 1 roof: cramped 2.0 headroom per floor
+  { id: 'residential', height: 11, weight: 2 },
+  // Solid mass threaded by a 2-wide, 2-tall crawl duct at base height,
+  // open on two opposite faces — some enterable from an adjacent plaza,
+  // some just dark slots glimpsed under the passing stairs
+  { id: 'vent', height: 8, weight: 1 },
   { id: 'crown', height: 4, weight: 0 },
 ];
 

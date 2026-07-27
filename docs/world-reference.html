@@ -102,6 +102,8 @@ so a bounded world is just this pipeline evaluated over a window. Grid math:
 world = 16×16 cells = 224 tiles = 672 wu</b>.</p>
 
 <div class="pipeline">
+  <div class="stage"><b>R · Regions</b><span>districts of the structure<br>dictate biome palettes</span></div>
+  <div class="arrow">→</div>
   <div class="stage"><b>0 · Coarse Noise</b><span>active/void per cell<br>3-octave, &gt; 0.45 = active</span></div>
   <div class="arrow">→</div>
   <div class="stage"><b>1 · Tile Grid</b><span>active cell = all floor;<br>walls form at void edges</span></div>
@@ -146,6 +148,7 @@ back to these constants.</p>
 <div class="viewer">
   <div class="pane"><canvas id="cElev" width="96" height="96"></canvas><div class="cap">Elevation field — pillar heights read this (seed+909, scale 3 pillar cells)</div></div>
   <div class="pane"><canvas id="cWild" width="96" height="96"></canvas><div class="cap">Wildness — fbm ×3 + domain warp + 30% elevation</div></div>
+  <div class="pane"><canvas id="cRegion" width="64" height="64"></canvas><div class="cap">Districts — city grey, machine rust, canyon blue, frontier drab</div></div>
   <div class="pane"><canvas id="cBiome" width="64" height="64"></canvas><div class="cap">Biome cells (16×16 world outlined; darker = void)</div></div>
 </div>
 <div class="legend">
@@ -156,10 +159,29 @@ back to these constants.</p>
   <span><i class="swatch" style="background:var(--outside)"></i>outside</span>
 </div>
 
+<!-- ══════════════ REGIONS ══════════════ -->
+<h2>Regions — Districts of the Megastructure <span class="src">src/game/dungeon/region-layer.ts</span></h2>
+<p class="lede">The coarsest layer: vast tracts (<code>REGION_CELLS 8</code> dungeon cells ≈ 336 wu per axis,
+domain-warped ±2.5 cells so borders meander) that DICTATE the biome palette inside them. The wildness/depth
+fields stay continuous across borders — a district changes the <i>zoning</i>, not the geography. Growing the
+world = adding region types and palettes here; the biome selector never changes again.</p>
+<div class="cards">
+  <div class="card"><h3>City <span class="tag">weight 0.35</span></h3>
+    <p class="dim">Built mass — endless corridors and compressed residential strata. Measured mix:
+    dungeon 43%, crypt 28%, organic intrusions rare.</p></div>
+  <div class="card"><h3>Machine <span class="tag">weight 0.30</span></h3>
+    <p class="dim">The builders' domain — carved voids and heat. Measured: cave 30%, ember 21%, built 42%.</p></div>
+  <div class="card"><h3>Canyon <span class="tag">weight 0.20</span></h3>
+    <p class="dim">Vast open cuts, sky far above, arch country. Measured: outside 31%.</p></div>
+  <div class="card"><h3>Frontier <span class="tag">weight 0.15</span></h3>
+    <p class="dim">Contested edges where everything interleaves — carries the old global thresholds.</p></div>
+</div>
+
 <!-- ══════════════ BIOMES ══════════════ -->
 <h2>Biomes <span class="src">src/game/dungeon/layer2-biome.ts</span></h2>
 <p class="lede">Derived, not rolled: two smooth fields — <b>wildness</b> (built ↔ organic ↔ open sky) and
-<b>depth</b> (common ↔ rare variant) — thresholded, then quantized to one biome per 14-tile cell. Both are
+<b>depth</b> (common ↔ rare variant) — thresholded by the cell's DISTRICT palette, then quantized to one
+biome per 14-tile cell. Both are
 3-octave fractal noise; wildness is domain-warped (±1.6 cells) and mixed 30% with the pillar elevation field.
 Vertical drift <code>LEVEL_Y_STEP 0.45</code> makes regions persist as strata between stacked levels.
 Target mix: dungeon ≈39%, crypt ≈20%, cave ≈17%, outside ≈18%, ember ≈6%.</p>
@@ -289,6 +311,21 @@ shaft spawn for now — buried plazas and halls are future meats.</p>
   </div>
 
   <div class="card">
+    <h3>Residential <span class="tag">h 11 · weight 2 · city meat</span></h3>
+    <svg class="chunk" width="150" height="70" viewBox="0 0 150 70">
+      <rect x="35" y="8" width="80" height="54" fill="#4a4f5c"/>
+      <rect x="42" y="16" width="66" height="9" fill="#22252d"/>
+      <rect x="42" y="29" width="66" height="9" fill="#22252d"/>
+      <rect x="42" y="42" width="66" height="9" fill="#22252d"/>
+      <rect x="35" y="18" width="4" height="6" fill="#16181d"/>
+      <rect x="35" y="44" width="4" height="6" fill="#16181d"/>
+    </svg>
+    <p class="dim">Kowloon-compressed living strata: 4 stacked floors at 2.5 pitch, 2.0 headroom — cramped by
+    design. Each stratum opens a doorway slit onto the ramp band exactly where the spiral passes its height,
+    so climbing the pillar threads past inhabited floors. 3× likelier in city districts.</p>
+  </div>
+
+  <div class="card">
     <h3>Crown <span class="tag">h 4 · always last</span></h3>
     <svg class="chunk" width="150" height="70" viewBox="0 0 150 70">
       <rect x="35" y="30" width="80" height="32" fill="#4a4f5c"/>
@@ -344,6 +381,8 @@ shaft spawn for now — buried plazas and halls are future meats.</p>
       <tr><td>per pair</td><td>max <code>2</code>, chance <code>0.65</code>, vertical separation ≥ <code>10</code></td></tr>
       <tr><td>socket match</td><td>Δy ≤ <code>10</code> (forced fallback ≤ <code>24</code>), min height <code>6</code></td></tr>
       <tr><td>degree</td><td>every pillar guaranteed ≥1 bridge via radius-1 forced pass</td></tr>
+      <tr><td>pipes</td><td><code>35%</code> of chance bridges are enclosed DUCTS: tight <code>2.6</code> bore,
+      roofed — sewer-scale pipe crossings. Guarantee bridges stay open walkways.</td></tr>
     </table>
   </div>
   <div class="card">
@@ -425,7 +464,6 @@ function sampleNoise3D(x, y, z, worldSeed) {
 }
 // layer2-biome.ts constants
 const WILDNESS_SCALE = 3, DEPTH_SCALE = 4, LEVEL_Y_STEP = 0.45, WARP_AMP = 1.6, ELEVATION_MIX = 0.3;
-const ORGANIC_T = 0.525, OUTSIDE_T = 0.612, CRYPT_T = 0.572, EMBER_T = 0.605;
 const PILLAR_FACTOR = 4, HEIGHT_NOISE_SCALE = 3;
 const elevationField = (ws, pcx, pcz) => sampleNoise(pcx, pcz, ws + 909, HEIGHT_NOISE_SCALE);
 function fbm3(x, y, z, seed) {
@@ -443,12 +481,33 @@ function wildnessAt(ss, cxf, czf, level) {
   const wild = fbm3((cxf + wx) / WILDNESS_SCALE, y, (czf + wz) / WILDNESS_SCALE, ss + 1313);
   return wild * (1 - ELEVATION_MIX) + elevationField(ss, cxf / PILLAR_FACTOR, czf / PILLAR_FACTOR) * ELEVATION_MIX;
 }
+// region-layer.ts port
+const REGION_CELLS = 8, REGION_SALT = 7373, BORDER_WARP = 2.5;
+const REGION_WEIGHTS = [['city',0.35],['machine',0.3],['canyon',0.2],['frontier',0.15]];
+const PALETTES = {
+  city:     { organic: 0.6,   outside: 0.68,  crypt: 0.555, ember: 0.605 },
+  machine:  { organic: 0.44,  outside: 0.66,  crypt: 0.572, ember: 0.55 },
+  canyon:   { organic: 0.5,   outside: 0.545, crypt: 0.572, ember: 0.605 },
+  frontier: { organic: 0.525, outside: 0.612, crypt: 0.572, ember: 0.605 },
+};
+function regionTypeAt(ws, rcx, rcz) {
+  let r = mulberry32(cellSeed(rcx, rcz, ws, REGION_SALT))();
+  for (const [t, w] of REGION_WEIGHTS) { r -= w; if (r <= 0) return t; }
+  return 'frontier';
+}
+function regionAtCell(ws, cx, cz) {
+  const wx = (sampleNoise3D(cx / REGION_CELLS, 0, cz / REGION_CELLS, ws + 4747) - 0.5) * 2 * BORDER_WARP;
+  const wz = (sampleNoise3D(cx / REGION_CELLS, 0, cz / REGION_CELLS, ws + 4747 + 77) - 0.5) * 2 * BORDER_WARP;
+  return regionTypeAt(ws, Math.floor((cx + wx) / REGION_CELLS), Math.floor((cz + wz) / REGION_CELLS));
+}
+const REGION_RGB = { city: [200,205,220], machine: [230,150,110], canyon: [130,170,205], frontier: [150,150,140] };
 function biomeOf(ss, cx, cz, level) {
   const w = wildnessAt(ss, cx, cz, level);
   const d = fbm3(cx / DEPTH_SCALE, level * LEVEL_Y_STEP, cz / DEPTH_SCALE, ss + 2626);
-  if (w > OUTSIDE_T) return level === 0 ? 'outside' : 'cave';
-  if (w > ORGANIC_T) return d > EMBER_T ? 'ember' : 'cave';
-  return d > CRYPT_T ? 'crypt' : 'dungeon';
+  const pal = PALETTES[regionAtCell(ss, cx, cz)];
+  if (w > pal.outside) return level === 0 ? 'outside' : 'cave';
+  if (w > pal.organic) return d > pal.ember ? 'ember' : 'cave';
+  return d > pal.crypt ? 'crypt' : 'dungeon';
 }
 const BIOME_RGB = { dungeon: [235,235,235], crypt: [159,180,204], cave: [216,180,148], ember: [255,136,102], outside: [122,158,190] };
 
@@ -468,6 +527,13 @@ function draw() {
   };
   gray('cElev', (cx, cz) => elevationField(stackSeed, cx / PILLAR_FACTOR, cz / PILLAR_FACTOR));
   gray('cWild', (cx, cz) => (wildnessAt(stackSeed, cx, cz, 0) - 0.35) / 0.35);
+  const rcv = document.getElementById('cRegion'), rctx = rcv.getContext('2d');
+  const rpx = rcv.width / 16;
+  for (let cz = 0; cz < 16; cz++) for (let cx = 0; cx < 16; cx++) {
+    const [r, g, b] = REGION_RGB[regionAtCell(stackSeed, cx, cz)];
+    rctx.fillStyle = `rgb(${r},${g},${b})`;
+    rctx.fillRect(cx * rpx, cz * rpx, rpx, rpx);
+  }
   const cv = document.getElementById('cBiome'), ctx = cv.getContext('2d');
   const px = cv.width / 16;
   for (let cz = 0; cz < 16; cz++) for (let cx = 0; cx < 16; cx++) {

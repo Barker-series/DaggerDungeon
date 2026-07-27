@@ -19,6 +19,7 @@
 
 import type { ColumnSpan } from '../types';
 import { cellSeed, mulberry32 } from './rng';
+import { regionAtCell } from './region-layer';
 import type { PillarSpec, ResolvedSocket } from './pillar-layer';
 
 const MAX_BRIDGES_PER_PAIR = 2;
@@ -42,6 +43,21 @@ const BRIDGE_SALT = 5252;
 
 const SLAB = 0.5;
 const CLEARANCE = 3.5;
+/** Enclosed PIPE crossings — sewer-scale ducts between pillars. Tighter
+ *  bore than an open walkway, sealed by a roof slab. */
+const PIPE_CHANCE = 0.35;
+const PIPE_BORE = 2.6;
+const PIPE_ROOF = 0.5;
+/** Free-standing ARCHES between crowns — the canyon-of-arches
+ *  silhouette. Pure mass, no walkway: beams the insane machines left. */
+const ARCH_SALT = 6161;
+const ARCH_CHANCE_CANYON = 0.6;
+const ARCH_CHANCE_ELSE = 0.08;
+const ARCH_THICK = 1.4;
+/** SUBWAY bores: deep roofed tunnels linking below-grade pillar pairs */
+const SUBWAY_SALT = 8383;
+const SUBWAY_CHANCE = 0.55;
+export const SUBWAY_Y = -10;
 /** Air spans thinner than this are uninhabitable and merge into solid */
 const MIN_AIR = 1.5;
 
@@ -61,6 +77,8 @@ export interface BridgeSpec {
   yA: number;
   /** Walk height at the far (neighbor's) core face */
   yB: number;
+  /** Enclosed pipe crossing: tight bore, roofed — a duct, not a walkway */
+  pipe: boolean;
 }
 
 /** Workable socket pairings for a pair, best height match first */
@@ -111,9 +129,84 @@ export function planBridges(
       Math.abs(br.yA - c.sa.yAbs) < MIN_SEPARATION ||
       Math.abs(br.yB - c.sb.yAbs) < MIN_SEPARATION)) continue;
     if (rng() > BRIDGE_CHANCE) continue;
-    bridges.push({ cx: a.cx, cz: a.cz, dir, yA: c.sa.yAbs, yB: c.sb.yAbs });
+    bridges.push({ cx: a.cx, cz: a.cz, dir, yA: c.sa.yAbs, yB: c.sb.yAbs, pipe: rng() < PIPE_CHANCE });
   }
   return bridges;
+}
+
+/**
+ * Arches OWNED by cell (cx,cz): high solid beams spanning to the east
+ * and south neighbors' crowns. Silhouette mass only — carved as solid,
+ * never walked. Canyon districts grow forests of them.
+ *
+ * WIP — NOT YET APPLIED in DungeonGenerator: carving these breaks
+ * spiral climbability on several seeds (mechanism not yet diagnosed).
+ * Resolve before wiring the apply loop back in.
+ */
+export function planOwnedArches(
+  worldSeed: number,
+  cx: number,
+  cz: number,
+  at: (cx2: number, cz2: number) => PillarSpec | null,
+): BridgeSpec[] {
+  const a = at(cx, cz);
+  if (!a) return [];
+  const out: BridgeSpec[] = [];
+  const district = regionAtCell(worldSeed, cx * 4 + 2, cz * 4 + 2);
+  const chance = district === 'canyon' ? ARCH_CHANCE_CANYON : ARCH_CHANCE_ELSE;
+  for (const dir of ['east', 'south'] as const) {
+    const b = at(dir === 'east' ? cx + 1 : cx, dir === 'south' ? cz + 1 : cz);
+    if (!b) continue;
+    const rng = mulberry32(cellSeed(cx, cz, worldSeed, ARCH_SALT + (dir === 'east' ? 0 : 1)));
+    if (rng() > chance) continue;
+    // Above BOTH pillars' walkable tops so the beam can never block a
+    // flight or an attic — pure skyline
+    const y = Math.max(a.totalHeight, b.totalHeight) + 6 + rng() * 10;
+    out.push({ cx, cz, dir, yA: y, yB: y, pipe: false });
+  }
+  return out;
+}
+
+/** Carve one ARCH tile: pure solid beam [y-ARCH_THICK, y] — air is
+ *  removed, nothing is added. */
+export function carveArchIntoColumn(spans: ColumnSpan[], y: number): ColumnSpan[] {
+  const lo = y - ARCH_THICK;
+  const out: ColumnSpan[] = [];
+  for (const s of spans) {
+    if (y <= s.floor || lo >= s.ceil) {
+      out.push(s);
+      continue;
+    }
+    if (s.floor < lo) out.push({ floor: s.floor, ceil: lo, owner: s.owner, ceilOwner: -1 });
+    if (s.ceil > y) out.push({ floor: y, ceil: s.ceil, owner: -1, ceilOwner: s.ceilOwner });
+  }
+  return out;
+}
+
+/**
+ * SUBWAY bores owned by cell (cx,cz): deep roofed tunnels at SUBWAY_Y
+ * between adjacent pillars that both continue below grade — abandoned
+ * transit lines through the foundation. Carved with the pipe profile
+ * (slab, 2.6 bore, roof), crossing whatever lies between: rock reads as
+ * a bore, a pit crossing reads as an exposed elevated duct.
+ */
+export function planOwnedSubways(
+  worldSeed: number,
+  cx: number,
+  cz: number,
+  at: (cx2: number, cz2: number) => PillarSpec | null,
+): BridgeSpec[] {
+  const a = at(cx, cz);
+  if (!a || a.baseDepth > -8) return [];
+  const out: BridgeSpec[] = [];
+  for (const dir of ['east', 'south'] as const) {
+    const b = at(dir === 'east' ? cx + 1 : cx, dir === 'south' ? cz + 1 : cz);
+    if (!b || b.baseDepth > -8) continue;
+    const rng = mulberry32(cellSeed(cx, cz, worldSeed, SUBWAY_SALT + (dir === 'east' ? 0 : 1)));
+    if (rng() > SUBWAY_CHANCE) continue;
+    out.push({ cx, cz, dir, yA: SUBWAY_Y, yB: SUBWAY_Y, pipe: true });
+  }
+  return out;
 }
 
 /** Accessor for a pillar spec by cell — how the guarantee reads its
@@ -167,7 +260,9 @@ function forcedBridge(
   if (!isFirstEligible(a) && !isFirstEligible(b)) return null;
   const best = pairCandidates(a, b, dir, FORCED_MAX_DY)[0];
   if (!best) return null;
-  return { cx: a.cx, cz: a.cz, dir, yA: best.sa.yAbs, yB: best.sb.yAbs };
+  // Forced (guarantee) bridges are never pipes: the one guaranteed
+  // route onto a pillar should read as an open walkway
+  return { cx: a.cx, cz: a.cz, dir, yA: best.sa.yAbs, yB: best.sb.yAbs, pipe: false };
 }
 
 /**
@@ -216,9 +311,10 @@ export function bridgeTiles(br: BridgeSpec): { tx: number; tz: number; h: number
  * air [h, h+CLEARANCE]. Existing air is split around the slab; carving
  * through solid opens a passage. New surfaces are structural rock.
  */
-export function carveBridgeIntoColumn(spans: ColumnSpan[], h: number): ColumnSpan[] {
+export function carveBridgeIntoColumn(spans: ColumnSpan[], h: number, pipe = false): ColumnSpan[] {
   const slabLo = h - SLAB;
   const slabHi = h;
+  const bore = pipe ? PIPE_BORE : CLEARANCE;
 
   // Where the existing ground is already at bridge height (rolling
   // outdoor terrain, plaza edges), the terrain IS the bridge — slicing
@@ -240,8 +336,26 @@ export function carveBridgeIntoColumn(spans: ColumnSpan[], h: number): ColumnSpa
     split.push({ floor: slabHi, ceil: s.ceil, owner: -1, ceilOwner: s.ceilOwner });
   }
 
+  // A pipe seals itself: remove any air crossing the roof band, so the
+  // tube reads as a duct from outside instead of an open trough
+  if (pipe) {
+    const roofLo = slabHi + bore;
+    const roofHi = roofLo + PIPE_ROOF;
+    const roofed: ColumnSpan[] = [];
+    for (const s of split) {
+      if (roofHi <= s.floor || roofLo >= s.ceil) {
+        roofed.push(s);
+        continue;
+      }
+      if (s.floor < roofLo) roofed.push({ floor: s.floor, ceil: roofLo, owner: s.owner, ceilOwner: -1 });
+      if (s.ceil > roofHi) roofed.push({ floor: roofHi, ceil: s.ceil, owner: -1, ceilOwner: s.ceilOwner });
+    }
+    split.length = 0;
+    split.push(...roofed);
+  }
+
   // Guarantee the walk clearance exists (carves a passage through solid)
-  split.push({ floor: slabHi, ceil: slabHi + CLEARANCE, owner: -1, ceilOwner: -1 });
+  split.push({ floor: slabHi, ceil: slabHi + bore, owner: -1, ceilOwner: -1 });
 
   // Merge overlaps, drop crushed slivers
   split.sort((p, q) => p.floor - q.floor);

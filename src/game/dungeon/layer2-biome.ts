@@ -34,6 +34,7 @@
 import { getAllCells } from './cells';
 import { sampleNoise3D } from './noise';
 import { elevationField, PILLAR_FACTOR } from './pillar-layer';
+import { regionAtCell, regionPalette } from './region-layer';
 
 const WILDNESS_SCALE = 3; // cells per region feature
 const DEPTH_SCALE = 4;
@@ -46,14 +47,9 @@ const WARP_AMP = 1.6;
 /** How much of wildness comes from the shared elevation field */
 const ELEVATION_MIX = 0.3;
 
-// Thresholds are PERCENTILES of the field distribution, retuned after the
-// octave/warp/elevation change (fbm compresses variance toward 0.5) to
-// hold the shipped biome proportions:
-//   dungeon ~40%, crypt/cave/outside ~18% each, ember ~5%
-const ORGANIC_THRESHOLD = 0.525; // above = cave/ember/outside
-const OUTSIDE_THRESHOLD = 0.612; // wildness beyond this breaks the surface
-const CRYPT_THRESHOLD = 0.572; // built cells above this depth = crypt
-const EMBER_THRESHOLD = 0.605; // organic cells above this depth = ember
+// Thresholds are PERCENTILES of the field distribution. Since the
+// region layer, these come from the cell's DISTRICT (region-layer.ts
+// palettes) — the 'frontier' palette holds the old global values.
 
 /** Three-octave fractal noise: big layer sculpts regions, smaller ones
  *  give the boundary its coastline. y (level drift) stays unscaled so
@@ -107,13 +103,15 @@ export function assignBiomes(_cellTileSize: number, stackSeed: number, level: nu
 
     const wildness = wildnessAt(stackSeed, cell.cx, cell.cz, level);
     const depth = fbm3(cell.cx / DEPTH_SCALE, y, cell.cz / DEPTH_SCALE, depthSeed);
+    // The district's zoning: same continuous fields, region thresholds
+    const pal = regionPalette(regionAtCell(stackSeed, cell.cx, cell.cz));
 
-    if (wildness > OUTSIDE_THRESHOLD) {
+    if (wildness > pal.outside) {
       cell.biome = level === 0 ? 'outside' : 'cave';
-    } else if (wildness > ORGANIC_THRESHOLD) {
-      cell.biome = depth > EMBER_THRESHOLD ? 'ember' : 'cave';
+    } else if (wildness > pal.organic) {
+      cell.biome = depth > pal.ember ? 'ember' : 'cave';
     } else {
-      cell.biome = depth > CRYPT_THRESHOLD ? 'crypt' : 'dungeon';
+      cell.biome = depth > pal.crypt ? 'crypt' : 'dungeon';
     }
   }
 }

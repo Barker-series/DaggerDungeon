@@ -67,8 +67,11 @@ for (const seed of SEEDS) {
         const tx = x0 + dx;
         const tz = z0 + dz;
         if (tx >= W || tz >= W) continue;
+        // Climb target: highest habitable floor ON the structure (ring
+        // 13..42). Gap columns hold arches — skyline mass, never walked.
+        const onRing = dx >= 13 && dx <= 42 && dz >= 13 && dz <= 42;
         for (const s of world.columns[tz * W + tx]!) {
-          if (s.ceil - s.floor >= 1.5 && s.floor > targetY && s.floor < 200) targetY = s.floor;
+          if (onRing && s.ceil - s.floor >= 1.5 && s.floor > targetY && s.floor < 1e8) targetY = s.floor;
           if (s.floor > -2 && s.floor < 2 && s.ceil - s.floor >= 1.5) {
             const k = `${tx},${tz},${s.floor.toFixed(2)}`;
             if (!seen.has(k)) { seen.add(k); queue.push([tx, tz, s.floor]); }

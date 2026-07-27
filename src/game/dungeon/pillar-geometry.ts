@@ -25,7 +25,9 @@
 
 import type { PillarSpec, PlacedChunk } from './pillar-layer';
 
-/** Below the deepest rendered abyss — pillars never float */
+/** Baseline foundation reach below grade — pillars never float. Deep
+ *  wells extend it: the per-pillar bottom is min(this, baseDepth - 8),
+ *  so the foundation always continues below the deepest landing. */
 const FOUNDATION_BOTTOM = -40;
 /** Air gaps thinner than this merge back into solid (uncrawlable) */
 const MIN_AIR = 1.5;
@@ -270,6 +272,55 @@ function chunkSolids(
       }
       break;
 
+    case 'residential': {
+      // Kowloon-compressed strata: low stacked floors filling the core,
+      // each with a doorway slit onto the ramp band where the flight
+      // passes that floor's height. Cramped by design — 2.0 headroom.
+      const PITCH = 2.5;
+      const floors = Math.floor((placed.def.height - 1) / PITCH); // roof takes the rest
+      const deepRes = b < 0;
+      eachTile(FULL.lo, FULL.hi, (x, z) => {
+        const perimeter = x === FULL.lo || x === FULL.hi || z === FULL.lo || z === FULL.hi;
+        for (let f = 0; f < floors; f++) {
+          const fy = b + f * PITCH;
+          if (perimeter) {
+            // Band-side doorway slit: where the flight outside is within
+            // a step of this floor, the wall opens (pre-rot north face,
+            // z = FULL.lo — the ramp band runs just outside it)
+            const tread = Math.max(0, x - RING.lo - 2) * RAMP_RISE;
+            const door = z === FULL.lo && Math.abs(tread - f * PITCH) <= 0.65
+              && x >= RING.lo + 2 && x <= RING.hi - 2;
+            if (door) {
+              addSolid(solids, x, z, k, fy, fy + SLAB);
+              addClear(solids, x, z, k, fy + SLAB, fy + PITCH, deepRes);
+            } else {
+              addSolid(solids, x, z, k, fy, fy + PITCH);
+            }
+          } else {
+            addSolid(solids, x, z, k, fy, fy + SLAB);
+            if (deepRes) addClear(solids, x, z, k, fy + SLAB, fy + PITCH, true);
+            else addAllow(solids, x, z, k, fy + SLAB, fy + PITCH);
+          }
+        }
+        // Roof plate seals the top stratum to the chunk top
+        addSolid(solids, x, z, k, b + floors * PITCH, top);
+      });
+      break;
+    }
+
+    case 'vent': {
+      // Full core threaded by a crawl duct: north-south at x 27-28,
+      // 2.0 tall off the chunk base. Both ends open through the faces.
+      const deepV = b < 0;
+      eachTile(FULL.lo, FULL.hi, (x, z) => addSolid(solids, x, z, k, b, top));
+      for (let z = FULL.lo; z <= FULL.hi; z++) {
+        for (const x of [27, 28]) {
+          addClear(solids, x, z, k, b + SLAB, b + SLAB + 2, deepV);
+        }
+      }
+      break;
+    }
+
     case 'crown':
       // Solid cap — its top face is the rooftop
       eachTile(FULL.lo, FULL.hi, (x, z) => addSolid(solids, x, z, k, b, top));
@@ -332,6 +383,7 @@ export function pillarAirSpans(
 ): Map<string, AirSpanLite[]> {
   const out = new Map<string, AirSpanLite[]>();
   const capTop = spec.totalHeight + CROWN_HEADROOM;
+  const foundationBottom = Math.min(FOUNDATION_BOTTOM, spec.baseDepth - 8);
   for (const [k, t] of collectSolids(spec, flattenCrownRamp)) {
     const [lx, lz] = k.split(',').map(Number);
     const ground = Math.max(0, groundAt?.(lx!, lz!) ?? 0);
@@ -340,7 +392,7 @@ export function pillarAirSpans(
     // plinth. Air is the complement of the solids within
     // [foundation, capTop]; above capTop stays solid.
     const intervals: [number, number][] = [
-      [FOUNDATION_BOTTOM, ground],
+      [foundationBottom, ground],
       ...t.intervals,
     ];
     intervals.sort((a, b) => a[0] - b[0]);
@@ -360,7 +412,7 @@ export function pillarAirSpans(
     // render abyss); surface clears never cut below grade.
     const punches: [number, number][] = [
       ...t.clear.map(([lo, hi]) => [Math.max(lo, ground), hi] as [number, number]),
-      ...t.clearDeep.map(([lo, hi]) => [Math.max(lo, FOUNDATION_BOTTOM + 4), hi] as [number, number]),
+      ...t.clearDeep.map(([lo, hi]) => [Math.max(lo, foundationBottom + 4), hi] as [number, number]),
     ];
     for (const [clo, chi] of punches) {
       if (chi <= clo + 0.01) continue;
@@ -377,7 +429,7 @@ export function pillarAirSpans(
     }
 
     let air: AirSpanLite[] = [];
-    let hi = FOUNDATION_BOTTOM;
+    let hi = foundationBottom;
     for (const [lo, up] of merged) {
       if (lo > hi && lo - hi >= MIN_AIR) air.push({ floor: hi, ceil: lo });
       hi = Math.max(hi, up);
@@ -390,7 +442,7 @@ export function pillarAirSpans(
     const cap = capAt?.(lx!, lz!) ?? null;
     if (cap !== null) {
       const allowed: [number, number][] = [
-        [FOUNDATION_BOTTOM, cap],
+        [foundationBottom, cap],
         [spec.totalHeight, capTop],
         ...t.clear,
         ...t.clearDeep,

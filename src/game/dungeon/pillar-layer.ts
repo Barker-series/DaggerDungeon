@@ -25,6 +25,7 @@
 
 import { cellSeed, mulberry32 } from './rng';
 import { sampleNoise } from './noise';
+import { regionAtCell } from './region-layer';
 import {
   CHUNK_BY_ID, CHUNK_LIBRARY,
   type ChunkSocket, type PillarChunkDef, type SocketFace,
@@ -45,6 +46,15 @@ const VOID_THRESHOLD = 0.18;
 const HEIGHT_NOISE_SCALE = 3;
 const MIN_HEIGHT = 36;
 const MAX_HEIGHT = 80;
+/** HEAVY TAIL — the slab-breakers. A few pillars ignore the common
+ *  range: supertowers climbing far beyond the skyline (likelier in
+ *  city districts) and wells sinking far below the foundation line
+ *  (likelier in machine districts). The megastructure has no uniform
+ *  ceiling; render clips derive from what actually got built. */
+const TOWER_TAIL_CHANCE = 0.04;
+const TOWER_TAIL_MAX_MULT = 3;
+const WELL_TAIL_CHANCE = 0.05;
+const WELL_TAIL_MAX_MULT = 2.5;
 /** Below-grade reach. ~45% of pillars stay surface-only; the rest sink
  *  8..32 units of stacked chunks into the foundation (which bottoms out
  *  at -40, so the deepest shaft keeps margin). */
@@ -149,21 +159,49 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
 
   const rng = mulberry32(cellSeed(pcx, pcz, worldSeed, PILLAR_SALT));
   const heightNoise = elevationField(worldSeed, pcx, pcz);
-  const targetHeight = MIN_HEIGHT + heightNoise * (MAX_HEIGHT - MIN_HEIGHT);
+  let targetHeight = MIN_HEIGHT + heightNoise * (MAX_HEIGHT - MIN_HEIGHT);
   // The DOWN direction has its own smooth field, so sunken districts
   // cluster the way tall districts do
   const downNoise = sampleNoise(pcx, pcz, worldSeed + 606, HEIGHT_NOISE_SCALE);
-  const targetDown = downNoise < DOWN_THRESHOLD
+  let targetDown = downNoise < DOWN_THRESHOLD
     ? 0
     : MIN_DOWN + ((downNoise - DOWN_THRESHOLD) / (1 - DOWN_THRESHOLD)) * (MAX_DOWN - MIN_DOWN);
+  // Heavy tails, weighted by district: the city grows supertowers,
+  // the machine sinks the deepest wells. rng draws happen for every
+  // pillar so the stream stays aligned regardless of district.
+  const district = regionAtCell(worldSeed, pcx * PILLAR_FACTOR + 2, pcz * PILLAR_FACTOR + 2);
+  const towerRoll = rng();
+  const towerMult = rng();
+  const wellRoll = rng();
+  const wellMult = rng();
+  const towerChance = TOWER_TAIL_CHANCE * (district === 'city' ? 2 : district === 'canyon' ? 0.5 : 1);
+  const wellChance = WELL_TAIL_CHANCE * (district === 'machine' ? 2 : 1);
+  if (towerRoll < towerChance) {
+    targetHeight *= 1.5 + towerMult * (TOWER_TAIL_MAX_MULT - 1.5);
+  }
+  if (targetDown > 0 && wellRoll < wellChance) {
+    targetDown *= 1.4 + wellMult * (WELL_TAIL_MAX_MULT - 1.4);
+  }
 
   const crown = CHUNK_BY_ID.get('crown')!;
   const pickable = CHUNK_LIBRARY.filter((c) => c.weight > 0);
-  const totalWeight = pickable.reduce((s, c) => s + c.weight, 0);
+  // Districts zone their meats: the city stacks compressed residential,
+  // the machine favors plain mass and express shafts, the canyon grows
+  // plaza terraces. Multipliers, not hard bans — every meat can appear
+  // anywhere, the district shifts the odds.
+  const DISTRICT_MULT: Record<string, Record<string, number>> = {
+    city: { residential: 3, gallery: 1.5, terrace: 1, plain: 0.7, shaft: 0.7 },
+    machine: { plain: 1.5, shaft: 1.5, gallery: 1, terrace: 0.6, residential: 0.3 },
+    canyon: { terrace: 2, plain: 1, shaft: 1, gallery: 0.8, residential: 0.5 },
+    frontier: {},
+  };
+  const mult = DISTRICT_MULT[district] ?? {};
+  const weightOf = (c: PillarChunkDef): number => c.weight * (mult[c.id] ?? 1);
+  const totalWeight = pickable.reduce((s, c) => s + weightOf(c), 0);
   const pick = (): PillarChunkDef => {
     let r = rng() * totalWeight;
     for (const c of pickable) {
-      r -= c.weight;
+      r -= weightOf(c);
       if (r <= 0) return c;
     }
     return pickable[pickable.length - 1]!;
@@ -181,11 +219,10 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   // exactly ON grade so the at-grade chunk owns the ground entry ──
   const downDefs: PillarChunkDef[] = [];
   let depth = 0;
-  while (depth < targetDown && depth + 8 <= MAX_DOWN + 2) {
+  while (depth < targetDown) {
     const def = downDefs.length === 0 ? CHUNK_BY_ID.get('plain')! : pickDeep();
     downDefs.push(def); // [0] is the BOTTOM chunk — always 'landings'
     depth += def.height;
-    if (depth > MAX_DOWN + 4) { depth -= def.height; downDefs.pop(); break; }
   }
   const downTotal = downDefs.reduce((a, c) => a + c.height, 0);
 

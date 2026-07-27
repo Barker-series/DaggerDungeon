@@ -38,7 +38,11 @@ import { computeHeightFields, computePitMask, PIT_FLOOR } from './dungeon/layer6
 import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, type PillarSpec } from './dungeon/pillar-layer';
 import { pillarFootprint, pillarAirSpans } from './dungeon/pillar-geometry';
-import { planOwnedBridges, bridgeTiles, carveBridgeIntoColumn, type BridgeSpec } from './dungeon/pillar-bridges';
+import {
+  planOwnedBridges, planOwnedSubways,
+  bridgeTiles, carveBridgeIntoColumn,
+  type BridgeSpec,
+} from './dungeon/pillar-bridges';
 
 // ── Config ──
 
@@ -262,10 +266,24 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   for (const spec of pillars.values()) {
     bridges.push(...planOwnedBridges(stackSeed, spec.cx, spec.cz, specAt));
   }
+  // Subways: deep bores between below-grade pillars, riding the same
+  // pair machinery. (Canyon ARCHES are planned in pillar-bridges but
+  // NOT yet applied: carving them breaks spiral climbability on some
+  // seeds — unresolved; see planOwnedArches.)
+  const subways: BridgeSpec[] = [];
+  for (const spec of pillars.values()) {
+    subways.push(...planOwnedSubways(stackSeed, spec.cx, spec.cz, specAt));
+  }
+  for (const sw of subways) {
+    for (const { tx, tz, h } of bridgeTiles(sw)) {
+      if (tx < 0 || tz < 0 || tx >= GRID_TILES || tz >= GRID_TILES) continue;
+      columns[tz * GRID_TILES + tx] = carveBridgeIntoColumn(columns[tz * GRID_TILES + tx]!, h, true);
+    }
+  }
   for (const br of bridges) {
     for (const { tx, tz, h } of bridgeTiles(br)) {
       if (tx < 0 || tz < 0 || tx >= GRID_TILES || tz >= GRID_TILES) continue;
-      columns[tz * GRID_TILES + tx] = carveBridgeIntoColumn(columns[tz * GRID_TILES + tx]!, h);
+      columns[tz * GRID_TILES + tx] = carveBridgeIntoColumn(columns[tz * GRID_TILES + tx]!, h, br.pipe);
     }
   }
 
