@@ -8,11 +8,17 @@ import { MobileControls } from './MobileControls';
 import { AutoPlayPanel } from './AutoPlayPanel';
 import { DebugMap } from './DebugMap';
 import { SettingsMenu } from './SettingsMenu';
+import { VisualLab } from './VisualLab';
+import {
+  DEFAULT_VISUAL_SETTINGS,
+  type VisualSettings,
+} from '../engine/PostProcessing';
 import type { InputAction } from '../engine/InputManager';
 
 const BRIGHTNESS_KEY = 'dagger-dungeon-brightness';
 const SENSITIVITY_KEY = 'dagger-dungeon-mouse-sensitivity';
 const PLAYER_SPEED_KEY = 'dagger-dungeon-player-speed';
+const VISUAL_SETTINGS_KEY = 'dagger-dungeon-visual-settings-v4';
 const DEFAULT_BRIGHTNESS = 1.2;
 const DEFAULT_MOUSE_SENSITIVITY = 1;
 const DEFAULT_PLAYER_SPEED = 1;
@@ -22,12 +28,42 @@ function loadSetting(key: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function clampVisual(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(max, Math.max(min, value))
+    : fallback;
+}
+
+function loadVisualSettings(): VisualSettings {
+  try {
+    const saved = JSON.parse(localStorage.getItem(VISUAL_SETTINGS_KEY) ?? '');
+    if (saved.version !== 4) return { ...DEFAULT_VISUAL_SETTINGS };
+    return {
+      ...DEFAULT_VISUAL_SETTINGS,
+      ...saved,
+      version: 4,
+      bloomStrength: clampVisual(saved.bloomStrength, 0, 1, DEFAULT_VISUAL_SETTINGS.bloomStrength),
+      bloomRadius: clampVisual(saved.bloomRadius, 0, 1, DEFAULT_VISUAL_SETTINGS.bloomRadius),
+      bloomThreshold: clampVisual(saved.bloomThreshold, 0, 0.25, DEFAULT_VISUAL_SETTINGS.bloomThreshold),
+      contrast: clampVisual(saved.contrast, 0.8, 1.2, DEFAULT_VISUAL_SETTINGS.contrast),
+      saturation: clampVisual(saved.saturation, 0, 1.5, DEFAULT_VISUAL_SETTINGS.saturation),
+      vignette: clampVisual(saved.vignette, 0, 0.5, DEFAULT_VISUAL_SETTINGS.vignette),
+    };
+  } catch {
+    return { ...DEFAULT_VISUAL_SETTINGS };
+  }
+}
+
 export function GameScreen() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
   const [pointerLocked, setPointerLocked] = useState(false);
   const [pointerLockUnavailable, setPointerLockUnavailable] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [visualLabOpen, setVisualLabOpen] = useState(false);
+  const [notice, setNotice] = useState('');
+  const noticeTimerRef = useRef<number | null>(null);
+  const [visualSettings, setVisualSettings] = useState(loadVisualSettings);
   const [brightness, setBrightness] = useState(() => loadSetting(BRIGHTNESS_KEY, DEFAULT_BRIGHTNESS));
   const [mouseSensitivity, setMouseSensitivity] = useState(() =>
     loadSetting(SENSITIVITY_KEY, DEFAULT_MOUSE_SENSITIVITY),
@@ -40,7 +76,11 @@ export function GameScreen() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const engine = new GameEngine(canvas);
+    const engine = new GameEngine(canvas, (message) => {
+      setNotice(message);
+      if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = window.setTimeout(() => setNotice(''), 1800);
+    });
     engineRef.current = engine;
     if (import.meta.env.DEV) {
       (window as unknown as { __engine?: GameEngine }).__engine = engine;
@@ -59,6 +99,7 @@ export function GameScreen() {
     return () => {
       engine.stop();
       engineRef.current = null;
+      if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
       document.removeEventListener('pointerlockchange', onLockChange);
     };
   }, []);
@@ -78,6 +119,11 @@ export function GameScreen() {
     localStorage.setItem(PLAYER_SPEED_KEY, String(playerSpeed));
   }, [playerSpeed]);
 
+  useEffect(() => {
+    engineRef.current?.setVisualSettings(visualSettings);
+    localStorage.setItem(VISUAL_SETTINGS_KEY, JSON.stringify(visualSettings));
+  }, [visualSettings]);
+
   const setPaused = useCallback((paused: boolean) => {
     setSettingsOpen(paused);
     engineRef.current?.setPaused(paused);
@@ -88,6 +134,11 @@ export function GameScreen() {
     const onEscape = (event: KeyboardEvent) => {
       if (event.code !== 'Escape' || event.repeat) return;
       event.preventDefault();
+      if (visualLabOpen) {
+        setVisualLabOpen(false);
+        engineRef.current?.setPaused(false);
+        return;
+      }
       setSettingsOpen((open) => {
         const next = !open;
         engineRef.current?.setPaused(next);
@@ -97,7 +148,22 @@ export function GameScreen() {
     };
     window.addEventListener('keydown', onEscape);
     return () => window.removeEventListener('keydown', onEscape);
-  }, []);
+  }, [visualLabOpen]);
+
+  useEffect(() => {
+    const onVisualLabKey = (event: KeyboardEvent) => {
+      if (event.code !== 'KeyV' || event.repeat || settingsOpen) return;
+      event.preventDefault();
+      setVisualLabOpen((open) => {
+        const next = !open;
+        engineRef.current?.setPaused(next);
+        if (next && document.pointerLockElement) document.exitPointerLock();
+        return next;
+      });
+    };
+    window.addEventListener('keydown', onVisualLabKey);
+    return () => window.removeEventListener('keydown', onVisualLabKey);
+  }, [settingsOpen]);
 
   const handleMobileAction = useCallback((action: string) => {
     engineRef.current?.pushAction(action as InputAction);
@@ -148,7 +214,7 @@ export function GameScreen() {
       <canvas ref={canvasRef} className="game-canvas" />
 
       {/* Click-to-play overlay when pointer not locked */}
-      {!settingsOpen && !pointerLocked && !pointerLockUnavailable && (
+      {!settingsOpen && !visualLabOpen && !pointerLocked && !pointerLockUnavailable && (
         <div
           className="pointer-lock-overlay"
           onClick={handlePlayClick}
@@ -157,7 +223,7 @@ export function GameScreen() {
           <div className="pointer-lock-hint">Escape to release mouse</div>
         </div>
       )}
-      {!settingsOpen && pointerLockUnavailable && (
+      {!settingsOpen && !visualLabOpen && pointerLockUnavailable && (
         <div className="pointer-lock-hint pointer-lock-fallback">
           Mouse capture is unavailable here — keyboard controls remain active
         </div>
@@ -169,6 +235,30 @@ export function GameScreen() {
       <MobileControls onAction={handleMobileAction} />
       <AutoPlayPanel />
       <DebugMap />
+      {!settingsOpen && !visualLabOpen && (
+        <button
+          className="visual-lab-toggle"
+          type="button"
+          onClick={() => {
+            setVisualLabOpen(true);
+            engineRef.current?.setPaused(true);
+            if (document.pointerLockElement) document.exitPointerLock();
+          }}
+        >
+          Visual Lab
+        </button>
+      )}
+      {visualLabOpen && (
+        <VisualLab
+          settings={visualSettings}
+          onChange={setVisualSettings}
+          onClose={() => {
+            setVisualLabOpen(false);
+            engineRef.current?.setPaused(false);
+          }}
+        />
+      )}
+      {notice && <div className="game-notice" role="status">{notice}</div>}
       {settingsOpen && (
         <SettingsMenu
           brightness={brightness}
@@ -182,7 +272,7 @@ export function GameScreen() {
         />
       )}
       <div className="controls-hint">
-        WASD move | Space jump | Ctrl crouch | Shift sprint | F interact | R respawn | P auto | Esc settings | ` debug map | F8 snapshot | LMB mark bug / RMB unmark
+        WASD move | Space jump | Ctrl crouch | Shift sprint | F interact | R respawn | P auto | V visual lab | Esc settings | ` debug map | F8 snapshot | LMB mark bug / RMB unmark
       </div>
     </div>
   );

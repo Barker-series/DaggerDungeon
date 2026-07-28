@@ -14,6 +14,12 @@ import { useGameStore } from '../store/gameStore';
 import { TileType, Direction, TILE_SIZE, EYE_HEIGHT, ABYSS_FLOOR } from '../game/types';
 import type { DungeonData, WorldData } from '../game/types';
 import type { WorldWorkerRequest } from '../game/world-worker';
+import {
+  PostProcessing,
+  type VisualSettings,
+  type RenderDebugMode,
+} from './PostProcessing';
+import { copyText } from '../utils/copyText';
 
 const MOVE_SPEED = 7;
 const SPRINT_MULT = 1.6;
@@ -49,6 +55,7 @@ const _moveDir = { x: 0, y: 0 };
 
 export class GameEngine {
   private renderer: THREE.WebGLRenderer;
+  private postProcessing: PostProcessing;
   private scene: THREE.Scene;
   private threeCamera: THREE.PerspectiveCamera;
   private timer: THREE.Timer;
@@ -98,8 +105,23 @@ export class GameEngine {
    *  so the viewer highlights the exact geometry being reported */
   private marks: { pos: THREE.Vector3; mesh: THREE.Mesh }[] = [];
   private playerSpeedMultiplier = 1;
+  private debugMaterials: Record<Exclude<RenderDebugMode, 'lit'>, THREE.Material> = {
+    // Generated world surfaces intentionally use mixed winding and render
+    // DoubleSide in the production materials. Debug overrides must preserve
+    // that visibility contract or valid floors/walls appear transparent.
+    solid: new THREE.MeshBasicMaterial({ color: 0xb8b2a8, side: THREE.DoubleSide }),
+    wireframe: new THREE.MeshBasicMaterial({
+      color: 0xd4a44a,
+      wireframe: true,
+      side: THREE.DoubleSide,
+    }),
+    normals: new THREE.MeshNormalMaterial({ side: THREE.DoubleSide }),
+  };
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    private onNotice: (message: string) => void = () => {},
+  ) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -111,6 +133,7 @@ export class GameEngine {
 
     // Far plane covers a full look down (or up) a multi-level shaft
     this.threeCamera = new THREE.PerspectiveCamera(75, 1, 0.1, 160);
+    this.postProcessing = new PostProcessing(this.renderer, this.scene, this.threeCamera);
     this.gridCamera = new GridCamera(this.threeCamera);
     this.gridCamera.attach(canvas);
 
@@ -212,8 +235,8 @@ export class GameEngine {
       }),
     })}`;
     console.log('[snapshot]', snap);
-    void navigator.clipboard?.writeText(snap).catch(() => {
-      /* clipboard unavailable — the console log above still has it */
+    void copyText(snap).then((copied) => {
+      this.onNotice(copied ? 'Snapshot copied' : 'Snapshot copy failed');
     });
   };
 
@@ -223,6 +246,7 @@ export class GameEngine {
     const w = parent.clientWidth;
     const h = parent.clientHeight;
     this.renderer.setSize(w, h);
+    this.postProcessing.setSize(w, h);
     this.threeCamera.aspect = w / h;
     this.threeCamera.updateProjectionMatrix();
   };
@@ -602,7 +626,7 @@ export class GameEngine {
       this.timer.update(timestamp);
       const dt = Math.min(this.timer.getDelta(), 0.1);
       if (!this.paused) this.update(dt);
-      this.renderer.render(this.scene, this.threeCamera);
+      this.postProcessing.render(dt);
     };
     // Store the FIRST frame's id too — stop() before the first frame fires
     // (React StrictMode does exactly this) must not leave a zombie loop
@@ -617,6 +641,8 @@ export class GameEngine {
     window.removeEventListener('keydown', this.handleSnapshotKey);
     window.removeEventListener('mousedown', this.handleMarkClick);
     this.sprites.dispose();
+    this.postProcessing.dispose();
+    for (const material of Object.values(this.debugMaterials)) material.dispose();
     window.removeEventListener('resize', this.handleResize);
     this.renderer.dispose();
     this.worldWorker.terminate();
@@ -637,6 +663,13 @@ export class GameEngine {
 
   setPlayerSpeed(multiplier: number): void {
     this.playerSpeedMultiplier = multiplier;
+  }
+
+  setVisualSettings(settings: VisualSettings): void {
+    this.postProcessing.apply(settings);
+    this.scene.overrideMaterial = settings.renderMode === 'lit'
+      ? null
+      : this.debugMaterials[settings.renderMode];
   }
 
   private update(dt: number): void {
