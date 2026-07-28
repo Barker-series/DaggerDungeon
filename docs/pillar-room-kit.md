@@ -52,7 +52,8 @@ An interior is valid only when:
 
 ### Residential corridor
 
-- Three storeys per residential chunk.
+- Two storeys per residential chunk; additional chunks stack without forcing
+  too many door landings into one exterior stair run.
 - Continuous two-tile north/south corridor.
 - Two room wings on each side of the corridor.
 - Paired doors from the corridor into the wings.

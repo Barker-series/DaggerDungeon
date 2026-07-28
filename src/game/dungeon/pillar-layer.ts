@@ -30,6 +30,10 @@ import {
   CHUNK_BY_ID, CHUNK_LIBRARY,
   type ChunkSocket, type PillarChunkDef, type SocketFace,
 } from './pillar-chunks';
+import {
+  roomSocketsForChunks,
+  type PillarRoomSocket,
+} from './pillar-rooms';
 
 // ── The coarse grid ──
 
@@ -156,6 +160,8 @@ export interface PillarSpec {
   elevator: boolean;
   chunks: PlacedChunk[];
   sockets: ResolvedSocket[];
+  /** Authored navigation contract for gallery/residential interiors. */
+  roomSockets: PillarRoomSocket[];
 }
 
 const FACE_ORDER: readonly SocketFace[] = ['north', 'east', 'south', 'west'];
@@ -301,7 +307,10 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   let y = 0;
   if (!well) {
     while (y + crown.height < targetHeight) {
-      const def = pick();
+      // Grade is where rolling terrain meets authored structure. Always use
+      // the tolerant terrace transfer here; fixed-height gallery/residential
+      // doorways start above it instead of being half-buried by the ground.
+      const def = upDefs.length === 0 ? CHUNK_BY_ID.get('terrace')! : pick();
       upDefs.push(def);
       y += def.height;
     }
@@ -334,6 +343,7 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
     cx: pcx, cz: pcz, acx: pcx, acz: pcz,
     totalHeight: base, baseDepth: -downTotal,
     elevator, chunks, sockets,
+    roomSockets: elevator ? [] : roomSocketsForChunks(chunks),
   };
 }
 

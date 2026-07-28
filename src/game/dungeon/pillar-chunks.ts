@@ -69,8 +69,8 @@ export const CHUNK_LIBRARY: PillarChunkDef[] = [
   // stop. (Corners MUST stay flat: a climbing tread in the shared square
   // gets erased by the neighboring flight's headroom punch.)
   { id: 'shaft', height: 13.8, weight: 2 },
-  // Three 4.5-unit storeys aligned to the shared room-module contract.
-  { id: 'residential', height: 14.5, weight: 2 },
+  // Two 4.5-unit storeys plus roof mass, with authored stair landings.
+  { id: 'residential', height: 10, weight: 2 },
   // Solid mass threaded by a 2-wide, 2-tall crawl duct at base height,
   // open on two opposite faces — some enterable from an adjacent plaza,
   // some just dark slots glimpsed under the passing stairs

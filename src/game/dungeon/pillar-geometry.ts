@@ -27,6 +27,8 @@ import type { PillarSpec, PlacedChunk } from './pillar-layer';
 import {
   isResidentialRoomDoor,
   isWindowBay,
+  residentialDoorStart,
+  residentialRampSurface,
   ROOM_MODULE,
 } from './pillar-rooms';
 
@@ -82,6 +84,10 @@ const key = (lx: number, lz: number): string => `${lx},${lz}`;
 
 interface TileSolids {
   intervals: [number, number][];
+  /** Structural floors restored after all cross-chunk clearance punches.
+   *  Use sparingly for authored transfer landings whose walkable surface is
+   *  part of the navigation contract, never for generic room slabs. */
+  protected: [number, number][];
   /** PUNCHING clearances — subtracted from the solids AFTER merging.
    *  Ramp headroom cuts through whatever hangs overhead (plaza slabs,
    *  roof plates): the opening is the stair opening. Also count as
@@ -107,7 +113,7 @@ function tileAt(solids: Map<string, TileSolids>, lx: number, lz: number, k: numb
   const [x, z] = rot(lx, lz, k);
   let t = solids.get(key(x, z));
   if (!t) {
-    t = { intervals: [], clear: [], allow: [], clearDeep: [] };
+    t = { intervals: [], protected: [], clear: [], allow: [], clearDeep: [] };
     solids.set(key(x, z), t);
   }
   return t;
@@ -119,6 +125,16 @@ function addSolid(
   lo: number, hi: number,
 ): void {
   tileAt(solids, lx, lz, k).intervals.push([lo, hi]);
+}
+
+function addProtectedSolid(
+  solids: Map<string, TileSolids>,
+  lx: number, lz: number, k: number,
+  lo: number, hi: number,
+): void {
+  const t = tileAt(solids, lx, lz, k);
+  t.intervals.push([lo, hi]);
+  t.protected.push([lo, hi]);
 }
 
 function addClear(
@@ -184,7 +200,9 @@ function rampSolids(
     // is what merges with the previous chunk's exit landing in the shared
     // 3x3 corner square. Both corner squares must stay flat — a climbing
     // tread there gets erased by the neighbor flight's headroom punch.
-    const surface = b + Math.min(h, Math.max(0, i - landingEnd) * rise);
+    const surface = placed.def.id === 'residential'
+      ? residentialRampSurface(b, i)
+      : b + Math.min(h, Math.max(0, i - landingEnd) * rise);
     const clearTop = Math.min(surface + RAMP_CLEARANCE, b + h + LANDING_CLEARANCE);
     for (let z = RING.lo; z <= RING.lo + 2; z++) {
       addSolid(solids, RING.lo + i, z, k, surface - RAMP_SLAB, surface);
@@ -287,14 +305,17 @@ function chunkSolids(
           addSolid(solids, x, z, k, b, top);
         }
       });
-      // Flat apron wraps from the ramp's corner square to the west-façade
-      // doorway. This is one continuous authored transfer, not a jump from
-      // the stairs into an arbitrary wall opening.
-      for (let z = RING.lo; z < FULL.lo + 2 + ROOM_MODULE.doorTiles; z++) {
-        for (let x = RING.lo; x < FULL.lo; x++) {
-          addSolid(solids, x, z, k, b, b + SLAB);
-          addAllow(solids, x, z, k, b + SLAB, b + SLAB + 3.5);
-        }
+      // The spiral owns its 3x3 corner landing. From its inside edge, a flat
+      // structural apron wraps to the west-façade doorway. The apron is a
+      // protected navigation transfer: another chunk's broad headroom punch
+      // may clear above it, but may not erase its floor.
+      for (let z = FULL.lo; z < FULL.lo + 2 + ROOM_MODULE.doorTiles; z++) {
+        // Only the inner-edge strip is circulation. Keeping the two outer
+        // tiles open avoids crossing another rotated flight below.
+        const x = FULL.lo - 1;
+        addProtectedSolid(solids, x, z, k, b, b + SLAB);
+        addClear(solids, x, z, k, b + SLAB, b + SLAB + 3.5, b < 0);
+        addAllow(solids, x, z, k, b + SLAB, b + SLAB + 3.5);
       }
       break;
 
@@ -315,9 +336,9 @@ function chunkSolids(
             // Band-side doorway slit: where the flight outside is within
             // a step of this floor, the wall opens (pre-rot north face,
             // z = FULL.lo — the ramp band runs just outside it)
-            const tread = Math.max(0, x - RING.lo - 2) * RAMP_RISE;
-            const door = z === FULL.lo && Math.abs(tread - f * PITCH) <= 0.65
-              && x >= RING.lo + 2 && x <= RING.hi - 2;
+            const doorStart = residentialDoorStart(f);
+            const door = z === FULL.lo && x >= doorStart
+              && x < doorStart + ROOM_MODULE.doorTiles;
             if (door) {
               addSolid(solids, x, z, k, fy, fy + SLAB);
               addClear(solids, x, z, k, fy + SLAB, fy + PITCH, deepRes);
@@ -509,6 +530,20 @@ export function pillarAirSpans(
         if (up > chi) next.push([chi, up]);
       }
       merged = next;
+    }
+    // Reapply the very small set of authored navigation floors after every
+    // chunk has contributed its clearances. This gives composition an
+    // explicit priority rule instead of relying on generation order.
+    if (t.protected.length > 0) {
+      merged.push(...t.protected);
+      merged.sort((a, b) => a[0] - b[0]);
+      const restored: [number, number][] = [];
+      for (const [lo, up] of merged) {
+        const prev = restored[restored.length - 1];
+        if (prev && lo <= prev[1]) prev[1] = Math.max(prev[1], up);
+        else restored.push([lo, up]);
+      }
+      merged = restored;
     }
 
     let air: AirSpanLite[] = [];

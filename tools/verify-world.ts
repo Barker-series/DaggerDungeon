@@ -284,6 +284,8 @@ for (const seed of SEEDS) {
   let descendable = 0;
   let deepPillars = 0;
   let elevatorShafts = 0;
+  let roomSocketTotal = 0;
+  let unreachableRoomSockets = 0;
   for (const spec of world.pillars.values()) {
     const x0 = spec.cx * PILLAR_CELL_TILES;
     const z0 = spec.cz * PILLAR_CELL_TILES;
@@ -310,6 +312,68 @@ for (const seed of SEEDS) {
       if (spec.baseDepth < -4) deepPillars++;
       continue;
     }
+
+    const roomGroups = new Map<string, typeof spec.roomSockets>();
+    for (const socket of spec.roomSockets) {
+      const group = roomGroups.get(socket.group) ?? [];
+      group.push(socket);
+      roomGroups.set(socket.group, group);
+    }
+    for (const [groupName, sockets] of roomGroups) {
+      const entry = sockets.find((socket) => socket.role === 'entry');
+      const targets = sockets.filter((socket) => socket.role === 'room');
+      roomSocketTotal += targets.length;
+      if (!entry) {
+        unreachableRoomSockets += targets.length;
+        fail(`seed ${seed}: pillar(${spec.cx},${spec.cz}) ${groupName} has no entry socket`);
+        continue;
+      }
+      const startX = x0 + entry.lx;
+      const startZ = z0 + entry.lz;
+      const startSpan = world.columns[startZ * W + startX]!
+        .filter((span) => span.ceil - span.floor >= 1.5)
+        .sort((a, b) => Math.abs(a.floor - entry.y) - Math.abs(b.floor - entry.y))[0];
+      if (!startSpan || Math.abs(startSpan.floor - entry.y) > STEP) {
+        unreachableRoomSockets += targets.length;
+        fail(`seed ${seed}: pillar(${spec.cx},${spec.cz}) ${groupName} entry misses stair floor`);
+        continue;
+      }
+      const visited = new Set<string>();
+      const roomQueue: [number, number, number][] = [[startX, startZ, startSpan.floor]];
+      visited.add(`${startX},${startZ},${startSpan.floor.toFixed(2)}`);
+      while (roomQueue.length > 0) {
+        const [tx, tz, floorY] = roomQueue.pop()!;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+          const nx = tx + dx;
+          const nz = tz + dz;
+          if (nx < x0 || nz < z0
+            || nx >= x0 + PILLAR_CELL_TILES || nz >= z0 + PILLAR_CELL_TILES) continue;
+          for (const span of world.columns[nz * W + nx]!) {
+            if (span.ceil - span.floor < 1.5 || Math.abs(span.floor - floorY) > STEP) continue;
+            const key = `${nx},${nz},${span.floor.toFixed(2)}`;
+            if (visited.has(key)) continue;
+            visited.add(key);
+            roomQueue.push([nx, nz, span.floor]);
+          }
+        }
+      }
+      for (const target of targets) {
+        const tx = x0 + target.lx;
+        const tz = z0 + target.lz;
+        const reached = [...visited].some((key) => {
+          const [vx, vz, vy] = key.split(',').map(Number);
+          return vx === tx && vz === tz && Math.abs(vy! - target.y) <= STEP;
+        });
+        if (!reached) {
+          unreachableRoomSockets++;
+          fail(
+            `seed ${seed}: pillar(${spec.cx},${spec.cz}) `
+            + `${groupName} room(${target.lx},${target.lz},${target.y.toFixed(1)}) unreachable`,
+          );
+        }
+      }
+    }
+
     const seen = new Set<string>();
     const queue: [number, number, number][] = [];
     let targetY = -Infinity;
@@ -423,7 +487,7 @@ for (const seed of SEEDS) {
     fail(`seed ${seed}: ${unsettledMarriage} pillar-ground tiles remain before marriage fixpoint`);
   }
 
-  console.log(`seed ${seed}: density=${occupancyPercent.toFixed(1)}% deep=${descendable}/${deepPillars} ${ms}ms pillars=${world.pillars.size} elevators=${elevatorShafts} climbable=${climbable} bridges=${world.bridges.length} bridgeTiles=${total} sockets=${brokenTransitSockets} unreachable=${unreachableTerrain} cracks=${cracks} unsettled=${unsettledMarriage}`);
+  console.log(`seed ${seed}: density=${occupancyPercent.toFixed(1)}% deep=${descendable}/${deepPillars} ${ms}ms pillars=${world.pillars.size} elevators=${elevatorShafts} climbable=${climbable} rooms=${roomSocketTotal - unreachableRoomSockets}/${roomSocketTotal} bridges=${world.bridges.length} bridgeTiles=${total} sockets=${brokenTransitSockets} unreachable=${unreachableTerrain} cracks=${cracks} unsettled=${unsettledMarriage}`);
 }
 
 console.log(failures === 0 ? `ALL CHECKS PASSED (${SEEDS.length} seeds)` : `${failures} FAILURES`);

@@ -212,7 +212,7 @@ The first replacement slice is now local:
 - Gallery entries moved from the bridge-dependent back wall to the exterior
   stair's flat starting landing. Bridges are optional secondary access.
 - Galleries have repeating real window openings on three façades.
-- Residential chunks now contain three usable storeys, a continuous central
+- Residential chunks now contain two usable storeys, a continuous central
   corridor, paired room-wing doors, and repeating exterior windows instead of
   four 2-unit-high empty plates.
 - The asset-facing contract and next module library are specified in
