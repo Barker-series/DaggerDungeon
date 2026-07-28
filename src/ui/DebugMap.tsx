@@ -8,6 +8,7 @@ import { PILLAR_FACTOR } from '../game/dungeon/pillar-layer';
 import { regionAtCell, type RegionType } from '../game/dungeon/region-layer';
 
 const PIT_COLOR = '#601525';
+const ELEVATOR_COLOR = '#ff4fd8';
 
 const CELL_PX = 40; // pixels per cell in the debug view
 
@@ -28,6 +29,32 @@ const REGION_COLORS: Record<RegionType, string> = {
 
 type ViewMode = 'slice' | 'tiles' | 'biome' | 'region' | 'noise' | 'content' | 'pillars';
 const VIEW_MODES: ViewMode[] = ['slice', 'tiles', 'biome', 'region', 'noise', 'content', 'pillars'];
+
+function drawElevatorMarker(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  z: number,
+  radius: number,
+): void {
+  ctx.fillStyle = ELEVATOR_COLOR;
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x, z - radius);
+  ctx.lineTo(x + radius, z);
+  ctx.lineTo(x, z + radius);
+  ctx.lineTo(x - radius, z);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#160915';
+  ctx.font = `bold ${Math.max(8, radius)}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('E', x, z + 0.5);
+  ctx.textAlign = 'start';
+  ctx.textBaseline = 'alphabetic';
+}
 
 export function DebugMap() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -118,6 +145,16 @@ export function DebugMap() {
         }
       }
 
+      for (const spec of world.pillars.values()) {
+        if (!spec.elevator) continue;
+        drawElevatorMarker(
+          ctx,
+          (spec.cx * 56 + 28) * tilePx,
+          (spec.cz * 56 + 28) * tilePx,
+          Math.max(5, tilePx * 3),
+        );
+      }
+
       // Player marker
       if (playerPos) {
         ctx.fillStyle = '#ff0';
@@ -141,6 +178,7 @@ export function DebugMap() {
         ['#1a2a3e', 'Open air below'],
         [PIT_COLOR, 'Abyss'],
         ['#111', 'Solid'],
+        [ELEVATOR_COLOR, 'Elevator shaft'],
         ['#ff0', 'You'],
       ] as const;
       for (const [c, text] of items) {
@@ -213,6 +251,18 @@ export function DebugMap() {
       ctx.fillStyle = '#000'; ctx.font = 'bold 8px monospace';
       ctx.fillText('S', spx - 3, spz + 3);
 
+      if (world) {
+        for (const spec of world.pillars.values()) {
+          if (!spec.elevator) continue;
+          drawElevatorMarker(
+            ctx,
+            (spec.cx * 56 + 28) * tilePx,
+            (spec.cz * 56 + 28) * tilePx,
+            Math.max(5, tilePx * 3),
+          );
+        }
+      }
+
       // Player
       if (playerPos) {
         const ppx = playerPos.x * tilePx + tilePx / 2;
@@ -230,8 +280,8 @@ export function DebugMap() {
       ctx.fillText('Tab cycle mode', legendX, 71);
       let ly = 94;
       const legendItems = mode === 'biome'
-        ? [['#1a1a1a', 'Wall'], [BIOME_COLORS.dungeon, 'Dungeon'], [BIOME_COLORS.cave, 'Cave'], [BIOME_COLORS.crypt, 'Crypt'], [BIOME_COLORS.ember, 'Ember'], [BIOME_COLORS.outside, 'Outside'], [PIT_COLOR, 'Hole'], ['#0f0', 'Spawn'], ['#fff', 'Player']] as const
-        : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], ['#5a4a2a', 'Door'], [PIT_COLOR, 'Hole'], ['#0f0', 'Spawn'], ['#fff', 'Player']] as const;
+        ? [['#1a1a1a', 'Wall'], [BIOME_COLORS.dungeon, 'Dungeon'], [BIOME_COLORS.cave, 'Cave'], [BIOME_COLORS.crypt, 'Crypt'], [BIOME_COLORS.ember, 'Ember'], [BIOME_COLORS.outside, 'Outside'], [PIT_COLOR, 'Hole'], [ELEVATOR_COLOR, 'Elevator shaft'], ['#0f0', 'Spawn'], ['#fff', 'Player']] as const
+        : [['#1a1a1a', 'Wall'], ['#3a5a3a', 'Floor'], ['#5a4a2a', 'Door'], [PIT_COLOR, 'Hole'], [ELEVATOR_COLOR, 'Elevator shaft'], ['#0f0', 'Spawn'], ['#fff', 'Player']] as const;
       for (const [c, text] of legendItems) {
         ctx.fillStyle = c; ctx.fillRect(legendX, ly - 8, 12, 12);
         ctx.fillStyle = '#ccc'; ctx.fillText(text, legendX + 18, ly + 2);
@@ -321,14 +371,25 @@ export function DebugMap() {
         const pz = spec.cz * P;
         // Brightness tracks kebab height — tall monuments glow
         const t = Math.min(1, spec.totalHeight / 80);
-        ctx.fillStyle = `rgb(${Math.floor(40 + t * 60)}, ${Math.floor(30 + t * 120)}, ${Math.floor(70 + t * 150)})`;
+        ctx.fillStyle = spec.elevator
+          ? '#8b246f'
+          : `rgb(${Math.floor(40 + t * 60)}, ${Math.floor(30 + t * 120)}, ${Math.floor(70 + t * 150)})`;
         const inset = Math.floor(P * 0.23); // footprint ≈ central 54%
         ctx.fillRect(px + inset, pz + inset, P - 2 * inset, P - 2 * inset);
         ctx.strokeStyle = 'rgba(255,255,255,0.25)';
         ctx.strokeRect(px + inset, pz + inset, P - 2 * inset, P - 2 * inset);
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 10px monospace';
-        ctx.fillText(`${spec.chunks.length}·${Math.round(spec.totalHeight)}`, px + P / 2 - 12, pz + P / 2 + 3);
+        if (spec.elevator) {
+          drawElevatorMarker(ctx, px + P / 2, pz + P / 2, 14);
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 9px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText('SHAFT', px + P / 2, pz + P / 2 + 27);
+          ctx.textAlign = 'start';
+        } else {
+          ctx.fillText(`${spec.chunks.length}·${Math.round(spec.totalHeight)}`, px + P / 2 - 12, pz + P / 2 + 3);
+        }
         // Bridge sockets — ticks on the face they open from, positioned
         // along the edge by height (low → corner, high → far)
         ctx.fillStyle = '#ffd24a';
@@ -359,6 +420,20 @@ export function DebugMap() {
         ctx.moveTo(x0, z0);
         ctx.lineTo(x1, z1);
         ctx.stroke();
+      }
+    }
+
+    // Elevator identity remains visible on every cell-level diagnostic view,
+    // not only the pillar layer.
+    if (mode !== 'pillars' && world) {
+      for (const spec of world.pillars.values()) {
+        if (!spec.elevator) continue;
+        drawElevatorMarker(
+          ctx,
+          (spec.cx * PILLAR_FACTOR + PILLAR_FACTOR / 2) * CELL_PX,
+          (spec.cz * PILLAR_FACTOR + PILLAR_FACTOR / 2) * CELL_PX,
+          10,
+        );
       }
     }
 
@@ -403,12 +478,12 @@ export function DebugMap() {
     ctx.fillText('', legendX, 75);
 
     const legendItems: Array<[string, string]> = mode === 'content'
-      ? [['#2a3a2a', 'Active'], ['#4a3a1a', 'Permanent transit'], ['#1a1a1a', 'Inactive'], ['#0f0', 'Spawn'], ['#fff', 'Player']]
+      ? [['#2a3a2a', 'Active'], ['#4a3a1a', 'Permanent transit'], [ELEVATOR_COLOR, 'Elevator shaft'], ['#1a1a1a', 'Inactive'], ['#0f0', 'Spawn'], ['#fff', 'Player']]
       : mode === 'pillars'
-        ? [['#8ac6dc', 'Tall pillar'], ['#38326a', 'Short pillar'], ['#14101c', 'Void (no pillar)'], ['#ffd24a', 'Bridge socket'], ['#3ce6c8', 'Bridge'], ['#fff', 'Player']]
-        : mode === 'region'
-          ? [[REGION_COLORS.city, 'City'], [REGION_COLORS.machine, 'Machine'], [REGION_COLORS.canyon, 'Canyon'], [REGION_COLORS.frontier, 'Frontier'], ['#0f0', 'Spawn'], ['#fff', 'Player']]
-          : [['#0f0', 'High noise'], ['#300', 'Low noise'], ['#fff', 'Player']];
+        ? [[ELEVATOR_COLOR, 'Elevator shaft'], ['#8ac6dc', 'Tall pillar'], ['#38326a', 'Short pillar'], ['#14101c', 'Void (no pillar)'], ['#ffd24a', 'Bridge socket'], ['#3ce6c8', 'Bridge'], ['#fff', 'Player']]
+      : mode === 'region'
+          ? [[REGION_COLORS.city, 'City'], [REGION_COLORS.machine, 'Machine'], [REGION_COLORS.canyon, 'Canyon'], [REGION_COLORS.frontier, 'Frontier'], [ELEVATOR_COLOR, 'Elevator shaft'], ['#0f0', 'Spawn'], ['#fff', 'Player']]
+          : [['#0f0', 'High noise'], ['#300', 'Low noise'], [ELEVATOR_COLOR, 'Elevator shaft'], ['#fff', 'Player']];
 
     let ly = 80;
     for (const [c, text] of legendItems) {
@@ -427,6 +502,7 @@ export function DebugMap() {
       active: cells.filter((c) => c.active).length,
       transitCells: hallwayCells.size,
       pillars: pillarSpecs.length,
+      elevators: pillarSpecs.filter((p) => p.elevator).length,
       avgHeight: pillarSpecs.length
         ? (pillarSpecs.reduce((s, p) => s + p.totalHeight, 0) / pillarSpecs.length).toFixed(1)
         : '0',

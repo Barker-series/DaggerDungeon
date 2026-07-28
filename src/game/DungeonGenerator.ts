@@ -36,7 +36,7 @@ import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } f
 import { pillarFootprint, pillarAirSpans } from './dungeon/pillar-geometry';
 import {
   planOwnedBridges, planOwnedSubways, planOwnedArches,
-  bridgeTiles, carveBridgeIntoColumn, carveArchIntoColumn,
+  bridgeTiles, carveBridgeIntoColumn, carveArchIntoColumn, addBridgeEndSupport,
   type BridgeSpec,
 } from './dungeon/pillar-bridges';
 
@@ -310,9 +310,12 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     }
   }
   for (const br of bridges) {
-    for (const { tx, tz, h } of bridgeTiles(br)) {
+    for (const { tx, tz, h, support } of bridgeTiles(br)) {
       if (tx < 0 || tz < 0 || tx >= GRID_TILES || tz >= GRID_TILES) continue;
       columns[tz * GRID_TILES + tx] = carveBridgeIntoColumn(columns[tz * GRID_TILES + tx]!, h, br.pipe);
+      if (support) {
+        columns[tz * GRID_TILES + tx] = addBridgeEndSupport(columns[tz * GRID_TILES + tx]!, h);
+      }
     }
   }
 

@@ -24,6 +24,11 @@
  */
 
 import type { PillarSpec, PlacedChunk } from './pillar-layer';
+import {
+  isResidentialRoomDoor,
+  isWindowBay,
+  ROOM_MODULE,
+} from './pillar-rooms';
 
 /** Baseline foundation reach below grade — pillars never float. Deep
  *  wells extend it: the per-pillar bottom is min(this, baseDepth - 8),
@@ -60,8 +65,6 @@ const CELL = 56;
 const RING = { lo: 14, hi: 41 };
 const FULL = { lo: 17, hi: 38 };
 const SLIM = { lo: 21, hi: 34 };
-/** Doorway tiles along a wall (pre-rotation x range) */
-const DOOR = { lo: 26, hi: 29 };
 const DOOR_HEIGHT = 4;
 
 /** Rotate a local tile coordinate a quarter-turn clockwise, k times */
@@ -168,12 +171,20 @@ function rampSolids(
   // their clears must NOT clamp to grade
   const deep = b < 0;
   const first = isFirst ? -RAMP_ENTRY_STEPS : 0;
+  // Terraces are circulation transfers, not just another piece of the
+  // exterior flight. Hold a full six-tile landing flat so the player can
+  // enter/leave the plaza deliberately before the stair starts climbing.
+  // Other chunks retain the three-tile corner handoff required by the
+  // continuous spiral.
+  const landingEnd = placed.def.id === 'terrace'
+    ? ROOM_MODULE.stairLandingTiles - 1
+    : 2;
   for (let i = first; i <= run; i++) {
     // The first 3 treads stay FLAT at the chunk base: that entry landing
     // is what merges with the previous chunk's exit landing in the shared
     // 3x3 corner square. Both corner squares must stay flat — a climbing
     // tread there gets erased by the neighbor flight's headroom punch.
-    const surface = b + Math.min(h, Math.max(0, i - 2) * rise);
+    const surface = b + Math.min(h, Math.max(0, i - landingEnd) * rise);
     const clearTop = Math.min(surface + RAMP_CLEARANCE, b + h + LANDING_CLEARANCE);
     for (let z = RING.lo; z <= RING.lo + 2; z++) {
       addSolid(solids, RING.lo + i, z, k, surface - RAMP_SLAB, surface);
@@ -244,8 +255,10 @@ function chunkSolids(
       break;
 
     case 'gallery':
-      // Hollow hall: full-core walls, floor + ceiling slabs, doorway on
-      // the face opposite the ramp (pre-rotation: ramp north, door south)
+      // Tall public hall. The flat stair landing turns the near corner and
+      // enters through the adjacent west façade. Putting the opening directly
+      // in the ramp-face corner made it read as an accidental hole; this gives
+      // it a real approach and a full wall bay. It never depends on a bridge.
       eachTile(FULL.lo, FULL.hi, (x, z) => {
         const perimeter = x === FULL.lo || x === FULL.hi || z === FULL.lo || z === FULL.hi;
         if (!perimeter) {
@@ -254,18 +267,31 @@ function chunkSolids(
           addAllow(solids, x, z, k, b + SLAB, top - 1);
           return;
         }
-        const doorway = z === FULL.hi && x >= DOOR.lo && x <= DOOR.hi;
+        const doorway = x === FULL.lo
+          && z >= FULL.lo + 2
+          && z < FULL.lo + 2 + ROOM_MODULE.doorTiles;
         if (doorway) {
           addSolid(solids, x, z, k, b, b + SLAB);
           addSolid(solids, x, z, k, b + SLAB + DOOR_HEIGHT, top);
           addAllow(solids, x, z, k, b + SLAB, b + SLAB + DOOR_HEIGHT);
+        } else if (
+          (z === FULL.hi && isWindowBay(x, FULL.lo, FULL.hi))
+          || ((x === FULL.lo || x === FULL.hi) && isWindowBay(z, FULL.lo, FULL.hi))
+        ) {
+          const sill = b + SLAB + ROOM_MODULE.windowSill;
+          const head = Math.min(top - 1, sill + ROOM_MODULE.windowHeight);
+          addSolid(solids, x, z, k, b, sill);
+          addSolid(solids, x, z, k, head, top);
+          addAllow(solids, x, z, k, sill, head);
         } else {
           addSolid(solids, x, z, k, b, top);
         }
       });
-      // Landing apron outside the doorway so a bridge has footing
-      for (let z = FULL.hi + 1; z <= RING.hi; z++) {
-        for (let x = DOOR.lo - 1; x <= DOOR.hi + 1; x++) {
+      // Flat apron wraps from the ramp's corner square to the west-façade
+      // doorway. This is one continuous authored transfer, not a jump from
+      // the stairs into an arbitrary wall opening.
+      for (let z = RING.lo; z < FULL.lo + 2 + ROOM_MODULE.doorTiles; z++) {
+        for (let x = RING.lo; x < FULL.lo; x++) {
           addSolid(solids, x, z, k, b, b + SLAB);
           addAllow(solids, x, z, k, b + SLAB, b + SLAB + 3.5);
         }
@@ -273,10 +299,12 @@ function chunkSolids(
       break;
 
     case 'residential': {
-      // Kowloon-compressed strata: low stacked floors filling the core,
-      // each with a doorway slit onto the ramp band where the flight
-      // passes that floor's height. Cramped by design — 2.0 headroom.
-      const PITCH = 2.5;
+      // Repeated residential modules: each storey has a two-tile central
+      // corridor and two large room wings, with paired internal doors and
+      // exterior window bays. Every storey still opens where the exterior
+      // stair passes its floor, but the opening now feeds real circulation
+      // instead of an undivided empty plate.
+      const PITCH = ROOM_MODULE.storeyPitch;
       const floors = Math.floor((placed.def.height - 1) / PITCH); // roof takes the rest
       const deepRes = b < 0;
       eachTile(FULL.lo, FULL.hi, (x, z) => {
@@ -293,11 +321,26 @@ function chunkSolids(
             if (door) {
               addSolid(solids, x, z, k, fy, fy + SLAB);
               addClear(solids, x, z, k, fy + SLAB, fy + PITCH, deepRes);
+            } else if (
+              (z === FULL.hi && isWindowBay(x, FULL.lo, FULL.hi))
+              || ((x === FULL.lo || x === FULL.hi) && isWindowBay(z, FULL.lo, FULL.hi))
+            ) {
+              const sill = fy + SLAB + ROOM_MODULE.windowSill;
+              const head = Math.min(fy + PITCH, sill + ROOM_MODULE.windowHeight);
+              addSolid(solids, x, z, k, fy, sill);
+              addSolid(solids, x, z, k, head, fy + PITCH);
+              addClear(solids, x, z, k, sill, head, deepRes);
             } else {
               addSolid(solids, x, z, k, fy, fy + PITCH);
             }
           } else {
             addSolid(solids, x, z, k, fy, fy + SLAB);
+            // Two walls bound a continuous north/south corridor. Paired
+            // door openings lead into both room wings.
+            const partition = x === 26 || x === 29;
+            if (partition && !isResidentialRoomDoor(z, FULL.lo)) {
+              addSolid(solids, x, z, k, fy + SLAB, fy + PITCH);
+            }
             if (deepRes) addClear(solids, x, z, k, fy + SLAB, fy + PITCH, true);
             else addAllow(solids, x, z, k, fy + SLAB, fy + PITCH);
           }
@@ -333,11 +376,51 @@ function chunkSolids(
 }
 
 function collectSolids(spec: PillarSpec, flattenCrownRamp = false): Map<string, TileSolids> {
+  if (spec.elevator) return collectElevatorSolids(spec);
   const solids = new Map<string, TileSolids>();
   spec.chunks.forEach((placed, i) => chunkSolids(
     placed, solids, spec.chunks[i - 1],
     flattenCrownRamp && i === spec.chunks.length - 1,
   ));
+  return solids;
+}
+
+/**
+ * A real transit-shaft pillar: solid structural mass around a continuous
+ * central hoistway, a ground entrance lobby, a bottom service lobby, and an
+ * open crown stop. There is deliberately no exterior spiral staircase.
+ */
+function collectElevatorSolids(spec: PillarSpec): Map<string, TileSolids> {
+  const solids = new Map<string, TileSolids>();
+  const shaft = { lo: 26, hi: 29 };
+  const bottom = spec.baseDepth + SLAB;
+  const top = spec.totalHeight + CROWN_HEADROOM;
+
+  eachTile(FULL.lo, FULL.hi, (x, z) => {
+    addSolid(solids, x, z, 0, spec.baseDepth, spec.totalHeight);
+    if (x >= shaft.lo && x <= shaft.hi && z >= shaft.lo && z <= shaft.hi) {
+      addClear(solids, x, z, 0, bottom, top, true);
+    }
+  });
+
+  // Ground lobby: a two-tile corridor from the west façade to the shaft,
+  // plus a three-tile exterior threshold. Its 0.5-high plate meets the
+  // elevator's ground stop exactly.
+  for (let z = 27; z <= 28; z++) {
+    for (let x = RING.lo; x <= shaft.hi; x++) {
+      addSolid(solids, x, z, 0, 0, SLAB);
+      addClear(solids, x, z, 0, SLAB, SLAB + 4.5, true);
+      addAllow(solids, x, z, 0, SLAB, SLAB + 4.5);
+    }
+  }
+
+  // Bottom service lobby is internal for now; later rail/service modules can
+  // claim its west socket without changing the elevator's vertical contract.
+  for (let z = 27; z <= 28; z++) {
+    for (let x = FULL.lo; x <= shaft.hi; x++) {
+      addClear(solids, x, z, 0, bottom, bottom + 4.5, true);
+    }
+  }
   return solids;
 }
 

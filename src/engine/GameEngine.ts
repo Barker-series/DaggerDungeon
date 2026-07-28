@@ -106,16 +106,16 @@ export class GameEngine {
   private marks: { pos: THREE.Vector3; mesh: THREE.Mesh }[] = [];
   private playerSpeedMultiplier = 1;
   private debugMaterials: Record<Exclude<RenderDebugMode, 'lit'>, THREE.Material> = {
-    // Generated world surfaces intentionally use mixed winding and render
-    // DoubleSide in the production materials. Debug overrides must preserve
-    // that visibility contract or valid floors/walls appear transparent.
-    solid: new THREE.MeshBasicMaterial({ color: 0xb8b2a8, side: THREE.DoubleSide }),
+    // Structural geometry is front-facing only. Debug views keep culling
+    // enabled so they reveal winding and missing-face bugs instead of hiding
+    // them behind a different material contract.
+    solid: new THREE.MeshBasicMaterial({ color: 0xb8b2a8, side: THREE.FrontSide }),
     wireframe: new THREE.MeshBasicMaterial({
       color: 0xd4a44a,
       wireframe: true,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide,
     }),
-    normals: new THREE.MeshNormalMaterial({ side: THREE.DoubleSide }),
+    normals: new THREE.MeshNormalMaterial({ side: THREE.FrontSide }),
   };
 
   constructor(
@@ -970,6 +970,11 @@ export class GameEngine {
   private processAction(action: InputAction): void {
     switch (action) {
       case 'interact':
+        {
+          const pos = this.gridCamera.position;
+          const notice = this.movers?.interact(pos.x, pos.z, pos.y);
+          if (notice) this.onNotice(notice);
+        }
         break;
       case 'respawn':
         this.respawn();

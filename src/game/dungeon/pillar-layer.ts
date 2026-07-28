@@ -66,6 +66,8 @@ const MIN_DOWN = 8;
 /** Chance an otherwise-eligible deep pillar builds NOTHING above grade —
  *  a well: crown plinth at the surface, spiral descending below. */
 const WELL_CHANCE = 0.15;
+/** Rare occupied cells replace the kebab with a true vertical transit shaft. */
+const ELEVATOR_SHAFT_CHANCE = 0.06;
 const PILLAR_SALT = 4141;
 
 /**
@@ -149,6 +151,9 @@ export interface PillarSpec {
   /** Base of the lowest chunk — 0 for surface-only pillars, negative
    *  when the kebab continues below grade */
   baseDepth: number;
+  /** This cell is a purpose-built bottom/ground/crown transit shaft,
+   *  replacing the exterior-stair kebab rather than decorating it. */
+  elevator: boolean;
   chunks: PlacedChunk[];
   sockets: ResolvedSocket[];
 }
@@ -179,9 +184,11 @@ function chunkSockets(placed: PlacedChunk): ChunkSocket[] {
       ]);
     }
     case 'gallery':
-      // Doorway on the face opposite the ramp
+      // The room entry sits one façade around the ramp's starting corner,
+      // reached by its wrapped landing apron. A bridge may share that authored
+      // threshold; the interior is never bridge-only.
       return [
-        { face: rotateFace('north', k + 2), y: 0.5, kind: 'bridge' },
+        { face: rotateFace('west', k), y: 0.5, kind: 'bridge' },
         { face: 'interior', y: 0.5, kind: 'ledge' },
       ];
     case 'crown':
@@ -201,6 +208,7 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   if (!pillarOccupied(worldSeed, pcx, pcz)) return null;
 
   const rng = mulberry32(cellSeed(pcx, pcz, worldSeed, PILLAR_SALT));
+  const elevator = mulberry32(cellSeed(pcx, pcz, worldSeed, 8181))() < ELEVATOR_SHAFT_CHANCE;
   const district = regionAtCell(worldSeed, pcx * PILLAR_FACTOR + 2, pcz * PILLAR_FACTOR + 2);
   const heightNoise = elevationField(worldSeed, pcx, pcz);
   let targetHeight = MIN_HEIGHT + heightNoise * (MAX_HEIGHT - MIN_HEIGHT);
@@ -223,6 +231,12 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
         : 1;
   targetHeight *= heightMult;
   targetDown *= depthMult;
+  if (elevator) {
+    // A transit shaft needs meaningful vertical territory in both
+    // directions even when the surrounding district is low and flat.
+    targetHeight = Math.max(targetHeight, 80);
+    targetDown = Math.max(targetDown, 28);
+  }
   // Heavy tails, weighted by district: the city grows supertowers,
   // the machine sinks the deepest wells. rng draws happen for every
   // pillar so the stream stays aligned regardless of district.
@@ -269,7 +283,7 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
     deepPickable[Math.floor(rng() * deepPickable.length)]!;
 
   // A well builds nothing above grade: crown plinth + descent only
-  const well = targetDown >= MIN_DOWN && rng() < WELL_CHANCE;
+  const well = !elevator && targetDown >= MIN_DOWN && rng() < WELL_CHANCE;
 
   // ── The DOWN section: stacked below grade, chunk boundaries land
   // exactly ON grade so the at-grade chunk owns the ground entry ──
@@ -308,13 +322,19 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   }
 
   const sockets: ResolvedSocket[] = [];
-  chunks.forEach((placed, chunkIndex) => {
-    for (const s of chunkSockets(placed)) {
-      sockets.push({ ...s, yAbs: placed.baseY + s.y, chunkIndex });
-    }
-  });
+  if (!elevator) {
+    chunks.forEach((placed, chunkIndex) => {
+      for (const s of chunkSockets(placed)) {
+        sockets.push({ ...s, yAbs: placed.baseY + s.y, chunkIndex });
+      }
+    });
+  }
 
-  return { cx: pcx, cz: pcz, acx: pcx, acz: pcz, totalHeight: base, baseDepth: -downTotal, chunks, sockets };
+  return {
+    cx: pcx, cz: pcz, acx: pcx, acz: pcz,
+    totalHeight: base, baseDepth: -downTotal,
+    elevator, chunks, sockets,
+  };
 }
 
 /**

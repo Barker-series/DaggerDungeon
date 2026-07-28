@@ -289,17 +289,20 @@ export function planOwnedBridges(worldSeed: number, cx: number, cz: number, at: 
 
 /** Every world tile a bridge occupies, with its walk height there.
  *  Walkways on the massive grid are 3 tiles wide. */
-export function bridgeTiles(br: BridgeSpec): { tx: number; tz: number; h: number }[] {
-  const out: { tx: number; tz: number; h: number }[] = [];
+export function bridgeTiles(br: BridgeSpec): { tx: number; tz: number; h: number; support: boolean }[] {
+  const out: { tx: number; tz: number; h: number; support: boolean }[] = [];
   for (let i = 0; i < GAP_TILES; i++) {
     const t = (i + 0.5) / GAP_TILES;
     const h = br.yA + (br.yB - br.yA) * t;
     const along = (br.dir === 'east' ? br.cx : br.cz) * CELL + RING_HI + 1 + i;
     for (const c of [27, 28, 29]) {
       const cross = (br.dir === 'east' ? br.cz : br.cx) * CELL + c;
+      // One centered pier holds each exposed end of an open bridge. Whether
+      // finite ground actually exists below is decided by the column pass.
+      const support = !br.pipe && c === 28 && (i === 0 || i === GAP_TILES - 1);
       out.push(br.dir === 'east'
-        ? { tx: along, tz: cross, h }
-        : { tx: cross, tz: along, h });
+        ? { tx: along, tz: cross, h, support }
+        : { tx: cross, tz: along, h, support });
     }
   }
   return out;
@@ -371,4 +374,20 @@ export function carveBridgeIntoColumn(spans: ColumnSpan[], h: number, pipe = fal
     }
   }
   return merged.filter((s) => s.ceil - s.floor >= MIN_AIR);
+}
+
+/**
+ * Replace the air directly below a bridge-end slab with a structural pier.
+ * The lower span's floor is the terrain/foundation surface the pier stands
+ * on. Bottomless columns deliberately remain unsupported rather than growing
+ * arbitrary mass down to the abyss sentinel.
+ */
+export function addBridgeEndSupport(spans: ColumnSpan[], h: number): ColumnSpan[] {
+  const slabLo = h - SLAB;
+  const supportSpan = spans.find((s) =>
+    s.floor > -100
+    && s.floor < slabLo - 0.1
+    && Math.abs(s.ceil - slabLo) < 0.05);
+  if (!supportSpan) return spans;
+  return spans.filter((s) => s !== supportSpan);
 }

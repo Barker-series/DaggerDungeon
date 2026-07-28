@@ -132,8 +132,8 @@ export interface WorldData {
   /** Window origin on the infinite plane, in pillar cells */
   originPcx: number;
   originPcz: number;
-  /** Deep transit bores between below-grade pillars — a few still
-   *  carry functioning trains (runtime movers) */
+  /** Legacy short bore scaffolding. It carries no fake runtime trains;
+   *  long-distance rail will replace it with a routed track layer. */
   subways: BridgeSpec[];
 }
 

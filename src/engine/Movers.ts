@@ -1,155 +1,212 @@
 /**
- * Kinetic movers — the machines that still function.
+ * Runtime elevator cars.
  *
- * ELEVATORS: open freight platforms crawling up the east face of tall
- * pillars, grade to crown, at a pace that makes a supertower ride feel
- * like the multi-week climbs of the old world. Ridable: the platform
- * top is real ground and carries the player.
+ * An elevator is a rare pillar replacement with a real central hoistway. It
+ * waits at a stop until the player presses F, then travels at a practical
+ * freight-elevator speed. The civilization-scale journey comes from future
+ * shafts spanning enormous vertical distances—not from making the car crawl.
  *
- * TRAINS: a few subway bores still run rolling stock — slow blunt cars
- * shuttling end to end through the dark. The bore is crawl-height; you
- * do not ride them, you press against the wall as they pass.
- *
- * Deterministic: existence and phase derive from the world seed, so
- * every visitor to a seed sees the same machines in the same motion
- * modulo local time. Everything else in the world is static column
- * data; movers are the only runtime geometry.
+ * The old oscillating subway cubes were removed. Long-distance rail needs a
+ * persistent routed track layer, stations, and underground/elevated segments;
+ * a box shuttling across one pillar gap was not a train system.
  */
 
 import * as THREE from 'three';
 import type { WorldData } from '../game/types';
-import { cellSeed, mulberry32 } from '../game/dungeon/rng';
 
 const PILLAR_WU = 168; // 56 tiles * 3
-const ELEVATOR_MIN_HEIGHT = 60;
-const ELEVATOR_CHANCE = 0.5;
-const ELEVATOR_SPEED = 0.35; // wu/s — glacial by design
-const ELEVATOR_SIZE = 4.5;
-const ELEVATOR_THICK = 0.6;
-const TRAIN_CHANCE = 0.25; // "few trains still function"
-const TRAIN_SPEED = 4;
-const TRAIN_LEN = 9;
-const TRAIN_W = 2.4;
-const TRAIN_H = 1.6;
-const SUBWAY_FLOOR = -10;
+const CAR_SPEED = 14; // world units/second: fast industrial transit
+/** Hoistway is 12×12. A 0.3-unit edge gap is narrower than the player's
+ * collision radius, so the car cannot become a death slot at a stop. */
+const CAR_SIZE = 11.4;
+const CAR_THICK = 0.6;
+const CAR_INTERACT_RADIUS = 5.7;
+const CALL_RADIUS = 4;
+const STOP_EPSILON = 0.03;
+
+interface CallStation {
+  mesh: THREE.Mesh;
+  x: number;
+  z: number;
+  stopY: number;
+  name: 'bottom' | 'ground' | 'top';
+}
 
 interface Elevator {
   mesh: THREE.Mesh;
   x: number;
   z: number;
-  lo: number;
-  hi: number;
-  phase: number; // 0..1 position along a full up+down cycle
-}
-
-interface Train {
-  mesh: THREE.Mesh;
-  axis: 'x' | 'z';
-  fixed: number; // the non-travel coordinate (center of bore)
-  lo: number;
-  hi: number;
-  phase: number;
+  stops: readonly [bottom: number, ground: number, top: number];
+  currentY: number;
+  targetY: number;
+  velocity: number;
+  callStations: CallStation[];
+  /** Ground alternates between an upward and downward expedition. */
+  nextExtreme: 'top' | 'bottom';
 }
 
 export class Movers {
   private elevators: Elevator[] = [];
-  private trains: Train[] = [];
   private group = new THREE.Group();
-  private time = 0;
 
   constructor(world: WorldData, scene: THREE.Scene) {
     scene.add(this.group);
-    const seed = world.seed + world.stack * 100000;
-    const elevMat = new THREE.MeshStandardMaterial({ color: 0x8a8578, roughness: 0.6, metalness: 0.3 });
-    const trainMat = new THREE.MeshStandardMaterial({ color: 0x5a4f48, roughness: 0.5, metalness: 0.4, emissive: 0x201008 });
+    const carMaterial = new THREE.MeshStandardMaterial({
+      color: 0x8a8578,
+      roughness: 0.55,
+      metalness: 0.45,
+    });
+    const callMaterial = new THREE.MeshStandardMaterial({
+      color: 0xb53022,
+      roughness: 0.35,
+      metalness: 0.55,
+      emissive: 0x481008,
+      emissiveIntensity: 1.2,
+    });
 
     for (const spec of world.pillars.values()) {
-      if (spec.totalHeight < ELEVATOR_MIN_HEIGHT) continue;
-      const rng = mulberry32(cellSeed(spec.acx, spec.acz, seed, 9191));
-      if (rng() > ELEVATOR_CHANCE) continue;
-      // East face, center of the pillar — just off the ring edge (tile
-      // 42 of the cell), riding open air beside the wall
-      const x = spec.cx * PILLAR_WU + 42 * 3 + ELEVATOR_SIZE / 2;
+      if (!spec.elevator) continue;
+      const x = spec.cx * PILLAR_WU + PILLAR_WU / 2;
       const z = spec.cz * PILLAR_WU + PILLAR_WU / 2;
+      const stops = [spec.baseDepth + 0.5, 0.5, spec.totalHeight] as const;
       const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(ELEVATOR_SIZE, ELEVATOR_THICK, ELEVATOR_SIZE), elevMat);
+        new THREE.BoxGeometry(CAR_SIZE, CAR_THICK, CAR_SIZE),
+        carMaterial,
+      );
+      mesh.position.set(x, stops[1] - CAR_THICK / 2, z);
       this.group.add(mesh);
+      const stopNames = ['bottom', 'ground', 'top'] as const;
+      const callStations = stops.map((stopY, index): CallStation => {
+        // Large freestanding call box on the south side of the west lobby,
+        // close enough to reach without approaching the open shaft edge.
+        const stationX = x - 7;
+        const stationZ = z + 2.6;
+        const stationMesh = new THREE.Mesh(
+          new THREE.BoxGeometry(1.8, 2.5, 0.8),
+          callMaterial,
+        );
+        stationMesh.position.set(stationX, stopY + 1.25, stationZ);
+        this.group.add(stationMesh);
+        return {
+          mesh: stationMesh,
+          x: stationX,
+          z: stationZ,
+          stopY,
+          name: stopNames[index]!,
+        };
+      });
       this.elevators.push({
-        mesh, x, z, lo: 2, hi: spec.totalHeight + 0.5, phase: rng(),
+        mesh,
+        x,
+        z,
+        stops,
+        currentY: stops[1],
+        targetY: stops[1],
+        velocity: 0,
+        callStations,
+        nextExtreme: 'top',
       });
     }
-
-    world.subways.forEach((sw) => {
-      const rng = mulberry32(cellSeed(sw.acx, sw.acz, seed, 9292 + (sw.dir === 'east' ? 0 : 1)));
-      if (rng() > TRAIN_CHANCE) return;
-      const axis: 'x' | 'z' = sw.dir === 'east' ? 'x' : 'z';
-      // The bore runs across the gap between the two cores (tiles 42..69
-      // of the owning cell along the travel axis, rows 27..29 across)
-      const a0 = (sw.dir === 'east' ? sw.cx : sw.cz) * PILLAR_WU + 42 * 3;
-      const fixed = (sw.dir === 'east' ? sw.cz : sw.cx) * PILLAR_WU + 28.5 * 3;
-      const mesh = new THREE.Mesh(
-        axis === 'x'
-          ? new THREE.BoxGeometry(TRAIN_LEN, TRAIN_H, TRAIN_W)
-          : new THREE.BoxGeometry(TRAIN_W, TRAIN_H, TRAIN_LEN), trainMat);
-      this.group.add(mesh);
-      this.trains.push({
-        mesh, axis, fixed,
-        lo: a0 + TRAIN_LEN / 2, hi: a0 + 28 * 3 - TRAIN_LEN / 2, phase: rng(),
-      });
-    });
-  }
-
-  /** Triangle wave 0→1→0 over one cycle */
-  private static pingpong(t: number): number {
-    const u = t % 1;
-    return u < 0.5 ? u * 2 : 2 - u * 2;
   }
 
   update(dt: number): void {
-    this.time += dt;
-    for (const e of this.elevators) {
-      const cycle = (2 * (e.hi - e.lo)) / ELEVATOR_SPEED;
-      const y = e.lo + Movers.pingpong(e.phase + this.time / cycle) * (e.hi - e.lo);
-      e.mesh.position.set(e.x, y - ELEVATOR_THICK / 2, e.z);
-    }
-    for (const t of this.trains) {
-      const cycle = (2 * (t.hi - t.lo)) / TRAIN_SPEED;
-      const a = t.lo + Movers.pingpong(t.phase + this.time / cycle) * (t.hi - t.lo);
-      const y = SUBWAY_FLOOR + TRAIN_H / 2;
-      if (t.axis === 'x') t.mesh.position.set(a, y, t.fixed);
-      else t.mesh.position.set(t.fixed, y, a);
+    for (const elevator of this.elevators) {
+      const delta = elevator.targetY - elevator.currentY;
+      if (Math.abs(delta) <= STOP_EPSILON) {
+        elevator.currentY = elevator.targetY;
+        elevator.velocity = 0;
+      } else {
+        elevator.velocity = Math.sign(delta) * CAR_SPEED;
+        const travel = elevator.velocity * dt;
+        elevator.currentY = Math.abs(travel) >= Math.abs(delta)
+          ? elevator.targetY
+          : elevator.currentY + travel;
+      }
+      elevator.mesh.position.set(
+        elevator.x,
+        elevator.currentY - CAR_THICK / 2,
+        elevator.z,
+      );
     }
   }
 
-  /** Platform ground under (x,z), if a mover's top is at or below
-   *  limitY — lets the physics stand the player on an elevator. */
+  /**
+   * Operate the nearby car. From ground it alternates top and bottom trips;
+   * either extreme returns to ground. This keeps the first interaction model
+   * simple while exposing all three meaningful shaft destinations.
+   */
+  interact(x: number, z: number, feetY: number): string | null {
+    // Call boxes work whether the car is present, elsewhere, or already
+    // moving. The most recent floor call becomes the current destination.
+    for (const elevator of this.elevators) {
+      for (const station of elevator.callStations) {
+        if (Math.hypot(x - station.x, z - station.z) > CALL_RADIUS) continue;
+        if (Math.abs(feetY - station.stopY) > 2.5) continue;
+        if (Math.abs(elevator.currentY - station.stopY) <= STOP_EPSILON
+          && elevator.velocity === 0) {
+          return `Elevator ready at ${station.name}`;
+        }
+        elevator.targetY = station.stopY;
+        return `Elevator called to ${station.name}`;
+      }
+    }
+
+    let nearest: Elevator | null = null;
+    let nearestDistance = Infinity;
+    for (const elevator of this.elevators) {
+      const distance = Math.hypot(x - elevator.x, z - elevator.z);
+      if (distance > CAR_INTERACT_RADIUS || distance >= nearestDistance) continue;
+      if (Math.abs(feetY - elevator.currentY) > 2.5) continue;
+      nearest = elevator;
+      nearestDistance = distance;
+    }
+    if (!nearest) return null;
+    if (nearest.velocity !== 0) return 'Elevator already moving';
+
+    const [bottom, ground, top] = nearest.stops;
+    if (Math.abs(nearest.currentY - ground) <= STOP_EPSILON) {
+      nearest.targetY = nearest.nextExtreme === 'top' ? top : bottom;
+      const destination = nearest.nextExtreme;
+      nearest.nextExtreme = nearest.nextExtreme === 'top' ? 'bottom' : 'top';
+      return `Elevator departing for ${destination}`;
+    }
+    nearest.targetY = ground;
+    return 'Elevator returning to ground';
+  }
+
+  /** Platform ground under (x,z), if the car top is at or below limitY. */
   groundAt(x: number, z: number, limitY: number): number | null {
     let best: number | null = null;
-    for (const e of this.elevators) {
-      if (Math.abs(x - e.x) > ELEVATOR_SIZE / 2 || Math.abs(z - e.z) > ELEVATOR_SIZE / 2) continue;
-      const top = e.mesh.position.y + ELEVATOR_THICK / 2;
+    for (const elevator of this.elevators) {
+      if (Math.abs(x - elevator.x) > CAR_SIZE / 2
+        || Math.abs(z - elevator.z) > CAR_SIZE / 2) continue;
+      const top = elevator.currentY;
       if (top <= limitY + 0.6 && (best === null || top > best)) best = top;
     }
     return best;
   }
 
-  /** Vertical velocity of the platform under a standing player —
-   *  applied so the ride carries you. */
+  /** Vertical velocity of the car under a standing player. */
   carryVelocity(x: number, z: number, feetY: number): number {
-    for (const e of this.elevators) {
-      if (Math.abs(x - e.x) > ELEVATOR_SIZE / 2 || Math.abs(z - e.z) > ELEVATOR_SIZE / 2) continue;
-      const top = e.mesh.position.y + ELEVATOR_THICK / 2;
-      if (Math.abs(feetY - top) > 0.5) continue;
-      const cycle = (2 * (e.hi - e.lo)) / ELEVATOR_SPEED;
-      const u = (e.phase + this.time / cycle) % 1;
-      return u < 0.5 ? ELEVATOR_SPEED : -ELEVATOR_SPEED;
+    for (const elevator of this.elevators) {
+      if (Math.abs(x - elevator.x) > CAR_SIZE / 2
+        || Math.abs(z - elevator.z) > CAR_SIZE / 2) continue;
+      if (Math.abs(feetY - elevator.currentY) > 0.5) continue;
+      return elevator.velocity;
     }
     return 0;
   }
 
   dispose(scene: THREE.Scene): void {
-    for (const e of this.elevators) e.mesh.geometry.dispose();
-    for (const t of this.trains) t.mesh.geometry.dispose();
+    for (const elevator of this.elevators) elevator.mesh.geometry.dispose();
+    const materials = new Set<THREE.Material>();
+    this.group.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        const list = Array.isArray(object.material) ? object.material : [object.material];
+        list.forEach((material) => materials.add(material));
+      }
+    });
+    materials.forEach((material) => material.dispose());
     scene.remove(this.group);
     this.group.clear();
   }

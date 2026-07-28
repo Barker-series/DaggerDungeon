@@ -7,8 +7,9 @@ A first-person megastructure exploration game built with Three.js and React on t
 The core world idea, inspired by the brilliant procgen in **Lorne's Lure**: instead of forcing a 2D generator to fake verticality with stacked levels (we tried — endless edge cases), verticality is *content*, not generation.
 
 - The world has ONE ground-level procedural floor.
-- On a **coarse grid** (one pillar cell = 4×4 dungeon cells = 168×168 world units), each cell may hold a **pillar**: a massive monument built as a vertical **kebab of authored chunks** — plain shaft segments, terrace plazas, hollow galleries, a crown — skewered bottom to top.
-- Every chunk carries a **winding ramp** up one face, and the ramp face advances a quarter-turn per chunk, so a continuous spiral staircase wraps each pillar from grade to crown — climbability is guaranteed *by construction*, never verified.
+- On a **coarse grid** (one pillar cell = 4×4 dungeon cells = 56×56 tiles), a deterministic region-aware field decides whether each cell is empty or holds a **pillar**: a massive monument built as a vertical **kebab of authored chunks** — plain shaft segments, terrace plazas, hollow galleries, a crown — skewered bottom to top.
+- Ordinary kebabs carry a **winding ramp** up one face, and the ramp face advances a quarter-turn per chunk, so a continuous spiral staircase wraps each pillar from grade to crown.
+- Rare occupied cells replace the kebab with a purpose-built **elevator shaft**: an internal car links bottom, ground, and crown stops at practical transit speed. Press F beside a large red call box to summon it, then press F while aboard to depart. Travel time comes from vertical distance, not an artificially slow platform.
 - **Bridges** connect neighboring pillars where their sockets (plaza edges, gallery doorways) align in height — a pure neighbor-pair computation, with a local degree guarantee so no pillar is ever unreachable by air.
 - Terrace plazas omit their slab over the arriving stairs (open-air climbs) and grow corbel brackets under their cantilevered edges.
 
@@ -22,22 +23,24 @@ The generator uses a **LayerProcGen** architecture — layered procedural genera
 
 | Layer | Name | What it does |
 |-------|------|-------------|
-| Pillar | **Coarse pillar layer** | One kebab per pillar cell — pure function of (seed, px, pz). Footprints become walls the rest routes around. |
+| Region | **Coarse region layer** | City, machine, canyon, and frontier districts constrain biome palettes, pillar density, height, depth, and chunk vocabulary. |
+| Pillar | **Coarse pillar layer** | Region-weighted occupancy and kebab composition, pure in absolute pillar-cell coordinates. Empty cells create courts, cuts, and breathing room. |
 | 0 | **Noise** | Noise field defines which dungeon cells are active. Deterministic seeding via FNV-1a + mulberry32. |
 | 1 | **Tile Grid + Fine Noise** | Active cells become floor; organic biomes get noise-sculpted edges. |
 | 2 | **Biome** | Per-cell biome assignment: dungeon, crypt, cave, ember, outside. |
-| 3 | **Spawn/Exit** | Far-apart spawn and exit rooms, never inside a pillar footprint. Exit stairs regenerate the next stack. |
-| 4 | **Connectivity** | Batch-per-pass island bridging: every disconnected floor component is carved toward the spawn network. |
-| 5 | **Golden Path** | Guaranteed spawn→exit route, penalized away from unstable ground; pit crossings become flat causeways. |
+| 3 | **Spawn marker** | Places the player safely on the permanent network without carving objective-specific terrain. There is currently no exit. |
+| 4 | **Permanent Transit** | Every absolute pillar cell owns a stable hub and pair-owned boundary sockets. Bounded local routes create the same infinite navigation network from every overlapping window. |
+| 5 | **Reserved legacy layer** | The bounded-map golden path and exit were removed; exploration currently has no objective-authored terrain. |
 | 6 | **Height Fields** | Rolling walkable terrain, bottomless pits, biome-clearance ceilings. Terrain flows *under* pillar footprints; foundations dominate the shared corner field so man-made surfaces stay flat and the ground banks against them. |
 | Columns | **Column model** | The single authority on solid vs air: per-(x,z) air spans, built last. Pillar air spans and bridge carves replace/split columns. Renderer, physics, and agents all derive from it — leaks are unrepresentable, not patched. |
 
 ### Design Principles
 
 1. **The column model is the seam** — all vertical faces derive from span differences between adjacent columns; a face exists exactly where air meets solid.
-2. **The guaranteed path is sacred** — spawn to exit is always navigable; pillar spirals are continuous by construction.
+2. **Permanent navigation is sacred** — temporary generation windows never decide whether a route exists; local components attach to stable pillar-cell hubs and sockets.
 3. **Junctions interpenetrate, never abut** — face tops overshoot into solid, caps overlap neighbors; shared-edge geometry leaks rasterization hairlines, overlapping geometry cannot.
-4. **Infinite-world discipline** — every generation feature is a pure function of (seed, cell) plus a bounded neighbor radius. No global scans in new code.
+4. **Infinite-world discipline** — every generation feature is a pure function of (seed, absolute cell) plus a bounded neighbor radius. No global scans in new code.
+5. **Front faces are the contract** — structural geometry has consistent triangle winding and renders front-side only. `DoubleSide` is reserved for intentional billboards, never used to conceal missing or reversed faces.
 
 Design documents: [`docs/dungeon-layer-design.md`](docs/dungeon-layer-design.md), [`docs/layerprocgen-findings.md`](docs/layerprocgen-findings.md)
 
@@ -52,11 +55,15 @@ Seen bugs become reproducible bugs:
 ## Game Features
 
 - **Megastructure traversal** — climb spiral stairs around monuments, cross high bridges, drop into rolling caves, emerge into open-sky canyons
-- **Five biomes** — dungeon halls, crypts, caves, ember fields, and the outside — with per-biome terrain, ceilings, and pit behavior
-- **Bottomless pits** — the floor is failing; the golden path bridges the void (R respawns)
-- **Auto-play bot** — press P to watch the AI navigate (A* over the world graph)
+- **Vertical transit shafts** — rare elevator pillars replace the exterior-stair kebab and connect bottom, ground, and crown stops
+- **Four regions / five biomes** — city, machine, canyon, and frontier districts restrict dungeon, crypt, cave, ember, and outside terrain into distinct identities
+- **Bottomless pits** — deep voids and open-sky drops break the slab; R respawns
+- **Endless streaming** — neighboring worlds generate off-thread, geometry is prepared incrementally, and direction-aware prefetch keeps ordinary boundary crossings smooth
+- **Auto-play bot** — press P to travel toward successive forward destinations without an exit objective
 - **Elevation-slice maps** — minimap and debug map show what's accessible *at your current height*: pillar plazas, ramps, and bridges appear at their own elevation
-- **Debug map** — backtick for full-map views: elevation slice, tiles, biomes, noise, content, pillars
+- **Debug map** — backtick for full-map views: elevation slice, tiles, biomes, regions, noise, content, and pillars
+- **Visual Lab** — press V for live bloom, color finishing, front-face solid/wireframe/normals inspection, reset, and copyable presets
+- **Runtime settings** — Escape opens brightness, mouse sensitivity, and movement-speed controls
 - **Seed control** — reproducible worlds from the main menu
 - **Mobile support** — touch controls, responsive UI
 
@@ -72,6 +79,8 @@ Seen bugs become reproducible bugs:
 | Interact | F |
 | Respawn | R |
 | Auto-play | P |
+| Visual Lab | V |
+| Settings | Escape |
 | Debug Map | ` (backtick) |
 | Cycle Debug Mode | Tab (while debug open) |
 | Debug snapshot | F8 |
@@ -91,9 +100,19 @@ Seen bugs become reproducible bugs:
 ## Getting Started
 
 ```bash
-pnpm install
-pnpm run dev
+npm install
+npm run dev
 ```
+
+Vite prints the local address in the terminal. To test from another computer on
+the same network:
+
+```bash
+npm run dev -- --host 0.0.0.0
+```
+
+Open the printed `Network` address on the other computer. No dedicated GPU or
+platform-specific runtime is required for local development.
 
 ## Project Structure
 
@@ -102,6 +121,7 @@ src/
   engine/                  # Three.js game engine (vanilla)
     GameEngine.ts          # Main loop, movement/physics from the column model, DDSNAP capture
     DungeonRenderer.ts     # Column model → geometry: floors/ceilings/caps + one XOR wall pass
+    PostProcessing.ts      # Validated bloom and neutral color-finishing pipeline
     Camera.ts              # Free-look FPS camera
     InputManager.ts        # Keyboard + mouse input
     SpriteManager.ts       # Billboard sprites
@@ -118,19 +138,24 @@ src/
       pillar-geometry.ts   # Chunks → footprints + per-tile air spans (ramps, plazas, corbels)
       pillar-bridges.ts    # Neighbor-pair bridge planning + column carving
       columns.ts           # The column model builder + validation
+      region-layer.ts      # Coarse city/machine/canyon/frontier identity field
+      layer4-connect.ts    # Permanent cell hubs, pair-owned sockets, local attachment
       layer0..layer6*.ts   # The dungeon floor layer stack
       heightfield.ts       # Corner fields: physics walks exactly what is drawn
       organiccontour.ts    # Marching-squares walls: render and collision share one line
       cells.ts, rng.ts, noise.ts
 
   store/gameStore.ts       # Zustand runtime state
-  ui/                      # React overlay: HUD (live biome), Minimap, DebugMap, menus
+  ui/                      # React overlay: HUD, maps, settings, and Visual Lab
   bot/DungeonBot.ts        # Auto-play state machine
 
 tools/
   debug-view.ts            # DDSNAP viewer: exact-view software raycast + world data dump
+  verify-world.ts          # Multi-seed generation and navigation invariants
+  export-reference-assets.mjs # Blender-ready scale references for replacement assets
 
-docs/                      # Generation design notes
+reference-assets/          # Column/stair GLB scale references for Blender handoff
+docs/                      # Living plan, generation notes, and asset-handoff guide
 ```
 
 ## License

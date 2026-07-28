@@ -65,7 +65,7 @@ function makeConcreteMaterial(
     color: tint,
     emissive,
     roughness,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
   });
 
   material.onBeforeCompile = (shader) => {
@@ -225,7 +225,7 @@ export class DungeonRenderer {
     roughness: 0.7,
     emissive: 0x1a3a2a,
     emissiveIntensity: 0.15,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
   });
   private markers: Marker[] = [];
   private markerTime = 0;
@@ -471,7 +471,7 @@ export class DungeonRenderer {
                 1, bB / TILE_SIZE, 0, bA / TILE_SIZE);
               const nnx = dx3, nnz = dz3; // face the neighbor (air side)
               for (let q = 0; q < 4; q++) fbuf.norms.push(nnx, 0, nnz);
-              fbuf.idxs.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+              addOrientedQuad(fbuf, vi, nnx, 0, nnz);
             }
             continue;
           }
@@ -858,7 +858,7 @@ export class DungeonRenderer {
                 s1, t1 / TILE_SIZE,
                 s0, t0 / TILE_SIZE,
               );
-              buf.idxs.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+              addOrientedQuad(buf, vi, nrmX, 0, nrmZ);
             };
 
             // ── ONE WALL SYSTEM: where the solid side is a CONTOURED wall
@@ -1054,7 +1054,7 @@ export class DungeonRenderer {
               );
               for (let i2 = 0; i2 < 4; i2++) buf.norms.push(nrx, 0, nrz);
               buf.uvs.push(0, b0 / TILE_SIZE, 0.5, b1 / TILE_SIZE, 0.5, t1 / TILE_SIZE, 0, t0 / TILE_SIZE);
-              buf.idxs.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+              addOrientedQuad(buf, vi, nrx, 0, nrz);
             };
 
             // TRANSOM: an open (chamfered) half leaves its boundary
@@ -1082,7 +1082,7 @@ export class DungeonRenderer {
                 s1, top / TILE_SIZE,
                 s0, top / TILE_SIZE,
               );
-              buf.idxs.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+              addOrientedQuad(buf, vi, nrmX, 0, nrmZ);
             };
 
             if (chamferLc >= 0 && (o0 || o1)) {
@@ -1133,6 +1133,39 @@ export class DungeonRenderer {
     }
     geom.setAttribute('splatWeight', new THREE.Float32BufferAttribute(splatWeights, 3));
     geom.setIndex(buf.idxs);
+    if (import.meta.env.DEV) {
+      let reversed = 0;
+      let degenerate = 0;
+      for (let t = 0; t < buf.idxs.length; t += 3) {
+        const ia = buf.idxs[t]! * 3;
+        const ib = buf.idxs[t + 1]! * 3;
+        const ic = buf.idxs[t + 2]! * 3;
+        const abx = buf.verts[ib]! - buf.verts[ia]!;
+        const aby = buf.verts[ib + 1]! - buf.verts[ia + 1]!;
+        const abz = buf.verts[ib + 2]! - buf.verts[ia + 2]!;
+        const acx = buf.verts[ic]! - buf.verts[ia]!;
+        const acy = buf.verts[ic + 1]! - buf.verts[ia + 1]!;
+        const acz = buf.verts[ic + 2]! - buf.verts[ia + 2]!;
+        const gx = aby * acz - abz * acy;
+        const gy = abz * acx - abx * acz;
+        const gz = abx * acy - aby * acx;
+        const areaSq = gx * gx + gy * gy + gz * gz;
+        if (areaSq < 1e-10) {
+          degenerate++;
+          continue;
+        }
+        const nx = buf.norms[ia]! + buf.norms[ib]! + buf.norms[ic]!;
+        const ny = buf.norms[ia + 1]! + buf.norms[ib + 1]! + buf.norms[ic + 1]!;
+        const nz = buf.norms[ia + 2]! + buf.norms[ib + 2]! + buf.norms[ic + 2]!;
+        if (gx * nx + gy * ny + gz * nz <= 0) reversed++;
+      }
+      if (reversed > 0 || degenerate > 0) {
+        console.error(
+          `[geometry] invalid triangles: reversed=${reversed} `
+          + `degenerate=${degenerate} total=${buf.idxs.length / 3}`,
+        );
+      }
+    }
     const mesh = new THREE.Mesh(geom, material);
     parent.add(mesh);
   }
@@ -1149,6 +1182,41 @@ const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
 const _n = new THREE.Vector3();
 
+/** Add a quad with triangle winding that agrees with its authored normal.
+ * Procedural surfaces previously used one fixed index order even when their
+ * intended normal reversed, forcing every structural material to DoubleSide. */
+function addOrientedQuad(
+  buf: MeshBuffers,
+  i: number,
+  nx: number,
+  ny: number,
+  nz: number,
+): void {
+  const p = buf.verts;
+  const addTriangle = (a: number, b: number, c: number): void => {
+    const p0 = a * 3;
+    const p1 = b * 3;
+    const p2 = c * 3;
+    const ax = p[p1]! - p[p0]!;
+    const ay = p[p1 + 1]! - p[p0 + 1]!;
+    const az = p[p1 + 2]! - p[p0 + 2]!;
+    const bx = p[p2]! - p[p0]!;
+    const by = p[p2 + 1]! - p[p0 + 1]!;
+    const bz = p[p2 + 2]! - p[p0 + 2]!;
+    const gx = ay * bz - az * by;
+    const gy = az * bx - ax * bz;
+    const gz = ax * by - ay * bx;
+    if (gx * gx + gy * gy + gz * gz < 1e-10) return;
+    if (gx * nx + gy * ny + gz * nz >= 0) buf.idxs.push(a, b, c);
+    else buf.idxs.push(a, c, b);
+  };
+  // A terrain quad can be non-planar. Validate its triangles separately:
+  // flipping the whole quad still left one triangle backward on twisted
+  // height-field and chamfer junctions.
+  addTriangle(i, i + 1, i + 2);
+  addTriangle(i, i + 2, i + 3);
+}
+
 /** Tessellation for floor tiles at hole boundaries */
 const PIT_TESS = 4;
 
@@ -1164,13 +1232,12 @@ function addFloorPatch(
   buf.verts.push(x1, h11, z1);
   buf.verts.push(x0, h01, z1);
   buf.uvs.push(u0, v0, u1, v0, u1, v1, u0, v1);
-  buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
-
   _a.set(x1 - x0, h11 - h00, z1 - z0);
   _b.set(x0 - x1, h01 - h10, z1 - z0);
   _n.crossVectors(_a, _b).normalize();
   if (_n.y < 0) _n.negate();
   for (let k = 0; k < 4; k++) buf.norms.push(_n.x, _n.y, _n.z);
+  addOrientedQuad(buf, i, _n.x, _n.y, _n.z);
 }
 
 function addTessellatedFloor(
@@ -1212,8 +1279,8 @@ function addCeilPatch(
   buf.verts.push(x1, h, z1);
   buf.verts.push(x1, h, z0);
   buf.uvs.push(0, 0, 0, 1, 1, 1, 1, 0);
-  buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
   for (let k = 0; k < 4; k++) buf.norms.push(0, -1, 0);
+  addOrientedQuad(buf, i, 0, -1, 0);
 }
 
 function addHorizontalQuad(
@@ -1243,12 +1310,11 @@ function addHorizontalQuad(
     buf.verts.push(x0 + s, h10, z0);
     buf.uvs.push(0, 0, 0, 1, 1, 1, 1, 0);
   }
-  buf.idxs.push(i, i + 1, i + 2, i, i + 2, i + 3);
-
   _a.set(s, h11 - h00, s);
   _b.set(-s, h01 - h10, s);
   _n.crossVectors(_a, _b).normalize();
   if (facingUp && _n.y < 0) _n.negate();
   if (!facingUp && _n.y > 0) _n.negate();
   for (let k = 0; k < 4; k++) buf.norms.push(_n.x, _n.y, _n.z);
+  addOrientedQuad(buf, i, _n.x, _n.y, _n.z);
 }

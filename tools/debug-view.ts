@@ -28,6 +28,7 @@ const { DungeonRenderer } = await import('../src/engine/DungeonRenderer');
 const { tileBiome } = await import('../src/game/dungeon/cells');
 const { TILE_SIZE, SKY_CEIL } = await import('../src/game/types');
 const { sliceAt } = await import('../src/game/mapslice');
+const { bridgeTiles } = await import('../src/game/dungeon/pillar-bridges');
 
 // ── Parse ──
 
@@ -296,6 +297,17 @@ for (let mi = 0; mi < marks.length; mi++) {
   console.log(`  spans: ${spans.map((s) =>
     `${s.floor <= -1e8 ? 'ABYSS' : s.floor.toFixed(1)}..${s.ceil >= SKY_CEIL ? 'SKY' : s.ceil.toFixed(1)}(${s.owner},${s.ceilOwner})`).join(' ') || '(solid)'}`);
   console.log(`  slice@markY: ${JSON.stringify(sliceAt(spans, my))}`);
+  for (const br of world.bridges.filter((candidate) =>
+    bridgeTiles(candidate).some((t) => t.tx === mtx && t.tz === mtz))) {
+    const receivingCx = br.dir === 'east' ? br.cx + 1 : br.cx;
+    const receivingCz = br.dir === 'south' ? br.cz + 1 : br.cz;
+    const receiving = world.pillars.get(`${receivingCx},${receivingCz}`);
+    console.log(
+      `  bridge: owner(${br.cx},${br.cz}) ${br.dir} `
+      + `${br.yA.toFixed(1)}..${br.yB.toFixed(1)} pipe=${br.pipe} `
+      + `receiving=${receiving ? `${receiving.cx},${receiving.cz}` : 'missing'}`,
+    );
+  }
   // ── GAP AUDIT at the mark: for each of the 4 tile-boundary planes
   // through this point, list the vertical coverage of the geometry on
   // it vs the range that MUST be sealed (one side air, other solid).

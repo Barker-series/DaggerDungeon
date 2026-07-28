@@ -40,26 +40,70 @@ const origError = console.error;
 console.error = (...args: unknown[]) => { logged.push(args.join(' ')); origError(...args); };
 
 // ── Window seam agreement: two windows offset by one pillar cell must
-// agree on nearly all shared columns (field-driven layers are exactly
-// window-stable; per-window passes — rooms, hallways, golden path —
-// account for the small remainder). Guards the endless-world plumbing.
+// agree on nearly all shared columns. Field-driven and permanent-transit
+// layers are window-stable; the diagnostic buckets below identify any
+// remaining window-relative work instead of accepting it as mysterious drift.
 {
   const seed = SEEDS[0]!;
   const A = generateWorld({ seed, stack: 1 });
   const B = generateWorld({ seed, stack: 1, originPcx: 1, originPcz: 0 });
   const W = A.levels[0]!.width;
   let same = 0, total = 0;
+  let tileDiff = 0;
+  let heightDiff = 0;
+  let pillarDiff = 0;
+  let columnOnlyDiff = 0;
+  let coreSame = 0, coreTotal = 0;
+  const mismatchByAbsCell = new Map<string, number>();
   for (let tz = 0; tz < W; tz++) {
     for (let tx = 56; tx < W; tx++) {
       total++;
+      const bx = tx - 56;
       const ka = A.columns[tz * W + tx]!.map((s) => `${s.floor.toFixed(2)}..${s.ceil.toFixed(2)}`).join('|');
-      const kb = B.columns[tz * W + (tx - 56)]!.map((s) => `${s.floor.toFixed(2)}..${s.ceil.toFixed(2)}`).join('|');
-      if (ka === kb) same++;
+      const kb = B.columns[tz * W + bx]!.map((s) => `${s.floor.toFixed(2)}..${s.ceil.toFixed(2)}`).join('|');
+      const inSharedCore = tx >= PILLAR_CELL_TILES * 2
+        && tx < W - PILLAR_CELL_TILES;
+      if (inSharedCore) {
+        coreTotal++;
+        if (ka === kb) coreSame++;
+      }
+      if (ka === kb) {
+        same++;
+        continue;
+      }
+      const absCell = `${Math.floor(tx / PILLAR_CELL_TILES)},${Math.floor(tz / PILLAR_CELL_TILES)}`;
+      mismatchByAbsCell.set(absCell, (mismatchByAbsCell.get(absCell) ?? 0) + 1);
+      const tilesDiffer = A.levels.some((level, li) =>
+        level.tiles[tz]![tx] !== B.levels[li]!.tiles[tz]![bx]);
+      const heightsDiffer = A.levels.some((level, li) =>
+        Math.abs(level.floorHeights[tz]![tx]! - B.levels[li]!.floorHeights[tz]![bx]!) > 0.005
+        || Math.abs(level.ceilingHeights[tz]![tx]! - B.levels[li]!.ceilingHeights[tz]![bx]!) > 0.005);
+      const pillarsDiffer = A.levels.some((level, li) =>
+        level.pillarWall[tz]![tx] !== B.levels[li]!.pillarWall[tz]![bx]
+        || level.pillarGround[tz]![tx] !== B.levels[li]!.pillarGround[tz]![bx]);
+      if (tilesDiffer) tileDiff++;
+      if (heightsDiffer) heightDiff++;
+      if (pillarsDiffer) pillarDiff++;
+      if (!tilesDiffer && !heightsDiffer && !pillarsDiffer) columnOnlyDiff++;
     }
   }
   const pct = (100 * same) / total;
+  const corePct = (100 * coreSame) / coreTotal;
   console.log(`window seam: ${pct.toFixed(1)}% of overlap columns identical`);
+  console.log(`  retained core: ${corePct.toFixed(1)}% identical (${coreSame}/${coreTotal})`);
+  if (same !== total) {
+    const hottestCells = [...mismatchByAbsCell.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([cell, count]) => `${cell}:${count}`)
+      .join(' ');
+    console.log(
+      `  seam diffs: tiles=${tileDiff} heights=${heightDiff} `
+      + `pillars=${pillarDiff} columns-only=${columnOnlyDiff}; cells ${hottestCells}`,
+    );
+  }
   if (pct < 90) fail(`window seam agreement ${pct.toFixed(1)}% < 90%`);
+  if (corePct < 100) fail(`retained window core agreement ${corePct.toFixed(1)}% < 100%`);
 
   // A grounded player crossing the east recenter line must have compatible
   // support in the shifted window, either at the same column or within the
@@ -239,9 +283,33 @@ for (const seed of SEEDS) {
   let climbable = 0;
   let descendable = 0;
   let deepPillars = 0;
+  let elevatorShafts = 0;
   for (const spec of world.pillars.values()) {
     const x0 = spec.cx * PILLAR_CELL_TILES;
     const z0 = spec.cz * PILLAR_CELL_TILES;
+    if (spec.elevator) {
+      elevatorShafts++;
+      const shaft = world.columns[(z0 + 27) * W + x0 + 27]!;
+      const bottom = spec.baseDepth + 0.5;
+      const shaftAir = shaft.some((s) =>
+        s.floor <= bottom + 0.01
+        && s.ceil >= spec.totalHeight + 3.9);
+      const lobby = world.columns[(z0 + 27) * W + x0 + 17]!
+        .some((s) => Math.abs(s.floor - 0.5) < 0.01 && s.ceil - s.floor >= 4);
+      const orderedStops = bottom < 0.5 && spec.totalHeight > 0.5;
+      if (!shaftAir || !lobby || !orderedStops) {
+        fail(
+          `seed ${seed}: elevator(${spec.cx},${spec.cz}) invalid `
+          + `shaft=${shaftAir} lobby=${lobby} stops=${orderedStops}`,
+        );
+      } else {
+        // The runtime car is the moving floor connecting these authored stops.
+        climbable++;
+        if (spec.baseDepth < -4) descendable++;
+      }
+      if (spec.baseDepth < -4) deepPillars++;
+      continue;
+    }
     const seen = new Set<string>();
     const queue: [number, number, number][] = [];
     let targetY = -Infinity;
@@ -355,7 +423,7 @@ for (const seed of SEEDS) {
     fail(`seed ${seed}: ${unsettledMarriage} pillar-ground tiles remain before marriage fixpoint`);
   }
 
-  console.log(`seed ${seed}: density=${occupancyPercent.toFixed(1)}% deep=${descendable}/${deepPillars} ${ms}ms pillars=${world.pillars.size} climbable=${climbable} bridges=${world.bridges.length} bridgeTiles=${total} sockets=${brokenTransitSockets} unreachable=${unreachableTerrain} cracks=${cracks} unsettled=${unsettledMarriage}`);
+  console.log(`seed ${seed}: density=${occupancyPercent.toFixed(1)}% deep=${descendable}/${deepPillars} ${ms}ms pillars=${world.pillars.size} elevators=${elevatorShafts} climbable=${climbable} bridges=${world.bridges.length} bridgeTiles=${total} sockets=${brokenTransitSockets} unreachable=${unreachableTerrain} cracks=${cracks} unsettled=${unsettledMarriage}`);
 }
 
 console.log(failures === 0 ? `ALL CHECKS PASSED (${SEEDS.length} seeds)` : `${failures} FAILURES`);
