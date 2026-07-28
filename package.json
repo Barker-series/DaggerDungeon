@@ -28,6 +28,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "cross-env": "^7.0.3",
     "prettier": "^3.4.2",
+    "tsx": "^4.23.1",
     "typescript": "^5.7.3",
     "vite": "^6.3.5"
   },

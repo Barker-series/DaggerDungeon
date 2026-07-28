@@ -1,6 +1,15 @@
 # Dungeon Generation — Design & Intent
 
-> **Audience:** This document is written for an AI assistant picking up this project in a fresh session. Read this BEFORE touching the dungeon generator code. It explains what we're building, why, and the hard-won lessons from failed attempts.
+> **Historical document:** This records an earlier Daggerfall-style dungeon
+> direction and is not the current project architecture. The project is now an
+> endless BLAME!-inspired megastructure generator built from cooperating
+> LayerProcGen scales, permanent transit, ground strata, pillar-kebab buildings,
+> infrastructure, and one authoritative column model. Read `README.md` and
+> `docs/PLAN.md` as the current authority before using any material below.
+
+> **Audience:** This document preserves historical design reasoning and hard-won
+> lessons from failed attempts. Consult it for background only after reading the
+> current README and living plan.
 
 ---
 
