@@ -796,13 +796,35 @@ export class GameEngine {
     return best;
   }
 
+  /**
+   * Supporting ground under the player's circular footprint. A center-only
+   * query can drop the feet onto a lower stair tread while the capsule still
+   * overlaps the neighboring riser, leaving the camera embedded in its wall.
+   * Sampling the footprint makes the higher tread support the capsule until
+   * its full radius has cleared the edge. Every sample still comes from the
+   * same column/corner/mover authority as visible geometry.
+   */
+  private playerGround(x: number, z: number, limitY: number): number {
+    let best = this.worldGround(x, z, limitY);
+    const radius = PLAYER_RADIUS * 0.98;
+    const diagonal = radius / Math.SQRT2;
+    for (const [dx, dz] of [
+      [radius, 0], [-radius, 0], [0, radius], [0, -radius],
+      [diagonal, diagonal], [diagonal, -diagonal],
+      [-diagonal, diagonal], [-diagonal, -diagonal],
+    ] as const) {
+      best = Math.max(best, this.worldGround(x + dx, z + dz, limitY));
+    }
+    return best;
+  }
+
   // ── Player Movement ──
 
   private processMovement(dt: number): void {
     if (!this.world) return;
     const pos = this.gridCamera.position;
     const groundAt = (x: number, z: number): number =>
-      this.worldGround(x, z, pos.y + CLIMB_HEADROOM);
+      this.playerGround(x, z, pos.y + CLIMB_HEADROOM);
 
     if (this.isGrounded && this.input.consumeJump()) {
       this.vy = JUMP_VELOCITY;

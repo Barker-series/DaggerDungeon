@@ -1133,7 +1133,7 @@ export class DungeonRenderer {
     }
     geom.setAttribute('splatWeight', new THREE.Float32BufferAttribute(splatWeights, 3));
     geom.setIndex(buf.idxs);
-    if (import.meta.env.DEV) {
+    if (import.meta.env?.DEV) {
       let reversed = 0;
       let degenerate = 0;
       for (let t = 0; t < buf.idxs.length; t += 3) {
