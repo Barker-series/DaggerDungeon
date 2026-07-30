@@ -5,3 +5,4 @@ allowBuilds:
 onlyBuiltDependencies:
   - "@series-inc/rundot-3d-engine"
   - "@series-inc/rundot-game-sdk"
+  - esbuild

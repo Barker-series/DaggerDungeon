@@ -23,11 +23,12 @@ The generator uses a **LayerProcGen** architecture — layered procedural genera
 
 | Layer | Name | What it does |
 |-------|------|-------------|
-| Region | **Coarse region layer** | City, machine, canyon, and frontier districts constrain biome palettes, pillar density, height, depth, and chunk vocabulary. |
+| Region | **Coarse region layer** | City, machine, canyon, frontier, and roads districts constrain biome palettes, pillar density, height, depth, and chunk vocabulary. |
 | Pillar | **Coarse pillar layer** | Region-weighted occupancy and kebab composition, pure in absolute pillar-cell coordinates. Empty cells create courts, cuts, and breathing room. |
 | 0 | **Noise** | Noise field defines which dungeon cells are active. Deterministic seeding via FNV-1a + mulberry32. |
 | 1 | **Tile Grid + Fine Noise** | Active cells become floor; organic biomes get noise-sculpted edges. |
 | 2 | **Biome** | Per-cell biome assignment: dungeon, crypt, cave, ember, outside. |
+| Roads | **Street-vein carve** | In roads districts, an arterial road field (level sets of terrain-coupled potentials, hierarchy gated by an openness field) carves streets at grade and cuts the blocks between them into flat-topped plinths under open sky. |
 | 3 | **Spawn marker** | Places the player safely on the permanent network without carving objective-specific terrain. There is currently no exit. |
 | 4 | **Permanent Transit** | Every absolute pillar cell owns a stable hub and pair-owned boundary sockets. Bounded local routes create the same infinite navigation network from every overlapping window. |
 | 5 | **Reserved legacy layer** | The bounded-map golden path and exit were removed; exploration currently has no objective-authored terrain. |
@@ -42,7 +43,7 @@ The generator uses a **LayerProcGen** architecture — layered procedural genera
 4. **Infinite-world discipline** — every generation feature is a pure function of (seed, absolute cell) plus a bounded neighbor radius. No global scans in new code.
 5. **Front faces are the contract** — structural geometry has consistent triangle winding and renders front-side only. `DoubleSide` is reserved for intentional billboards, never used to conceal missing or reversed faces.
 
-Design documents: [`docs/dungeon-layer-design.md`](docs/dungeon-layer-design.md), [`docs/layerprocgen-findings.md`](docs/layerprocgen-findings.md)
+Design documents: [`docs/dungeon-layer-design.md`](docs/dungeon-layer-design.md), [`docs/layerprocgen-findings.md`](docs/layerprocgen-findings.md), [`docs/roads-layer-design.md`](docs/roads-layer-design.md)
 
 ## Debug Tooling — the DDSNAP loop
 
@@ -56,10 +57,13 @@ Seen bugs become reproducible bugs:
 
 - **Megastructure traversal** — climb spiral stairs around monuments, cross high bridges, drop into rolling caves, emerge into open-sky canyons
 - **Vertical transit shafts** — rare elevator pillars replace the exterior-stair kebab and connect bottom, ground, and crown stops
-- **Four regions / five biomes** — city, machine, canyon, and frontier districts restrict dungeon, crypt, cave, ember, and outside terrain into distinct identities
+- **Five regions / five biomes** — city, machine, canyon, frontier, and roads districts restrict dungeon, crypt, cave, ember, and outside terrain into distinct identities
+- **Street-vein roads districts** — arterial streets that squeeze to lone tunnels and flood open basins with side streets, flowing with the terrain; the blocks between become courts and plinth building sites at quantized heights
 - **Bottomless pits** — deep voids and open-sky drops break the slab; R respawns
 - **Endless streaming** — neighboring worlds generate off-thread, geometry is prepared incrementally, and direction-aware prefetch keeps ordinary boundary crossings smooth
-- **Auto-play bot** — press P to travel toward successive forward destinations without an exit objective
+- **Source-style movement** — persistent-velocity physics with ground friction and projected-velocity acceleration: air strafing and bunnyhopping work like CS/GMOD (hold Space to chain hops)
+- **Ledge grab & mantle** — jumps that fall just short catch the lip and pull up; low plinths are climbable with a jump toward the ledge
+- **Auto-play bot** — press P to travel toward successive forward destinations without an exit objective (drives with exact kinematic movement, unaffected by the player feel-model)
 - **Elevation-slice maps** — minimap and debug map show what's accessible *at your current height*: pillar plazas, ramps, and bridges appear at their own elevation
 - **Debug map** — backtick for full-map views: elevation slice, tiles, biomes, regions, noise, content, and pillars
 - **Visual Lab** — press V for live bloom, color finishing, front-face solid/wireframe/normals inspection, reset, and copyable presets
@@ -73,7 +77,7 @@ Seen bugs become reproducible bugs:
 |--------|-----|
 | Move | WASD |
 | Look | Mouse (click to capture) |
-| Jump | Space |
+| Jump / bunnyhop | Space (hold to chain hops) |
 | Crouch | Ctrl |
 | Sprint | Shift |
 | Interact | F |

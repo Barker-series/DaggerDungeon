@@ -11,9 +11,6 @@ importers:
       '@series-inc/rundot-game-sdk':
         specifier: ^5.3.0
         version: 5.6.0
-      delaunator:
-        specifier: ^5.1.0
-        version: 5.1.0
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -706,9 +703,6 @@ packages:
       supports-color:
         optional: true
 
-  delaunator@5.1.0:
-    resolution: {integrity: sha512-AGrQ4QSgssa1NGmWmLPqN5NY2KajF5MqxetNEO+o0n3ZwZZeTmt7bBnvzHWrmkZFxGgr4HdyFgelzgi06otLuQ==}
-
   electron-to-chromium@1.5.313:
     resolution: {integrity: sha512-QBMrTWEf00GXZmJyx2lbYD45jpI3TUFnNIzJ5BBc8piGUDwMPa1GV6HJWTZVvY/eiN3fSopl7NRbgGp9sZ9LTA==}
 
@@ -816,9 +810,6 @@ packages:
   react@18.3.1:
     resolution: {integrity: sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ==}
     engines: {node: '>=0.10.0'}
-
-  robust-predicates@3.0.3:
-    resolution: {integrity: sha512-NS3levdsRIUOmiJ8FZWCP7LG3QpJyrs/TE0Zpf1yvZu8cAJJ6QMW92H1c7kWpdIHo8RvmLxN/o2JXTKHp74lUA==}
 
   rollup@4.59.0:
     resolution: {integrity: sha512-2oMpl67a3zCH9H79LeMcbDhXW/UmWG/y2zuqnF2jQq5uq9TbM9TVyXvA4+t+ne2IIkBdrLpAaRQAvo7YI/Yyeg==}
@@ -1404,10 +1395,6 @@ snapshots:
     dependencies:
       ms: 2.1.3
 
-  delaunator@5.1.0:
-    dependencies:
-      robust-predicates: 3.0.3
-
   electron-to-chromium@1.5.313: {}
 
   esbuild@0.25.12:
@@ -1530,8 +1517,6 @@ snapshots:
   react@18.3.1:
     dependencies:
       loose-envify: 1.4.0
-
-  robust-predicates@3.0.3: {}
 
   rollup@4.59.0:
     dependencies:

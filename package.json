@@ -34,7 +34,6 @@
   },
   "dependencies": {
     "@series-inc/rundot-game-sdk": "^5.3.0",
-    "delaunator": "^5.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "rot-js": "^2.2.1",
@@ -43,7 +42,8 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "@series-inc/rundot-game-sdk"
+      "@series-inc/rundot-game-sdk",
+      "esbuild"
     ]
   }
 }

@@ -276,7 +276,16 @@ one point set, with transit-socket-style ownership and seam invariants.
 
 Shipped so far: 'roads' region live (veins mode), per-block quantized plinths
 (courts 0.6, masses 3/6/9/12, streets flat at 0.5 grade), activity-gate
-override (arteries never break), pit suppression on streets.
+override (arteries never break), pit suppression on streets, contour-fence
+exemption (roads tiles are structural like pillar footprints), and
+flat-vs-blended seam dominance at district borders (low plinths join the
+floor system so terrain banks against them).
+
+Traversal shipped alongside (engine): Source-style persistent-velocity
+movement (friction + projected-velocity accelerate, air strafe, auto-bhop
+on held Space) and ledge grab/mantle (GRAB_HEIGHT 1.6 — courts → tier-1
+plinths chain with a jump; short pit jumps catch the far lip). The bot
+drives with exact kinematic velocity, bypassing the feel-model.
 
 Future idea (user, July 30 2026): a canyon-flavored street district that
 INVERTS pit suppression — the vein network laced with voids to the extreme,
