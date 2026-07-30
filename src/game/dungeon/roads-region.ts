@@ -17,13 +17,13 @@ import { getAllCells, windowOrigin } from './cells';
 import { regionAtCell } from './region-layer';
 import { roadVeinsAt, DEFAULT_ROAD_PARAMS, type RoadFieldParams } from './road-field';
 
-/** In-game tuning of the vein field (world units). Matches the mask preset
- *  the vocabulary was approved on: spacing 42 / width 5 / terrain 2200. */
+/** In-game tuning of the vein field (world units). Zoomed preset: wider
+ *  streets, farther apart (mask reference /tmp/rm-zoom2 proportions). */
 export const GAME_ROAD_PARAMS: RoadFieldParams = {
   ...DEFAULT_ROAD_PARAMS,
-  spacing: 42,
-  streetWidth: 6,
-  terrainScale: 2200,
+  spacing: 64,
+  streetWidth: 9,
+  terrainScale: 2600,
 };
 
 /**
