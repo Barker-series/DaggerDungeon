@@ -118,6 +118,10 @@ export function pillarOccupied(worldSeed: number, pcx: number, pcz: number): boo
     case 'canyon':
       // Most cells are the cut; surviving mass gathers in chunky escarpments.
       return local * 0.4 + macro * 0.6 >= 0.59;
+    case 'roads':
+      // Street-vein district: mostly open plane so the carved network reads;
+      // rare isolated monuments punctuate the long avenues.
+      return local * 0.4 + macro * 0.6 >= 0.74;
     case 'frontier':
       // Looser isolated monuments and small, irregular groups.
       return local * 0.6 + macro * 0.4 >= 0.55;

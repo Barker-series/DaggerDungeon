@@ -121,6 +121,12 @@ export function assignBiomes(_cellTileSize: number, stackSeed: number, level: nu
       case 'canyon':
         cell.biome = wildness > 0.43 && level === 0 ? 'outside' : 'cave';
         break;
+      case 'roads':
+        // Street-vein district: open sky at grade for iteration headroom
+        // (crude slice — see docs/roads-layer-design.md). Below grade it
+        // reads as cave until the region gets its own vertical vocabulary.
+        cell.biome = level === 0 ? 'outside' : 'cave';
+        break;
       case 'frontier':
         if (wildness > 0.612) {
           cell.biome = level === 0 ? 'outside' : 'cave';

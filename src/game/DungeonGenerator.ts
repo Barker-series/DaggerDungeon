@@ -29,6 +29,7 @@ import { generateLayer0 } from './dungeon/layer0-noise';
 import { generateLayer1TileGrid } from './dungeon/layer1-tilegrid';
 import { assignBiomes } from './dungeon/layer2-biome';
 import { applyFineNoise } from './dungeon/layer1-finenoise';
+import { carveRoadsRegion } from './dungeon/roads-region';
 import { connectPermanentTransit, permanentTransitTiles } from './dungeon/layer4-connect';
 import { computeHeightFields, computePitMask, PIT_FLOOR } from './dungeon/layer6-heights';
 import { placePillars } from './dungeon/layer45-pillars';
@@ -370,6 +371,11 @@ function generateLevel(
 
   // ── Layer 1.5: Fine noise — sculpt organic biome cells only ──
   applyFineNoise(tiles, GRID_TILES, CELL_TILE_SIZE, levelSeed);
+
+  // ── Roads districts: rasterize the street-vein field (crude slice —
+  // docs/roads-layer-design.md). Before transit, so layer 4 still
+  // guarantees connectivity over whatever the veins leave behind. ──
+  carveRoadsRegion(tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed);
 
   // ── Pillar footprints: solid wall in the 2D grid. The column model
   // carves the pillar's real interior later; here they are obstacles

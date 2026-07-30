@@ -170,6 +170,8 @@ for (const seed of SEEDS) {
     machine: new Set(['cave', 'ember']),
     canyon: new Set(['cave', 'outside']),
     frontier: new Set(['dungeon', 'crypt', 'cave', 'ember', 'outside']),
+    // Street-vein district: open sky at grade (crude slice).
+    roads: new Set(['outside']),
   };
   let wrongRegionBiomes = 0;
   for (let cz = 0; cz < L.cellBiomes.length; cz++) {

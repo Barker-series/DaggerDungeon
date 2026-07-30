@@ -25,6 +25,7 @@ const REGION_COLORS: Record<RegionType, string> = {
   machine: '#8b653c',
   canyon: '#78453b',
   frontier: '#486a55',
+  roads: '#3d5a8a',
 };
 
 type ViewMode = 'slice' | 'tiles' | 'biome' | 'region' | 'noise' | 'content' | 'pillars';

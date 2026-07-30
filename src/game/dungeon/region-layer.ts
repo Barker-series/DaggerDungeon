@@ -32,14 +32,17 @@ import { sampleNoise3D } from './noise';
 /** Dungeon cells per region axis (= 2x2 pillar cells, 336 wu) */
 export const REGION_CELLS = 8;
 
-export type RegionType = 'city' | 'machine' | 'canyon' | 'frontier';
+export type RegionType = 'city' | 'machine' | 'canyon' | 'frontier' | 'roads';
 
 /** Weighted character of each district type */
 const REGION_WEIGHTS: [RegionType, number][] = [
-  ['city', 0.35],
-  ['machine', 0.3],
-  ['canyon', 0.2],
-  ['frontier', 0.15],
+  ['city', 0.3],
+  ['machine', 0.25],
+  ['canyon', 0.17],
+  ['frontier', 0.13],
+  // The street-vein experiment district (docs/roads-layer-design.md):
+  // arterial road networks carved under open sky.
+  ['roads', 0.15],
 ];
 
 const REGION_SALT = 7373;

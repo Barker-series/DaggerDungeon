@@ -228,6 +228,95 @@ Next:
 4. Export one correctly scaled GLB graybox per module so authored replacements
    preserve sockets and dimensions.
 
+### 5b. Roads region — city-flow street networks (new)
+
+Motivation: current transit/tunnels stick to the strict square grid. Reference
+image (city-generator road layout) shows what we want: a **regular grid drawn
+in a smoothly warped coordinate system**, with grid orientation/spacing varying
+by district and crunchy collision seams where two grids meet.
+
+Approach — implicit warped-grid road field (pure `(seed, x, z)`, no tracing,
+no L-systems/agents, which would break infinite-world discipline):
+
+1. **Orientation field** `θ(x,z)`: low-frequency angle (noise or per-district
+   seeded like `regionType`). Rotate world coords by θ → local grid axes.
+   Slow θ drift bends avenues.
+2. **Domain warp**: push rotated coords with the existing warp-field machinery
+   (same trick as `wildnessAt`) so blocks swell/pinch organically.
+3. **Road test per tile**: road where `frac(u/blockU)` or `frac(v/blockV)` is
+   near 0. Band threshold = road width; every Nth line wider = major avenue.
+
+Properties: O(1) per tile, infinitely tileable, seam-free by construction
+(continuous field — no socket negotiation needed), and warp amplitude 0
+degrades to the current strict grid, so it tunes from Manhattan to medieval.
+
+Watch-outs:
+- **Pinch/vanish**: steep warp gradients can merge grid lines or thin a road
+  band below walkable width. Keep warp amplitude below ~⅓ block size, or clamp
+  band width in tile space.
+- **District seams**: where θ jumps between districts, cross-seam connectivity
+  isn't automatic. Keep the permanent transit sockets active in the roads
+  region as a fallback skeleton; the road field carves on top.
+
+Wiring:
+- `region-layer.ts`: add `'roads'` to `RegionType` + weights. Per-region seeded
+  grid angle, block size, warp amount (`mulberry32(cellSeed(...))`) so each
+  roads district has its own grid personality.
+- `layer2-biome.ts`: `case 'roads':` → `outside` at level 0 (headroom to
+  iterate), `cave` below.
+- New `road-field.ts`: `roadAt(seed, tileX, tileZ)` consumed by floor carving;
+  heights layer can sink roads / raise curbs.
+- Non-road blocks start as solid mass; later they become building/pillar
+  footprints aligned to the same `u,v` field.
+
+**Full LayerProcGen bridge concepted in `docs/roads-layer-design.md`** — a
+five-layer stack (sites → street graph → junctions → strips → blocks) where
+jittered-Voronoi sites make streets, junctions, AND city blocks fall out of
+one point set, with transit-socket-style ownership and seam invariants.
+
+First step: prototype `roadAt` standalone and render it as a top-down mask in
+`tools/debug-view.ts` before touching world gen — iterate constants against
+the reference image, then plumb into the region.
+
+Research: Sceelix (https://github.com/sceelix/Sceelix) — reviewed July 30 2026.
+License is MIT (engine) / LGPL (Designer GUI), not CC0 — fine to port algorithms
+with attribution. It is a C# node-graph dataflow tool, no shape grammar; the
+value is in specific operators. Ranked takeaways (file paths are in the repo):
+
+1. `Paths/Parameters/MeshFromPathParameter.cs` — junction polygon construction
+   (angular edge sort, per-edge widths, four join cases) with crack-free strip
+   stitching via shared junction vertices; plus city-block extraction from the
+   road planar graph. Port the junction math verbatim; replace the global
+   boundary walk with the local angular next-edge cycle rule.
+2. `Meshes/Procedures/MeshSplitProcedure.cs` — CGA-style split arithmetic
+   (absolute/relative/flexible/repeat sizing) = facade & floor splitting for
+   building masses; ~60 lines of pure arithmetic, trivially portable.
+3. `Paths/Procedures/PathCreateProcedure.cs` (CreateVoronoiPathParameter) —
+   jittered-grid Voronoi: one `maxOffset` knob sweeps grid → organic street
+   cells. Compute locally (5×5 neighbor half-plane clipping), NOT via its
+   global Fortune sweep. Complements the warped-grid field: warp bends the
+   grid, jittered Voronoi breaks it.
+4. `Meshes/Procedures/MeshModifyProcedure.cs` — offset (miter, watch thin
+   concave self-intersection), SHARED inset (adjacent lots inset from streets
+   while interior walls stay welded), extrude family incl. taper/twist.
+5. `Points/Procedures/PointsCreateProcedure.cs` — variable-radius Poisson
+   scattering with radius read from a density layer (dense debris in alleys,
+   sparse in plazas). Replace sequential Bridson with hash-priority per-cell
+   dominance sampling for purity.
+6. `Paths/Procedures/PathModifyProcedure.cs` — junction clustering (merge
+   vertices closer than road width), duplicate-road dedupe, edge trim.
+7. Surfaces layered-field model (height/blend/hole layers co-registered) +
+   stepify (terrace quantization — very brutalist) + height↔blend material
+   derivation.
+8. BoxScope (scope-relative split/extrude coordinate frame) + attributes that
+   flow with derived geometry — the right model for column-based massing.
+
+Structural warning: its three key passes (all-pairs edge intersection, global
+boundary walk, sequential Poisson) are order-dependent global algorithms; each
+has a known chunk-local pure replacement, and that substitution is the real
+porting work. Skip: Fortune Voronoi, bundled Clipper (use a JS lib), its
+tessellators (use earcut), the graph runtime.
+
 ### 6. Asset replacement pipeline
 
 The graybox-to-authored handoff is documented in
