@@ -23,6 +23,21 @@ import { copyText } from '../utils/copyText';
 
 const MOVE_SPEED = 7;
 const SPRINT_MULT = 1.6;
+
+// ── Source-style velocity model (CS/GMOD feel) ──
+// Velocity persists across frames; input is an acceleration wish, and only
+// the PROJECTION of velocity onto the wish direction is capped — the
+// classic trick that makes air strafing and bunnyhopping emerge naturally.
+// (refs: adrianb.io bunnyhop article; fragsurf MovementConfig)
+const GROUND_FRICTION = 6; // exponential decay factor while grounded
+const STOP_SPEED = 2; // below this, friction bites at a fixed rate (crisp stops)
+const GROUND_ACCEL = 10; // fills wishspeed in ~0.1s: snappy but not instant
+/** Airborne wishspeed cap — small, per Source: you can only ADD ~this much
+ *  speed toward the wish direction per air period, but strafing rotates
+ *  the velocity vector and gains speed. ~30ups equivalent. */
+const AIR_CAP = 0.85;
+const AIR_ACCEL = 60; // high (surf-server style): the cap does the limiting
+const MAX_VELOCITY = 50; // hard safety clamp (matches fragsurf maxVelocity)
 const PLAYER_RADIUS = 0.35;
 const CROUCH_SPEED_MULT = 0.55;
 const CROUCH_EYE_DROP = 0.7; // eye height drop when fully crouched
@@ -95,6 +110,11 @@ export class GameEngine {
   private contours: OrganicContour[] = [];
   private seed = 0;
   private vy = 0; // vertical velocity; gridCamera.position.y is the feet
+  // Persistent horizontal velocity (Source model) — survives frames and
+  // jumps; input accelerates it, friction decays it
+  private velX = 0;
+  private velZ = 0;
+  private wasBotDriving = false;
   /** Camera-only smoothed feet height. Physics snaps up stair risers
    *  tile by tile; the EYE eases onto each new level instead of popping
    *  with it — stairs read as a glide, not a jackhammer. */
@@ -575,6 +595,8 @@ export class GameEngine {
     const moved = Math.hypot(recovery.x - pos.x, recovery.z - pos.z) > TILE_SIZE * 0.75;
     pos.set(recovery.x, recovery.y, recovery.z);
     this.vy = 0;
+    this.velX = 0;
+    this.velZ = 0;
     this.isGrounded = true;
     this.smoothFeetY = recovery.y;
     if (moved) {
@@ -613,6 +635,8 @@ export class GameEngine {
       spawnZ,
     );
     this.vy = 0;
+    this.velX = 0;
+    this.velZ = 0;
     this.isGrounded = true;
     this.gridCamera.setFacingDirection(Direction.North);
     store.setPlayerPos(top.entrance);
@@ -826,7 +850,10 @@ export class GameEngine {
     const groundAt = (x: number, z: number): number =>
       this.playerGround(x, z, pos.y + CLIMB_HEADROOM);
 
-    if (this.isGrounded && this.input.consumeJump()) {
+    // ── Source-style velocity model ──
+    // Order matters for bunnyhopping: jump BEFORE friction, so landing
+    // with jump held re-launches without ever paying a friction frame.
+    if (this.isGrounded && (this.input.jumpHeld() || this.input.consumeJump())) {
       this.vy = JUMP_VELOCITY;
       this.isGrounded = false;
     }
@@ -839,17 +866,81 @@ export class GameEngine {
     this.input.getMovementDir(_moveDir);
     const isMoving = _moveDir.x !== 0 || _moveDir.y !== 0;
 
+    // Wish direction (unit, horizontal) and wish speed from input
+    let wishX = 0;
+    let wishZ = 0;
     if (isMoving) {
-      const speed = MOVE_SPEED
-        * this.playerSpeedMultiplier
-        * (this.input.isSprinting() ? SPRINT_MULT : 1)
-        * (1 - (1 - CROUCH_SPEED_MULT) * this.crouchAmount);
       this.gridCamera.getForward(_forward);
       this.gridCamera.getRight(_right);
+      wishX = _forward.x * _moveDir.y + _right.x * _moveDir.x;
+      wishZ = _forward.z * _moveDir.y + _right.z * _moveDir.x;
+      const len = Math.hypot(wishX, wishZ);
+      if (len > 1e-6) {
+        wishX /= len;
+        wishZ /= len;
+      }
+    }
+    const wishSpeed = MOVE_SPEED
+      * this.playerSpeedMultiplier
+      * (this.input.isSprinting() ? SPRINT_MULT : 1)
+      * (1 - (1 - CROUCH_SPEED_MULT) * this.crouchAmount);
 
-      const velX = (_forward.x * _moveDir.y + _right.x * _moveDir.x) * speed * dt;
-      const velZ = (_forward.z * _moveDir.y + _right.z * _moveDir.x) * speed * dt;
+    // Bot override: exact kinematic velocity, no feel-model. The bot's
+    // pathfollowing assumes movement stops when it stops steering; giving
+    // it friction/accel ramps made it overshoot every corner. Stopping
+    // is likewise immediate the frame the override drops.
+    const botDriving = this.input.hasMovementOverride();
+    if (!botDriving && this.wasBotDriving) {
+      this.velX = 0;
+      this.velZ = 0;
+    }
+    this.wasBotDriving = botDriving;
+    if (botDriving) {
+      this.velX = wishX * wishSpeed;
+      this.velZ = wishZ * wishSpeed;
+    } else
+    // Friction — grounded only; airborne velocity is sacred (that's the
+    // whole trick). Below STOP_SPEED, friction uses a fixed control value
+    // so stops are crisp instead of asymptotic.
+    if (this.isGrounded) {
+      const speed = Math.hypot(this.velX, this.velZ);
+      if (speed < 1e-4) {
+        this.velX = 0;
+        this.velZ = 0;
+      } else {
+        const control = Math.max(speed, STOP_SPEED);
+        const drop = control * GROUND_FRICTION * dt;
+        const scale = Math.max(speed - drop, 0) / speed;
+        this.velX *= scale;
+        this.velZ *= scale;
+      }
+    }
 
+    // Accelerate — cap only the PROJECTION of velocity onto the wish
+    // direction. Grounded caps at wishSpeed; airborne caps at AIR_CAP,
+    // which is what makes strafe-turning add speed instead of clamping it.
+    if (isMoving) {
+      const capSpeed = this.isGrounded ? wishSpeed : Math.min(wishSpeed, AIR_CAP);
+      const accel = this.isGrounded ? GROUND_ACCEL : AIR_ACCEL;
+      const projVel = this.velX * wishX + this.velZ * wishZ;
+      const addSpeed = capSpeed - projVel;
+      if (addSpeed > 0) {
+        const accelSpeed = Math.min(accel * wishSpeed * dt, addSpeed);
+        this.velX += wishX * accelSpeed;
+        this.velZ += wishZ * accelSpeed;
+      }
+    }
+
+    // Hard safety clamp
+    const vmag = Math.hypot(this.velX, this.velZ);
+    if (vmag > MAX_VELOCITY) {
+      this.velX *= MAX_VELOCITY / vmag;
+      this.velZ *= MAX_VELOCITY / vmag;
+    }
+
+    const moveX = this.velX * dt;
+    const moveZ = this.velZ * dt;
+    if (moveX !== 0 || moveZ !== 0) {
       // Substep so a slow frame can't tunnel through a thin contour wall.
       // A step is blocked by walls AND by ground rising faster than legs
       // can climb — cliffs are obstacles, ramps are not. While airborne,
@@ -860,12 +951,23 @@ export class GameEngine {
           ? g - pos.y <= Math.max(MAX_SLOPE * run, STEP_UP)
           : g <= pos.y + AIR_STEP;
       };
-      const steps = Math.max(1, Math.ceil(Math.max(Math.abs(velX), Math.abs(velZ)) / 0.25));
+      const steps = Math.max(1, Math.ceil(Math.max(Math.abs(moveX), Math.abs(moveZ)) / 0.25));
       for (let i = 0; i < steps; i++) {
-        const nx = pos.x + velX / steps;
-        if (!this.collidesAt(nx, pos.z) && canStand(nx, pos.z, Math.abs(velX / steps))) pos.x = nx;
-        const nz = pos.z + velZ / steps;
-        if (!this.collidesAt(pos.x, nz) && canStand(pos.x, nz, Math.abs(velZ / steps))) pos.z = nz;
+        const nx = pos.x + moveX / steps;
+        if (!this.collidesAt(nx, pos.z) && canStand(nx, pos.z, Math.abs(moveX / steps))) {
+          pos.x = nx;
+        } else {
+          // Blocked: kill that velocity component (Source clips velocity
+          // against the wall plane; axis-separated movement makes this a
+          // per-axis zero, which also gives free wall-sliding)
+          this.velX = 0;
+        }
+        const nz = pos.z + moveZ / steps;
+        if (!this.collidesAt(pos.x, nz) && canStand(pos.x, nz, Math.abs(moveZ / steps))) {
+          pos.z = nz;
+        } else {
+          this.velZ = 0;
+        }
         // Grounded feet track the surface between substeps so long slopes
         // accumulate correctly
         if (this.isGrounded) {
@@ -1069,6 +1171,8 @@ export class GameEngine {
     const y = base + sampleCornerField(this.cornerFloors[li]!, x, z);
     this.gridCamera.setPosition(x, y, z);
     this.vy = 0;
+    this.velX = 0;
+    this.velZ = 0;
     this.isGrounded = true;
     if (yaw !== undefined) this.gridCamera.yaw = yaw;
     if (pitch !== undefined) this.gridCamera.pitch = pitch;

@@ -83,6 +83,12 @@ export class KeyboardInput {
     return false;
   }
 
+  /** Is Space held right now? (not consumed — Source-style auto-bhop:
+   *  holding jump re-jumps the frame you land, before friction applies) */
+  jumpHeld(): boolean {
+    return this.keysDown.has('Space');
+  }
+
   consumeAction(): InputAction | null {
     return this.actionQueue.shift() ?? null;
   }
@@ -100,6 +106,13 @@ export class KeyboardInput {
   clearMovementOverride(): void {
     this.botForward = 0;
     this.botRight = 0;
+  }
+
+  /** Is the bot currently driving movement? The engine gives the bot
+   *  direct kinematic velocity (no friction/accel model) so its
+   *  pathfollowing stays exact under Source-style player physics. */
+  hasMovementOverride(): boolean {
+    return this.botForward !== 0 || this.botRight !== 0;
   }
 
   /** Bot sprint override — holds/releases virtual Shift */

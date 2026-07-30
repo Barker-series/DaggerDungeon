@@ -285,7 +285,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
 
   // ── Roads districts: cut block mass down to per-block plinths under
   // open sky — the negative space between streets becomes usable form. ──
-  cutRoadBlockTops(columns, level.tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed, pillarWall);
+  cutRoadBlockTops(columns, level.tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed, pillarWall, level.floorHeights, level.pillarGround);
 
   // ── Bridges: the neighbor-pair pass with the local degree guarantee.
   // Each cell owns its east and south pairs, so every pair is planned

@@ -143,6 +143,8 @@ export function cutRoadBlockTops(
   cellTileSize: number,
   stackSeed: number,
   pillarWall: boolean[][],
+  floorHeights: number[][],
+  pillarGround: boolean[][],
 ): void {
   const { ocx, ocz } = windowOrigin();
   for (const cell of getAllCells()) {
@@ -169,9 +171,35 @@ export function cutRoadBlockTops(
         const top = s.blockHash < 0.22
           ? 0.6
           : 3 * (1 + Math.min(3, Math.floor(((s.blockHash - 0.22) / 0.78) * 4)));
+        // SEAM DOCTRINE: a flat structural top butting corner-blended
+        // terrain at near-equal height is the one crack condition (the
+        // blended surface climbs away from the flat slab and no wall face
+        // seals the wedge — observed at district borders where organic
+        // floors roll past court height). The fix is DOMINANCE, exactly
+        // as pillar foundations do it: the plinth tile joins the level
+        // floor system (owner 0, height published, pillarGround set), so
+        // the corner field bends the neighboring terrain to meet the flat
+        // slab edge. Only needed where terrain can actually reach the
+        // top; higher plinths are sealed by real tall wall faces.
+        let joins = false;
+        for (let dz = -1; dz <= 1 && !joins; dz++) {
+          for (let dx = -1; dx <= 1 && !joins; dx++) {
+            if (dx === 0 && dz === 0) continue;
+            const nx = tx + dx;
+            const nz = tz + dz;
+            if (nx < 0 || nz < 0 || nx >= gridTiles || nz >= gridTiles) continue;
+            if (tiles[nz]![nx] !== TileType.Floor) continue;
+            const nf = floorHeights[nz]![nx]!;
+            if (nf > -900 && Math.abs(nf - top) <= 1.0) joins = true;
+          }
+        }
         columns[tz * gridTiles + tx] = [
-          { floor: top, ceil: SKY_CEIL, owner: -1, ceilOwner: -1 },
+          { floor: top, ceil: SKY_CEIL, owner: joins ? 0 : -1, ceilOwner: -1 },
         ];
+        if (joins) {
+          floorHeights[tz]![tx] = top;
+          pillarGround[tz]![tx] = true;
+        }
       }
     }
   }
