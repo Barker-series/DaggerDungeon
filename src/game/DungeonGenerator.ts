@@ -29,7 +29,7 @@ import { generateLayer0 } from './dungeon/layer0-noise';
 import { generateLayer1TileGrid } from './dungeon/layer1-tilegrid';
 import { assignBiomes } from './dungeon/layer2-biome';
 import { applyFineNoise } from './dungeon/layer1-finenoise';
-import { carveRoadsRegion } from './dungeon/roads-region';
+import { carveRoadsRegion, cutRoadBlockTops, flattenRoadStreets, suppressRoadPits } from './dungeon/roads-region';
 import { connectPermanentTransit, permanentTransitTiles } from './dungeon/layer4-connect';
 import { computeHeightFields, computePitMask, PIT_FLOOR } from './dungeon/layer6-heights';
 import { placePillars } from './dungeon/layer45-pillars';
@@ -282,6 +282,10 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     }
   }
 
+  // ── Roads districts: cut block mass down to per-block plinths under
+  // open sky — the negative space between streets becomes usable form. ──
+  cutRoadBlockTops(columns, level.tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed, pillarWall);
+
   // ── Bridges: the neighbor-pair pass with the local degree guarantee.
   // Each cell owns its east and south pairs, so every pair is planned
   // exactly once — and identically from either side in a streamed world. ──
@@ -433,10 +437,17 @@ function generateLevel(
     tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed, permanentTransitTiles,
   );
 
+  // ── Roads districts: arteries never break — no pits mid-street. ──
+  suppressRoadPits(pitMask, tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed);
+
   // ── Layer 6: Height fields (terrain flows under pillar footprints) ──
   const { floor: floorHeights, ceiling: ceilingHeights } = computeHeightFields(
     tiles, GRID_TILES, CELL_TILE_SIZE, levelSeed, pitMask, pillarWall,
   );
+
+  // ── Roads districts: streets run at flat grade so quantized block
+  // tops meet them with steppable or fully-walled edges only. ──
+  flattenRoadStreets(floorHeights, tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed);
 
   // ── Output ──
   return {

@@ -274,6 +274,14 @@ five-layer stack (sites → street graph → junctions → strips → blocks) wh
 jittered-Voronoi sites make streets, junctions, AND city blocks fall out of
 one point set, with transit-socket-style ownership and seam invariants.
 
+Shipped so far: 'roads' region live (veins mode), per-block quantized plinths
+(courts 0.6, masses 3/6/9/12, streets flat at 0.5 grade), activity-gate
+override (arteries never break), pit suppression on streets.
+
+Future idea (user, July 30 2026): a canyon-flavored street district that
+INVERTS pit suppression — the vein network laced with voids to the extreme,
+streets as narrow causeways over the abyss.
+
 First step: prototype `roadAt` standalone and render it as a top-down mask in
 `tools/debug-view.ts` before touching world gen — iterate constants against
 the reference image, then plumb into the region.

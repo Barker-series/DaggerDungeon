@@ -151,7 +151,7 @@ back to these constants.</p>
 <div class="viewer">
   <div class="pane"><canvas id="cElev" width="96" height="96"></canvas><div class="cap">Elevation field — pillar heights read this (seed+909, scale 3 pillar cells)</div></div>
   <div class="pane"><canvas id="cWild" width="96" height="96"></canvas><div class="cap">Wildness — fbm ×3 + domain warp + 30% elevation</div></div>
-  <div class="pane"><canvas id="cRegion" width="64" height="64"></canvas><div class="cap">Districts — city grey, machine rust, canyon blue, frontier drab</div></div>
+  <div class="pane"><canvas id="cRegion" width="64" height="64"></canvas><div class="cap">Districts — city grey, machine rust, canyon blue, frontier drab, roads bright blue</div></div>
   <div class="pane"><canvas id="cBiome" width="64" height="64"></canvas><div class="cap">Biome cells (16×16 world outlined; darker = void)</div></div>
 </div>
 <div class="legend">
@@ -486,7 +486,7 @@ function wildnessAt(ss, cxf, czf, level) {
 }
 // region-layer.ts port
 const REGION_CELLS = 8, REGION_SALT = 7373, BORDER_WARP = 2.5;
-const REGION_WEIGHTS = [['city',0.35],['machine',0.3],['canyon',0.2],['frontier',0.15]];
+const REGION_WEIGHTS = [['city',0.3],['machine',0.25],['canyon',0.17],['frontier',0.13],['roads',0.15]];
 const PALETTES = {
   city:     { organic: 0.6,   outside: 0.68,  crypt: 0.555, ember: 0.605 },
   machine:  { organic: 0.44,  outside: 0.66,  crypt: 0.572, ember: 0.55 },
@@ -503,11 +503,14 @@ function regionAtCell(ws, cx, cz) {
   const wz = (sampleNoise3D(cx / REGION_CELLS, 0, cz / REGION_CELLS, ws + 4747 + 77) - 0.5) * 2 * BORDER_WARP;
   return regionTypeAt(ws, Math.floor((cx + wx) / REGION_CELLS), Math.floor((cz + wz) / REGION_CELLS));
 }
-const REGION_RGB = { city: [200,205,220], machine: [230,150,110], canyon: [130,170,205], frontier: [150,150,140] };
+const REGION_RGB = { city: [200,205,220], machine: [230,150,110], canyon: [130,170,205], frontier: [150,150,140], roads: [90,130,220] };
 function biomeOf(ss, cx, cz, level) {
   const w = wildnessAt(ss, cx, cz, level);
   const d = fbm3(cx / DEPTH_SCALE, level * LEVEL_Y_STEP, cz / DEPTH_SCALE, ss + 2626);
-  const pal = PALETTES[regionAtCell(ss, cx, cz)];
+  const region = regionAtCell(ss, cx, cz);
+  // Roads district: open sky at grade (layer2-biome.ts 'roads' case)
+  if (region === 'roads') return level === 0 ? 'outside' : 'cave';
+  const pal = PALETTES[region];
   if (w > pal.outside) return level === 0 ? 'outside' : 'cave';
   if (w > pal.organic) return d > pal.ember ? 'ember' : 'cave';
   return d > pal.crypt ? 'crypt' : 'dungeon';

@@ -483,7 +483,7 @@ export function DebugMap() {
       : mode === 'pillars'
         ? [[ELEVATOR_COLOR, 'Elevator shaft'], ['#8ac6dc', 'Tall pillar'], ['#38326a', 'Short pillar'], ['#14101c', 'Void (no pillar)'], ['#ffd24a', 'Bridge socket'], ['#3ce6c8', 'Bridge'], ['#fff', 'Player']]
       : mode === 'region'
-          ? [[REGION_COLORS.city, 'City'], [REGION_COLORS.machine, 'Machine'], [REGION_COLORS.canyon, 'Canyon'], [REGION_COLORS.frontier, 'Frontier'], [ELEVATOR_COLOR, 'Elevator shaft'], ['#0f0', 'Spawn'], ['#fff', 'Player']]
+          ? [[REGION_COLORS.city, 'City'], [REGION_COLORS.machine, 'Machine'], [REGION_COLORS.canyon, 'Canyon'], [REGION_COLORS.frontier, 'Frontier'], [REGION_COLORS.roads, 'Roads'], [ELEVATOR_COLOR, 'Elevator shaft'], ['#0f0', 'Spawn'], ['#fff', 'Player']]
           : [['#0f0', 'High noise'], ['#300', 'Low noise'], [ELEVATOR_COLOR, 'Elevator shaft'], ['#fff', 'Player']];
 
     let ly = 80;
