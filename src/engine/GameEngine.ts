@@ -38,6 +38,28 @@ const GROUND_ACCEL = 10; // fills wishspeed in ~0.1s: snappy but not instant
 const AIR_CAP = 0.85;
 const AIR_ACCEL = 60; // high (surf-server style): the cap does the limiting
 const MAX_VELOCITY = 50; // hard safety clamp (matches fragsurf maxVelocity)
+
+// ── Ledge grab / mantle ──
+// Airborne, pushing toward a ledge whose top is above step range but
+// within arm's reach: the fall stops and the player pulls up onto it.
+// Rescues jumps that fall just short (pits!) and makes low plinths
+// climbable: from street grade a jump apex puts the feet at ~1.55, so a
+// 3.0 block top is a grab away.
+const GRAB_HEIGHT = 2.05; // max ledge rise above the feet that hands can catch
+// 2.05 makes the 3-unit structural module the standard climb: a jump apex
+// (~1.05) leaves a 3.0 plinth tier 1.95 above the feet — caught. Plinth
+// terraces chain: street → court → 3 → 6 → 9 → 12.
+const MANTLE_UP_SPEED = 6; // vertical pull speed (wu/s)
+const MANTLE_FWD_SPEED = 4; // horizontal tuck speed once above the lip
+const MANTLE_HEADROOM = 1.7; // the target span must fit a standing body
+
+// ── Body height ──
+// Standing body height for passability and ceiling collision. Low spans
+// (under-stair wedges, ducts) admit a crouched body only: standing
+// movement is blocked, crouching squeezes through, and the airborne
+// ceiling clamp keeps a jump from passing through solid overhead.
+const STAND_HEIGHT = 1.75;
+const CROUCH_HEIGHT = 1.15;
 const PLAYER_RADIUS = 0.35;
 const CROUCH_SPEED_MULT = 0.55;
 const CROUCH_EYE_DROP = 0.7; // eye height drop when fully crouched
@@ -115,6 +137,13 @@ export class GameEngine {
   private velX = 0;
   private velZ = 0;
   private wasBotDriving = false;
+  /** Active ledge mantle: rise to y, then tuck to (x, z). Null = none. */
+  private mantle: { x: number; z: number; y: number } | null = null;
+  /** No re-grab for this long after a mantle ends — a mantle that lands
+   *  on a surface lower than its span's nominal floor must FALL to it,
+   *  not chain into the next grab (the ratchet flew players through
+   *  walls at constant height). */
+  private mantleCooldown = 0;
   /** Camera-only smoothed feet height. Physics snaps up stair risers
    *  tile by tile; the EYE eases onto each new level instead of popping
    *  with it — stairs read as a glide, not a jackhammer. */
@@ -597,6 +626,7 @@ export class GameEngine {
     this.vy = 0;
     this.velX = 0;
     this.velZ = 0;
+    this.mantle = null;
     this.isGrounded = true;
     this.smoothFeetY = recovery.y;
     if (moved) {
@@ -637,6 +667,7 @@ export class GameEngine {
     this.vy = 0;
     this.velX = 0;
     this.velZ = 0;
+    this.mantle = null;
     this.isGrounded = true;
     this.gridCamera.setFacingDirection(Direction.North);
     store.setPlayerPos(top.entrance);
@@ -850,6 +881,54 @@ export class GameEngine {
     const groundAt = (x: number, z: number): number =>
       this.playerGround(x, z, pos.y + CLIMB_HEADROOM);
 
+    // ── Ledge mantle in progress: it owns the player until done. The
+    // target span was validated at grab time; rise above the lip first,
+    // then tuck forward onto the surface. ──
+    this.mantleCooldown = Math.max(0, this.mantleCooldown - dt);
+    if (this.mantle) {
+      const m = this.mantle;
+      if (pos.y < m.y - 0.01) {
+        pos.y = Math.min(m.y, pos.y + MANTLE_UP_SPEED * dt);
+      } else {
+        const ddx = m.x - pos.x;
+        const ddz = m.z - pos.z;
+        const dist = Math.hypot(ddx, ddz);
+        const step = MANTLE_FWD_SPEED * dt;
+        const finish = (): void => {
+          this.mantle = null;
+          this.mantleCooldown = 0.25;
+          // Ground on the REAL walk surface, which on corner-blended
+          // tiles can sit well below the span's nominal floor. If it's
+          // out of reach, fall to it — never hover at mantle height.
+          const g = groundAt(pos.x, pos.z);
+          if (g > pos.y - 3) {
+            pos.y = Math.max(g, pos.y - 3);
+            this.isGrounded = true;
+          } else {
+            this.isGrounded = false;
+            this.vy = 0;
+          }
+        };
+        if (dist <= step) {
+          pos.x = m.x;
+          pos.z = m.z;
+          finish();
+        } else {
+          const nx = pos.x + (ddx / dist) * step;
+          const nz = pos.z + (ddz / dist) * step;
+          if (this.collidesAt(nx, nz)) {
+            // Tuck blocked by a wall: abandon the mantle where we are
+            // instead of pushing through geometry.
+            finish();
+          } else {
+            pos.x = nx;
+            pos.z = nz;
+          }
+        }
+      }
+      return;
+    }
+
     // ── Source-style velocity model ──
     // Order matters for bunnyhopping: jump BEFORE friction, so landing
     // with jump held re-launches without ever paying a friction frame.
@@ -858,8 +937,15 @@ export class GameEngine {
       this.isGrounded = false;
     }
 
-    // Crouch — smooth blend of eye height and speed
-    const crouchTarget = this.input.isCrouching() ? 1 : 0;
+    // Crouch — smooth blend of eye height and speed. Under a low ceiling
+    // (crouched into an under-stair wedge) the crouch is HELD even if the
+    // key is released: standing up would push the head through solid.
+    let crouchTarget = this.input.isCrouching() ? 1 : 0;
+    {
+      const hereSpans = this.columnAt(pos.x, pos.z);
+      const here = hereSpans ? spanAt(hereSpans, pos.y, 0.05) : null;
+      if (here && here.ceil < 1e8 && here.ceil - pos.y < STAND_HEIGHT) crouchTarget = 1;
+    }
     this.crouchAmount += (crouchTarget - this.crouchAmount) * (1 - Math.exp(-CROUCH_BLEND_RATE * dt));
     this.gridCamera.eyeHeight = EYE_HEIGHT - CROUCH_EYE_DROP * this.crouchAmount;
 
@@ -977,6 +1063,27 @@ export class GameEngine {
       }
     }
 
+    // ── Ledge grab: airborne, past the jump's rising burst, pushing
+    // toward a ledge whose top is beyond step range but within reach —
+    // catch it and start the mantle. Humans only; the bot never grabs. ──
+    if (!this.isGrounded && !botDriving && this.mantleCooldown <= 0 && this.vy < 1.0 && (wishX !== 0 || wishZ !== 0)) {
+      const px = pos.x + wishX * (PLAYER_RADIUS + 0.45);
+      const pz = pos.z + wishZ * (PLAYER_RADIUS + 0.45);
+      const spans = this.columnAt(px, pz);
+      if (spans) {
+        for (const s of spans) {
+          const rise = s.floor - pos.y;
+          if (rise > AIR_STEP && rise <= GRAB_HEIGHT && s.ceil - s.floor >= MANTLE_HEADROOM) {
+            this.mantle = { x: px, z: pz, y: s.floor + 0.02 };
+            this.vy = 0;
+            this.velX = 0;
+            this.velZ = 0;
+            break;
+          }
+        }
+      }
+    }
+
     // Vertical resolution
     const ground = groundAt(pos.x, pos.z);
     if (this.isGrounded) {
@@ -991,6 +1098,20 @@ export class GameEngine {
     if (!this.isGrounded) {
       this.vy -= GRAVITY * dt;
       pos.y += this.vy * dt;
+      // Ceiling collision: rising into solid overhead stops at it — a
+      // jump under a stair flight or slab bonks instead of passing
+      // through the solid and landing on top.
+      if (this.vy > 0) {
+        const overheadSpans = this.columnAt(pos.x, pos.z);
+        const span = overheadSpans ? spanAt(overheadSpans, pos.y, 0.05) : null;
+        if (span && span.ceil < 1e8) {
+          const bodyHeight = STAND_HEIGHT - (STAND_HEIGHT - CROUCH_HEIGHT) * this.crouchAmount;
+          if (pos.y + bodyHeight > span.ceil) {
+            pos.y = span.ceil - bodyHeight;
+            this.vy = 0;
+          }
+        }
+      }
       if (this.vy <= 0 && pos.y <= ground) {
         pos.y = ground;
         this.vy = 0;
@@ -1024,10 +1145,19 @@ export class GameEngine {
           && dungeon.tiles[tz]?.[tx] === TileType.Wall
           && contour?.softWalls.has(tz * w + tx);
         if (!soft) {
+          // A span admits the body only if there's BODY HEIGHT of air
+          // between the standing surface and its ceiling. Crouching
+          // shrinks the body: low wedges (under-stair spaces, ducts)
+          // block standing movement but admit a crouched squeeze. The
+          // bot always uses crouch height — it verified reachability on
+          // the column model and must never be stopped by posture.
+          const bodyHeight = this.input.hasMovementOverride()
+            ? CROUCH_HEIGHT
+            : STAND_HEIGHT - (STAND_HEIGHT - CROUCH_HEIGHT) * this.crouchAmount;
           let open = false;
           if (spans) {
             for (const s of spans) {
-              if (s.floor < feetY + 1.5 && s.ceil > feetY + 1.2) {
+              if (s.floor < feetY + 1.5 && s.ceil - Math.max(s.floor, feetY) >= bodyHeight) {
                 open = true;
                 break;
               }
@@ -1173,6 +1303,7 @@ export class GameEngine {
     this.vy = 0;
     this.velX = 0;
     this.velZ = 0;
+    this.mantle = null;
     this.isGrounded = true;
     if (yaw !== undefined) this.gridCamera.yaw = yaw;
     if (pitch !== undefined) this.gridCamera.pitch = pitch;
