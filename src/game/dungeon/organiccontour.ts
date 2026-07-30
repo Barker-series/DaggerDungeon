@@ -67,7 +67,16 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
   const s = TILE_SIZE;
   const w = dungeon.width;
   const h = dungeon.height;
-  const isOrganicTile = (tx: number, tz: number): boolean => isOrganicTileIn(dungeon.cellBiomes, tx, tz);
+  // Roads-district tiles are 'outside' biome but rectilinear architecture:
+  // their plinth walls are honest column geometry, not organic cave mass.
+  // Ringing them with contour segments gave them phantom full-height 2D
+  // collision (courts became unhoppable). roadsCells travels WITH the
+  // world data so worker-generated worlds agree with the engine thread.
+  const cellTiles = Math.floor(w / dungeon.cellBiomes.length) || w;
+  const isRoadsTile = (tx: number, tz: number): boolean =>
+    dungeon.roadsCells?.[Math.floor(tz / cellTiles)]?.[Math.floor(tx / cellTiles)] ?? false;
+  const isOrganicTile = (tx: number, tz: number): boolean =>
+    !isRoadsTile(tx, tz) && isOrganicTileIn(dungeon.cellBiomes, tx, tz);
 
   const segments: ContourSegment[] = [];
   const byTile = new Map<number, ContourSegment[]>();
@@ -80,9 +89,12 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
 
   // Pillar footprints are STRUCTURAL: never contoured, never soft. Their
   // real shape (ramps, plazas, doorways) lives in the column spans; a
-  // contour fence here would wall off the pillar's own stairs.
+  // contour fence here would wall off the pillar's own stairs. Roads
+  // tiles are structural for the same reason — a border group between a
+  // cave ledge and a roads plinth must not fence the step with a 2D
+  // segment the column model says is walkable.
   const isPillar = (tx: number, tz: number): boolean =>
-    dungeon.pillarWall?.[tz]?.[tx] ?? false;
+    (dungeon.pillarWall?.[tz]?.[tx] ?? false) || isRoadsTile(tx, tz);
 
   const register = (tx: number, tz: number, seg: ContourSegment): void => {
     if (tx < 0 || tz < 0 || tx >= w || tz >= h) return;

@@ -87,6 +87,12 @@ export interface DungeonData {
    *  edge bends to meet them — earth banked against a slab, never a
    *  slab rolling with the hills. */
   pillarGround: boolean[][];
+  /** Per-CELL roads-district mask. Roads tiles are 'outside' biome but
+   *  rectilinear architecture: the organic contour system must not fence
+   *  their plinths with 2D cave-wall collision — plinth shape and
+   *  collision live in the column spans. Travels with the level so
+   *  worker-generated worlds agree with the engine thread. */
+  roadsCells?: boolean[][];
 }
 
 // ── The column model: the single authority on solid vs air ──

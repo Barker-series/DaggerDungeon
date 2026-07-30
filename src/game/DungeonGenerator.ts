@@ -30,6 +30,7 @@ import { generateLayer1TileGrid } from './dungeon/layer1-tilegrid';
 import { assignBiomes } from './dungeon/layer2-biome';
 import { applyFineNoise } from './dungeon/layer1-finenoise';
 import { carveRoadsRegion, cutRoadBlockTops, flattenRoadStreets, suppressRoadPits } from './dungeon/roads-region';
+import { regionAtCell } from './dungeon/region-layer';
 import { connectPermanentTransit, permanentTransitTiles } from './dungeon/layer4-connect';
 import { computeHeightFields, computePitMask, PIT_FLOOR } from './dungeon/layer6-heights';
 import { placePillars } from './dungeon/layer45-pillars';
@@ -466,6 +467,15 @@ function generateLevel(
     level: 0,
     baseY: 0,
     cellBiomes: snapshotCellBiomes(CELL_GRID_SIZE),
+    // Per-cell roads mask — contour/collision must know these are
+    // rectilinear plinth districts, not organic cave mass
+    roadsCells: Array.from({ length: CELL_GRID_SIZE }, (_, cz) =>
+      Array.from({ length: CELL_GRID_SIZE }, (_, cx) =>
+        regionAtCell(
+          stackSeed,
+          originPcx * PILLAR_FACTOR + cx,
+          originPcz * PILLAR_FACTOR + cz,
+        ) === 'roads')),
     goldenPath: [],
     pillarWall,
     // Filled in by generateWorld once pillar spans are applied
