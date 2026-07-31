@@ -2,6 +2,12 @@
 
 A first-person megastructure exploration game built with Three.js and React on the RUN.game platform. One vast vertical world: massive climbable pillars rising out of a procedurally sculpted dungeon floor, connected by high bridges over bottomless pits.
 
+## The Purpose
+
+**The generator is the product; the game is the proof.** The goal of this project is the best *lightweight* megastructure generation ever constructed: every feature is a pure function of `(seed, coordinates)` plus a bounded neighbor radius — no baked data, no training sets, no WFC, no Minecraft-style chunk tricks. The entire runtime state of an endless world is a seed and a window position.
+
+The end state is to **demystify the build** so this baseline can be used the way a standard terrain generator is used in mainline game engines. The concepts that make it work — the column model, layered generation, deterministic ownership, the seam doctrine — are documented in [`docs/`](docs/) and enforced by invariants (`tools/verify-world.ts`), because a generator you can't verify or explain isn't a baseline, it's a demo.
+
 ## The Pillar Kebab System
 
 The core world idea, inspired by the brilliant procgen in **Lorne's Lure**: instead of forcing a 2D generator to fake verticality with stacked levels (we tried — endless edge cases), verticality is *content*, not generation.
