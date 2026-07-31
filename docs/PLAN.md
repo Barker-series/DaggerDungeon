@@ -61,7 +61,11 @@ explicitly a guess until the day it's real work.
 - **Canyon-causeway street district** (user idea, July 30 2026): a roads
   variant that INVERTS pit suppression — the vein network laced with voids to
   the extreme, streets as narrow causeways over the abyss.
-- **The editor.** `docs/world-reference.html` already runs a bit-exact JS port
+- **The editor.** Principle (user, July 31 2026): the best way to build an
+  editor is to build a GAME and make the editor for what the game needs — so
+  the editor waits for the game. A game will be added here; it isn't started
+  yet (movement, climbing, crouching are a hit, but they're just the start).
+  When it comes: `docs/world-reference.html` already runs a bit-exact JS port
   of the field math. Phase 1: generate its constants from source (JSON dump)
   instead of hand-copy. Phase 2: sliders → live re-render. Phase 3: chunk cards
   become editable specs.
