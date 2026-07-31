@@ -27,10 +27,13 @@ const MAX_BRIDGES_PER_PAIR = 2;
  *  between massive-pillar footprints is 26 tiles (78 units), so even
  *  10 is a gentle 0.13 grade. */
 const MAX_DY = 10;
-/** Forced (degree-guarantee) bridges accept much steeper ramps — a lone
- *  pillar takes any walkable connection over none. 24 over 78 units is
- *  a 0.31 grade, well under the engine's 1.1 climb limit. */
-const FORCED_MAX_DY = 24;
+/** Forced (degree-guarantee) bridges accept steeper ramps — a lone
+ *  pillar takes any walkable connection over none. But bridge decks are
+ *  per-tile FLAT spans, so the grade is a discrete STAIR: dy/GAP_TILES
+ *  per tread. The cap keeps every tread under the 0.65 step limit
+ *  (16/28 = 0.57) — steeper "bridges" were floating, unclimbable
+ *  staircases, not paths. */
+const FORCED_MAX_DY = 16;
 /** Chosen bridges on one pair keep at least this much vertical space */
 const MIN_SEPARATION = 10;
 /** Sockets below this height never bridge: a bridge skimming the
@@ -65,7 +68,7 @@ const MIN_AIR = 1.5;
 const CELL = 56;
 /** Footprint ring spans tiles 14..41; the gap is 42..55 + 0..13 */
 const RING_HI = 41;
-const GAP_TILES = 28;
+export const GAP_TILES = 28;
 
 export interface BridgeSpec {
   /** Lower cell of the pair (window-local; tile math) */
@@ -313,8 +316,8 @@ export function bridgeTiles(br: BridgeSpec): { tx: number; tz: number; h: number
  * air [h, h+CLEARANCE]. Existing air is split around the slab; carving
  * through solid opens a passage. New surfaces are structural rock.
  */
-export function carveBridgeIntoColumn(spans: ColumnSpan[], h: number, pipe = false): ColumnSpan[] {
-  const slabLo = h - SLAB;
+export function carveBridgeIntoColumn(spans: ColumnSpan[], h: number, pipe = false, slabDepth = SLAB): ColumnSpan[] {
+  const slabLo = h - slabDepth;
   const slabHi = h;
   const bore = pipe ? PIPE_BORE : CLEARANCE;
 

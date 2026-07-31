@@ -37,7 +37,7 @@ import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
 import { pillarFootprint, pillarAirSpans } from './dungeon/pillar-geometry';
 import {
-  planOwnedBridges, planOwnedSubways, planOwnedArches,
+  planOwnedBridges, planOwnedSubways, planOwnedArches, GAP_TILES,
   bridgeTiles, carveBridgeIntoColumn, carveArchIntoColumn, addBridgeEndSupport,
   type BridgeSpec,
 } from './dungeon/pillar-bridges';
@@ -262,54 +262,10 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     }
   }
 
-  // ── MARRIAGE PROPAGATES ONLY ACROSS ITS OWNED FOOTPRINT. A pillar ground tile
-  // drawn FLAT (structural, owner -1) beside one drawn CORNER-BLENDED
-  // (married, owner 0) at the same height is the crack condition: the
-  // blended surface climbs away from the flat one and no wall face
-  // exists between them (both columns are air there), opening a
-  // wedge-shaped hole. The per-tile marry test compares against
-  // terrain, so neighbours can land on opposite sides of its threshold.
-  // Pull any unmarried ground surface in when it sits within a step of
-  // an already-married neighbour. A per-footprint queue reaches the exact
-  // fixpoint without reading another pillar or depending on window scan order. ──
-  for (const spec of pillars.values()) {
-    const footprint = pillarFootprints.get(spec)!;
-    const frontier: [number, number][] = [];
-    for (const key of footprint) {
-      const [lx, lz] = key.split(',').map(Number);
-      const gx = spec.cx * PILLAR_CELL_TILES + lx!;
-      const gz = spec.cz * PILLAR_CELL_TILES + lz!;
-      if (level.pillarGround[gz]?.[gx]) frontier.push([lx!, lz!]);
-    }
-    for (let head = 0; head < frontier.length; head++) {
-      const [lx, lz] = frontier[head]!;
-      const gx = spec.cx * PILLAR_CELL_TILES + lx;
-      const gz = spec.cz * PILLAR_CELL_TILES + lz;
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-        const nx = lx + dx;
-        const nz = lz + dz;
-        if (!footprint.has(`${nx},${nz}`)) continue;
-        const ngx = spec.cx * PILLAR_CELL_TILES + nx;
-        const ngz = spec.cz * PILLAR_CELL_TILES + nz;
-        if (level.pillarGround[ngz]?.[ngx]) continue;
-        // Same ground-span selection as the marry pass: the tile's
-        // walkable slab may sit above a foundation-clearance span.
-        // THRESHOLD 0.55 — strictly below one stair tread (0.6):
-        // propagation spreads across plazas and banked slabs but can
-        // never climb a flight. Chain-marrying treads dominated the
-        // corner field into terrain humps against the stairs and tore
-        // the drawn treads away from the column model.
-        const s0 = columns[ngz * GRID_TILES + ngx]?.find((sp) =>
-          sp.owner !== 0 && sp.floor > -100 && sp.floor < 30
-          && Math.abs(topFloors[gz]![gx]! - sp.floor) <= 0.55);
-        if (!s0) continue;
-        s0.owner = 0;
-        topFloors[ngz]![ngx] = s0.floor;
-        level.pillarGround[ngz]![ngx] = true;
-        frontier.push([nx, nz]);
-      }
-    }
-  }
+  // (The old marriage-PROPAGATION pass is gone: once marrying requires
+  // the tile itself to sit in the terrain window — the grade anchor —
+  // propagation could never marry a tile the per-tile test wouldn't,
+  // so it was pure redundant machinery. One predicate, applied once.)
 
   // ── Roads districts: cut block mass down to per-block plinths under
   // open sky — the negative space between streets becomes usable form. ──
@@ -344,9 +300,13 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     }
   }
   for (const br of bridges) {
+    // Sloped decks step tile to tile; the slab must reach DOWN past the
+    // next tread's top or the steps float apart with air slits between.
+    const tread = Math.abs(br.yB - br.yA) / GAP_TILES;
+    const slabDepth = Math.max(0.5, tread + 0.15);
     for (const { tx, tz, h, support } of bridgeTiles(br)) {
       if (tx < 0 || tz < 0 || tx >= GRID_TILES || tz >= GRID_TILES) continue;
-      columns[tz * GRID_TILES + tx] = carveBridgeIntoColumn(columns[tz * GRID_TILES + tx]!, h, br.pipe);
+      columns[tz * GRID_TILES + tx] = carveBridgeIntoColumn(columns[tz * GRID_TILES + tx]!, h, br.pipe, slabDepth);
       if (support) {
         columns[tz * GRID_TILES + tx] = addBridgeEndSupport(columns[tz * GRID_TILES + tx]!, h);
       }

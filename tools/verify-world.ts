@@ -465,31 +465,32 @@ for (const seed of SEEDS) {
   }
   if (cracks > 0) fail(`seed ${seed}: ${cracks} crack pairs`);
 
-  // ── Pillar marriage reached its bounded per-footprint fixpoint ──
+  // ── Pillar marriage: ONE predicate, applied once. Every footprint
+  // ground tile sitting in the asymmetric terrain window (checked against
+  // visible non-pillar floors — the same values generation's origFloors
+  // hold for those tiles) must be married. No propagation pass exists. ──
   let unsettledMarriage = 0;
   for (const spec of world.pillars.values()) {
-    const footprint = new Set(pillarFootprint(spec).map(([x, z]) => `${x},${z}`));
-    for (const key of footprint) {
-      const [lx, lz] = key.split(',').map(Number);
-      const tx = spec.cx * PILLAR_CELL_TILES + lx!;
-      const tz = spec.cz * PILLAR_CELL_TILES + lz!;
+    for (const [lx, lz] of pillarFootprint(spec)) {
+      const tx = spec.cx * PILLAR_CELL_TILES + lx;
+      const tz = spec.cz * PILLAR_CELL_TILES + lz;
       if (L.pillarGround[tz]?.[tx]) continue;
       const s0 = world.columns[tz * W + tx]?.find((sp) => sp.floor > -100 && sp.floor < 30);
       if (!s0 || s0.owner === 0) continue;
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-        const nlx = lx! + dx;
-        const nlz = lz! + dz;
-        if (!footprint.has(`${nlx},${nlz}`)) continue;
-        const nx = spec.cx * PILLAR_CELL_TILES + nlx;
-        const nz = spec.cz * PILLAR_CELL_TILES + nlz;
-        if (!L.pillarGround[nz]?.[nx]) continue;
-        // Mirrors generation: propagation threshold is 0.55, strictly
-        // below one stair tread — flights are not eligible.
-        if (Math.abs(L.floorHeights[nz]![nx]! - s0.floor) <= 0.55) {
-          unsettledMarriage++;
-          break;
+      let grade = false;
+      for (let gdz = -1; gdz <= 1 && !grade; gdz++) {
+        for (let gdx = -1; gdx <= 1 && !grade; gdx++) {
+          const gtx = tx + gdx;
+          const gtz = tz + gdz;
+          if (L.pillarWall[gtz]?.[gtx]) continue;
+          if (L.tiles[gtz]?.[gtx] === TileType.Wall) continue;
+          const t = L.floorHeights[gtz]?.[gtx];
+          if (t === undefined || t <= -900) continue;
+          const d = s0.floor - Math.max(0, t);
+          if (d < 0.35 && d > -1.0) grade = true;
         }
       }
+      if (grade) unsettledMarriage++;
     }
   }
   if (unsettledMarriage > 0) {

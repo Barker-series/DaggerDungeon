@@ -117,7 +117,9 @@ export function residentialRampSurface(baseY: number, i: number): number {
 }
 
 function rotateTile(lx: number, lz: number, quarterTurns: number): [number, number] {
-  let x = lx;
+  // Bit 4 mirrors (see pillar-geometry rot): sockets must land on the
+  // reflected thresholds of mirrored interiors.
+  let x = (quarterTurns & 4) ? 55 - lx : lx;
   let z = lz;
   for (let i = 0; i < (quarterTurns & 3); i++) {
     const nextX = 55 - z;

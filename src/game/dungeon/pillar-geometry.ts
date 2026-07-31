@@ -69,9 +69,12 @@ const FULL = { lo: 17, hi: 38 };
 const SLIM = { lo: 21, hi: 34 };
 const DOOR_HEIGHT = 4;
 
-/** Rotate a local tile coordinate a quarter-turn clockwise, k times */
+/** Rotate a local tile coordinate a quarter-turn clockwise, k times.
+ *  Bit 4 of k mirrors the pillar: the pre-rotation x axis reflects, so
+ *  the whole construction (ramps, plazas, interiors) winds the other
+ *  way — one funnel, one flag. */
 function rot(lx: number, lz: number, k: number): [number, number] {
-  let x = lx, z = lz;
+  let x = (k & 4) ? CELL - 1 - lx : lx, z = lz;
   for (let i = 0; i < (k & 3); i++) {
     const nx = CELL - 1 - z;
     z = x;

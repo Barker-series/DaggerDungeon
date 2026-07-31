@@ -172,8 +172,17 @@ const FACE_ORDER: readonly SocketFace[] = ['north', 'east', 'south', 'west'];
 
 export function rotateFace(face: SocketFace, quarterTurns: number): SocketFace {
   if (face === 'interior') return face;
-  const i = FACE_ORDER.indexOf(face);
-  return FACE_ORDER[(i + quarterTurns) % 4]!;
+  // Bit 4 of the rotation encodes a MIRRORED pillar (the spiral winds
+  // counterclockwise). Reflection about the pre-rotation x axis swaps
+  // east and west before the quarter-turns apply — matching the lx
+  // reflection the geometry mapping performs.
+  let f = face;
+  if (quarterTurns & 4) {
+    if (f === 'east') f = 'west';
+    else if (f === 'west') f = 'east';
+  }
+  const i = FACE_ORDER.indexOf(f);
+  return FACE_ORDER[(i + (quarterTurns & 3)) % 4]!;
 }
 
 /** Sockets a placed chunk exposes, in chunk-local heights */
@@ -327,11 +336,19 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   const allDefs = [...downDefs, ...upDefs];
   const chunks: PlacedChunk[] = [];
   let face = Math.floor(rng() * 4);
+  // Half of pillars MIRROR: the spiral winds counterclockwise instead.
+  // Uniform chirality was a procedural tell. The mirror is encoded as
+  // bit 4 of the rotation, and the whole pre-rotation construction
+  // passes through one reflected mapping — continuity holds by the same
+  // theorem, reflected. (Drawn AFTER the face roll so earlier draws are
+  // untouched: existing pillars keep their composition, only handedness
+  // varies.)
+  const mirror = rng() < 0.5;
   let base = -downTotal;
   for (const def of allDefs) {
-    chunks.push({ def, baseY: base, rotation: face });
+    chunks.push({ def, baseY: base, rotation: face | (mirror ? 4 : 0) });
     base += def.height;
-    face = (face + 1) % 4;
+    face = (face + (mirror ? 3 : 1)) % 4;
   }
 
   const sockets: ResolvedSocket[] = [];
