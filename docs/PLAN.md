@@ -334,6 +334,34 @@ has a known chunk-local pure replacement, and that substitution is the real
 porting work. Skip: Fortune Voronoi, bundled Clipper (use a JS lib), its
 tessellators (use earcut), the graph runtime.
 
+### 5c. Lighting & atmosphere (synthcity findings, July 31 2026)
+
+Shipped: the fixed PointLight POOL (16 lights, always visible, recycled onto
+the nearest fixtures per movement threshold) replaces per-room lights with
+visibility toggling — constant shader light count means Three.js never
+recompiles programs mid-walk. Fixtures are plain data per level. Each pool
+light carries an additive no-sort halo billboard (radial CanvasTexture,
+bloom makes it read volumetric). Fog density is SOLVED against the camera
+far plane instead of eyeballed (2% transmittance just inside far=160 →
+0.0132; the old 0.02 wasted 60wu of view in pure black). Render-scale
+quality slider (0.5–1.5 × devicePixelRatio) in Settings.
+
+QUEUED FOR LATER — emissive maps + low-threshold bloom (the synthcity
+look, adapted to brutalism): bake lit-slit / stairwell-glow / strip-light
+emissive masks for the concrete materials, keep emissiveIntensity low
+(1–2), drop bloom threshold near 0 but hold strength 0.6–1.5 (their neon 7
+is wrong for us). Pairs with the fixture layer: wherever a pool light
+lands there should be a visible emissive source. Do this WITH the Visual
+Lab validation ritual (researched semantics, neutral defaults, min/default/
+max testing) per the working agreements.
+
+NOTE — fixNoise (synthcity GeneratorUtils): value/Perlin noise outputs
+cluster near 0.5 and almost never reach the tails; their 4-line fix remaps
+[0.2, 0.75] → [0, 1) with clamping so threshold-based type selection can
+actually hit rare branches. CAUTION for us: applying it to EXISTING fields
+reshuffles every world (all thresholds were tuned against the raw
+distribution). Use it for NEW fields only, or retune thresholds knowingly.
+
 ### 6. Asset replacement pipeline
 
 The graybox-to-authored handoff is documented in

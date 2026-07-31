@@ -163,6 +163,9 @@ export class GameEngine {
    *  not chain into the next grab (the ratchet flew players through
    *  walls at constant height). */
   private mantleCooldown = 0;
+  /** User quality slider: multiplies devicePixelRatio (0.5 = fast/soft,
+   *  1.5 = supersampled). Post-processing rescales with it. */
+  private renderScale = 1;
   private fogColor = new THREE.Color(FOG_DEFAULT);
   private readonly fogTarget = new THREE.Color(FOG_DEFAULT);
   /** Camera-only smoothed feet height. Physics snaps up stair risers
@@ -193,7 +196,7 @@ export class GameEngine {
     private onNotice: (message: string) => void = () => {},
   ) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2) * this.renderScale);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
@@ -309,6 +312,12 @@ export class GameEngine {
       this.onNotice(copied ? 'Snapshot copied' : 'Snapshot copy failed');
     });
   };
+
+  setRenderScale(scale: number): void {
+    this.renderScale = Math.max(0.5, Math.min(1.5, scale));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2) * this.renderScale);
+    this.handleResize();
+  }
 
   private handleResize = () => {
     const parent = this.renderer.domElement.parentElement;

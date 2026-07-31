@@ -16,6 +16,7 @@ import {
 import type { InputAction } from '../engine/InputManager';
 
 const BRIGHTNESS_KEY = 'dagger-dungeon-brightness';
+const RENDER_SCALE_KEY = 'dagger-dungeon-render-scale';
 const SENSITIVITY_KEY = 'dagger-dungeon-mouse-sensitivity';
 const PLAYER_SPEED_KEY = 'dagger-dungeon-player-speed';
 const VISUAL_SETTINGS_KEY = 'dagger-dungeon-visual-settings-v4';
@@ -65,6 +66,7 @@ export function GameScreen() {
   const noticeTimerRef = useRef<number | null>(null);
   const [visualSettings, setVisualSettings] = useState(loadVisualSettings);
   const [brightness, setBrightness] = useState(() => loadSetting(BRIGHTNESS_KEY, DEFAULT_BRIGHTNESS));
+  const [renderScale, setRenderScale] = useState(() => loadSetting(RENDER_SCALE_KEY, 1));
   const [mouseSensitivity, setMouseSensitivity] = useState(() =>
     loadSetting(SENSITIVITY_KEY, DEFAULT_MOUSE_SENSITIVITY),
   );
@@ -108,6 +110,11 @@ export function GameScreen() {
     engineRef.current?.setBrightness(brightness);
     localStorage.setItem(BRIGHTNESS_KEY, String(brightness));
   }, [brightness]);
+
+  useEffect(() => {
+    engineRef.current?.setRenderScale(renderScale);
+    localStorage.setItem(RENDER_SCALE_KEY, String(renderScale));
+  }, [renderScale]);
 
   useEffect(() => {
     engineRef.current?.setMouseSensitivity(mouseSensitivity);
@@ -262,9 +269,11 @@ export function GameScreen() {
       {settingsOpen && (
         <SettingsMenu
           brightness={brightness}
+          renderScale={renderScale}
           mouseSensitivity={mouseSensitivity}
           playerSpeed={playerSpeed}
           onBrightnessChange={handleBrightnessChange}
+          onRenderScaleChange={setRenderScale}
           onMouseSensitivityChange={setMouseSensitivity}
           onPlayerSpeedChange={setPlayerSpeed}
           onRestoreDefaults={handleRestoreDefaults}

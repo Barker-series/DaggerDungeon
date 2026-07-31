@@ -72,6 +72,12 @@ function makeConcreteMaterial(
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
     map: CONCRETE_CLEAN_TEX,
+    // The albedo doubles as its own bump map (the synthcity trick):
+    // brightness variation in the concrete reads as aggregate/formwork
+    // relief under the point lights. Derivative-based, no tangents
+    // needed — this is NOT the parked normal-map work.
+    bumpMap: CONCRETE_CLEAN_TEX,
+    bumpScale: 0.6,
     color: tint,
     emissive,
     roughness,

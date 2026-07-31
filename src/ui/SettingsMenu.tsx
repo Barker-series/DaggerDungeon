@@ -1,8 +1,10 @@
 interface SettingsMenuProps {
   brightness: number;
+  renderScale: number;
   mouseSensitivity: number;
   playerSpeed: number;
   onBrightnessChange: (value: number) => void;
+  onRenderScaleChange: (value: number) => void;
   onMouseSensitivityChange: (value: number) => void;
   onPlayerSpeedChange: (value: number) => void;
   onRestoreDefaults: () => void;
@@ -11,9 +13,11 @@ interface SettingsMenuProps {
 
 export function SettingsMenu({
   brightness,
+  renderScale,
   mouseSensitivity,
   playerSpeed,
   onBrightnessChange,
+  onRenderScaleChange,
   onMouseSensitivityChange,
   onPlayerSpeedChange,
   onRestoreDefaults,
@@ -38,6 +42,22 @@ export function SettingsMenu({
             step="0.05"
             value={brightness}
             onInput={(event) => onBrightnessChange(Number(event.currentTarget.value))}
+          />
+        </label>
+
+        <label className="settings-control">
+          <span className="settings-control-row">
+            <span>Render scale</span>
+            <output>{renderScale.toFixed(2)}×</output>
+          </span>
+          <input
+            type="range"
+            aria-label="Render scale"
+            min={0.5}
+            max={1.5}
+            step={0.05}
+            value={renderScale}
+            onChange={(e) => onRenderScaleChange(Number(e.target.value))}
           />
         </label>
 
