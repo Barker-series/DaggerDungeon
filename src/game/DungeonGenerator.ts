@@ -32,7 +32,7 @@ import { applyFineNoise } from './dungeon/layer1-finenoise';
 import { carveRoadsRegion, cutRoadBlockTops, flattenRoadStreets, suppressRoadPits } from './dungeon/roads-region';
 import { regionAtCell } from './dungeon/region-layer';
 import { connectPermanentTransit, permanentTransitTiles } from './dungeon/layer4-connect';
-import { computeHeightFields, computePitMask, carvePitArches, PIT_FLOOR } from './dungeon/layer6-heights';
+import { computeHeightFields, computePitMask, carvePitArches, levelPitDecks, PIT_FLOOR } from './dungeon/layer6-heights';
 import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
 import { pillarFootprint, pillarAirSpans } from './dungeon/pillar-geometry';
@@ -443,6 +443,9 @@ function generateLevel(
   // ── Roads districts: streets run at flat grade so quantized block
   // tops meet them with steppable or fully-walled edges only. ──
   flattenRoadStreets(floorHeights, tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed);
+
+  // ── Pit decks hold the level of their banks — no mid-span dips. ──
+  levelPitDecks(floorHeights, tiles, GRID_TILES);
 
   // ── Output ──
   return {

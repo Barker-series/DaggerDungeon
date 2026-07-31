@@ -395,6 +395,66 @@ function applyMouthSweep(
 
 
 /**
+ * DECK LEVELING — a land strip crossing a pit should hold the level of
+ * its banks. Terrain quantization otherwise drops a deck section half a
+ * unit below the approach and the walk across "dips" like a sagging
+ * bridge. For every tile with pit on both sides of an axis (the arch
+ * decks), the floor lifts to the max walkable floor within a bounded
+ * reach ALONG the deck. Runs before the column build so physics,
+ * rendering, and the arch carve all see one surface.
+ */
+export function levelPitDecks(
+  floorHeights: number[][],
+  tiles: TileType[][],
+  gridTiles: number,
+): void {
+  const SPAN = 12; // matches MAX_ARCH_SPAN
+  const REACH = 4; // along-deck leveling radius
+  const isPit = (tx: number, tz: number): boolean =>
+    floorHeights[tz]?.[tx] !== undefined && floorHeights[tz]![tx]! <= PIT_FLOOR;
+  const pitBothSides = (tx: number, tz: number, dx: number, dz: number): boolean => {
+    let fwd = false;
+    for (let i = 1; i <= SPAN && !fwd; i++) {
+      const nx = tx + dx * i, nz = tz + dz * i;
+      if (nx < 0 || nz < 0 || nx >= gridTiles || nz >= gridTiles) return false;
+      if (tiles[nz]![nx] === TileType.Wall) return false;
+      if (isPit(nx, nz)) fwd = true;
+    }
+    if (!fwd) return false;
+    for (let i = 1; i <= SPAN; i++) {
+      const nx = tx - dx * i, nz = tz - dz * i;
+      if (nx < 0 || nz < 0 || nx >= gridTiles || nz >= gridTiles) return false;
+      if (tiles[nz]![nx] === TileType.Wall) return false;
+      if (isPit(nx, nz)) return true;
+    }
+    return false;
+  };
+  // Read from a snapshot so lifts don't cascade (order-independence).
+  const orig = floorHeights.map((r) => [...r]);
+  for (let tz = 0; tz < gridTiles; tz++) {
+    for (let tx = 0; tx < gridTiles; tx++) {
+      if (tiles[tz]![tx] === TileType.Wall) continue;
+      const f = orig[tz]![tx]!;
+      if (f <= PIT_FLOOR) continue;
+      const acrossX = pitBothSides(tx, tz, 1, 0);
+      const acrossZ = pitBothSides(tx, tz, 0, 1);
+      if (!acrossX && !acrossZ) continue;
+      // Deck axis = the one NOT crossing the pit.
+      const [ax, az] = acrossX ? [0, 1] : [1, 0];
+      let lift = f;
+      for (let i = -REACH; i <= REACH; i++) {
+        const nx = tx + ax * i, nz = tz + az * i;
+        const t = orig[nz]?.[nx];
+        if (t === undefined || t <= PIT_FLOOR) continue;
+        if (tiles[nz]![nx] === TileType.Wall) continue;
+        if (t > lift && t - f <= 1.0) lift = t;
+      }
+      floorHeights[tz]![tx] = lift;
+    }
+  }
+}
+
+/**
  * PIT ARCHES — land strips spanning between bottomless pits stop being
  * flat walls straight down. Any walkable tile with pit on both sides
  * within MAX_ARCH_SPAN (checked on both axes; the tighter crossing
