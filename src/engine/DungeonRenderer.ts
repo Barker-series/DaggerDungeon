@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { TileType, TILE_SIZE, SKY_CEIL, ABYSS_FLOOR } from '../game/types';
 import type { DungeonData, WorldData, ColumnSpan } from '../game/types';
 import { tileBiome, type BiomeType } from '../game/dungeon/cells';
-import { buildCornerField, sampleCornerField, PIT_LEVEL } from '../game/dungeon/heightfield';
+import { buildCornerField, PIT_LEVEL } from '../game/dungeon/heightfield';
 import { buildOrganicContour, isOrganicTileIn } from '../game/dungeon/organiccontour';
 import { bridgeTiles, PIPE_BORE, CLEARANCE } from '../game/dungeon/pillar-bridges';
 
@@ -412,20 +412,7 @@ export class DungeonRenderer {
       return false;
     };
 
-    // A tile whose 3x3 neighborhood spans a hole boundary renders at
-    // higher tessellation — rim curvature is earned there
-    const nearPitEdge = (x: number, y: number): boolean => {
-      let hasPit = false;
-      let hasGrade = false;
-      for (let dz = -1; dz <= 1; dz++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          if (isWall(dungeon, x + dx, y + dz)) continue;
-          if (dungeon.floorHeights[y + dz]![x + dx]! <= PIT_LEVEL) hasPit = true;
-          else hasGrade = true;
-        }
-      }
-      return hasPit && hasGrade;
-    };
+
 
     for (let y = bounds?.z0 ?? 0; y < (bounds?.z1 ?? dungeon.height); y++) {
       for (let x = bounds?.x0 ?? 0; x < (bounds?.x1 ?? dungeon.width); x++) {
@@ -599,16 +586,17 @@ export class DungeonRenderer {
 
         if (ownsFloor(x, y)) {
           const floorBuf = tile === TileType.StairsDown ? stairs : buf.floor;
-          if (nearPitEdge(x, y)) {
-            addTessellatedFloor(floorBuf, wx, wz, cornerFloor, PIT_TESS);
-          } else {
-            addHorizontalQuad(
-              floorBuf, wx, wz,
-              cornerFloor[y]![x]!, cornerFloor[y]![x + 1]!,
-              cornerFloor[y + 1]![x]!, cornerFloor[y + 1]![x + 1]!,
-              true,
-            );
-          }
+          // Pit-rim tiles need no extra tessellation: the corner field is
+          // pure bilinear and pit dominance clamps rim corners flat to
+          // grade, so a plain quad is exactly as faithful here as on any
+          // other tile. (The 4x4 subdivision was a wireframe-visible
+          // waste ringing every pit.)
+          addHorizontalQuad(
+            floorBuf, wx, wz,
+            cornerFloor[y]![x]!, cornerFloor[y]![x + 1]!,
+            cornerFloor[y + 1]![x]!, cornerFloor[y + 1]![x + 1]!,
+            true,
+          );
         }
         if (ownsCeil(x, y)) {
           const tc = dungeon.ceilingHeights[y]![x]!;
@@ -1599,57 +1587,6 @@ function addFlatStrip(
   addOrientedQuad(buf, i, 0, ny, 0);
 }
 
-/** Tessellation for floor tiles at hole boundaries */
-const PIT_TESS = 4;
-
-function addFloorPatch(
-  buf: MeshBuffers,
-  x0: number, z0: number, x1: number, z1: number,
-  h00: number, h10: number, h01: number, h11: number,
-  u0: number, v0: number, u1: number, v1: number,
-): void {
-  const i = buf.verts.length / 3;
-  buf.verts.push(x0, h00, z0);
-  buf.verts.push(x1, h10, z0);
-  buf.verts.push(x1, h11, z1);
-  buf.verts.push(x0, h01, z1);
-  buf.uvs.push(u0, v0, u1, v0, u1, v1, u0, v1);
-  _a.set(x1 - x0, h11 - h00, z1 - z0);
-  _b.set(x0 - x1, h01 - h10, z1 - z0);
-  _n.crossVectors(_a, _b).normalize();
-  if (_n.y < 0) _n.negate();
-  for (let k = 0; k < 4; k++) buf.norms.push(_n.x, _n.y, _n.z);
-  addOrientedQuad(buf, i, _n.x, _n.y, _n.z);
-}
-
-function addTessellatedFloor(
-  buf: MeshBuffers,
-  wx: number, wz: number,
-  corners: number[][],
-  n: number,
-): void {
-  const s = TILE_SIZE;
-  for (let j = 0; j < n; j++) {
-    for (let i = 0; i < n; i++) {
-      const x0 = wx + (s * i) / n;
-      const x1 = wx + (s * (i + 1)) / n;
-      const z0 = wz + (s * j) / n;
-      const z1 = wz + (s * (j + 1)) / n;
-      addFloorPatch(
-        buf,
-        x0, z0, x1, z1,
-        sampleCornerField(corners, x0, z0),
-        sampleCornerField(corners, x1, z0),
-        sampleCornerField(corners, x0, z1),
-        sampleCornerField(corners, x1, z1),
-        i / n, j / n, (i + 1) / n, (j + 1) / n,
-      );
-    }
-  }
-}
-
-/** Down-facing quad with explicit bounds — wall caps with per-side
- *  overlap margins */
 function addCeilPatch(
   buf: MeshBuffers,
   x0: number, z0: number, x1: number, z1: number,
