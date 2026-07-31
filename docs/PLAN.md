@@ -20,6 +20,12 @@ The core rhythm to protect in every change: **inside → outside** — cramped
 places that suddenly open onto grand vistas, again and again. Contrast IS the
 feel.
 
+Second protected rule: **the human-scale vocabulary never scales.** Doors,
+windows, call boxes, strip lights, stair treads — fixed sizes everywhere,
+forever. They are the ruler the eye uses to measure the monuments; only
+COUNTS of modules grow with a structure, never module size. (Future props,
+furniture, and physics objects join this ruler set.)
+
 ## The Purpose
 
 The purpose is for the best **lightweight megastructure generation** ever
@@ -61,6 +67,14 @@ explicitly a guess until the day it's real work.
 - **Canyon-causeway street district** (user idea, July 30 2026): a roads
   variant that INVERTS pit suppression — the vein network laced with voids to
   the extreme, streets as narrow causeways over the abyss.
+- **A legit canyon + massive vistas** (user, July 31 2026): "we 100% must do
+  this, one thing at a time." The roads region is a step toward bigger; a true
+  canyon region with vast sightlines hasn't been built yet and is a committed
+  future direction.
+- **Goal-directed light** (from the Mik devlog review): our world is
+  non-linear, so light-as-direction has nowhere to point — yet. If/when a
+  future goal location exists on the map, use light direction to pull the
+  player toward it. Threshold lighting (below) is the near-term slice.
 - **The editor.** Principle (user, July 31 2026): the best way to build an
   editor is to build a GAME and make the editor for what the game needs — so
   the editor waits for the game. A game will be added here; it isn't started
@@ -79,6 +93,44 @@ explicitly a guess until the day it's real work.
 - **Long-distance rail.** Real regional rail — routes, stations, trains —
   replacing the deleted subway-bore scaffolding someday. Everything beyond that
   sentence is guessing; spec it when it's actually next.
+- **Vault stamping (Zorbus prefabs)** — likely a future workhorse: parse the
+  CC0 zorbus_vaults ASCII shapes into a stamp library; dungeon/crypt cells
+  deterministically pick-and-stamp per cellSeed (clipped to cell bounds,
+  respecting pillar footprints and transit tiles). Authored shapes read as
+  DESIGNED in a way noise never does. THE KEY ECONOMY: the layer-4 attachment
+  pass already connects every local floor component to its cell hub from any
+  window — arbitrary stamped shapes are reachable by construction, so the
+  classically hard part of prefab dungeons (connectivity) is already shipped.
+  Cheap, customizable, and the dormant blocks.ts/prefabs.ts vocabulary was
+  always headed here. Possible expansion (user): stamps with ELEVATION — 3D
+  vault shapes, not just floor plans. Details later. (Anderson-style
+  accretion was considered and rejected: sequential whole-map growth fights
+  the pure-function discipline at every level.)
+- **Hive-style organic layouts, sans GA** (user, July 31 2026): Joel Simon's
+  evolved-floorplan AESTHETIC (cellular rooms, curved merging hallways,
+  courtyards) without the genetic algorithm — his GA only picks room
+  adjacency; the organic look comes from the phenotype pipeline, and we
+  already own deterministic equivalents: jittered Voronoi at room scale for
+  the chambers, domain-warped fields for the relaxed boundaries, the
+  vein/artery hierarchy for the paths. Seeded patterns + path creation
+  reproduce the hive; pure functions, window-stable. Pairs naturally with
+  vault stamping (stamped set-pieces inside a hive fabric).
+- **Curves over altitude** (from Maxence Du Mesnil Du Buisson's Blame-like
+  level design doc, July 31 2026): he authors a linear level as explicit
+  pacing CURVES — height, brightness, order/chaos, spatial frequency — over
+  time, each with a semantic axis (light = the structure's divine face,
+  shadow = its vicious face; deep = organic "den of a body", high = orderly
+  and brutal; spatial frequency = our inside→outside rhythm, alternating
+  gigantism with human-scale rest and ramping toward a climax). Our world is
+  non-linear, but ALTITUDE is a monotonic progression axis gravity gives us
+  for free — pacing without scripting. Translations, all pure fields over Y:
+  luminance-by-altitude (ambient/fog brightening with height, darkening
+  below grade — one more input to the existing area-fog lerp);
+  order/chaos-by-altitude (chunk + biome vocabulary weights shifting with Y —
+  this is what "vertical strata" was always supposed to MEAN); and making the
+  inside→outside alternation RATE a tunable field instead of a noise
+  accident. A player climbing a supertower gets an authored dramatic arc
+  with zero scripted triggers.
 - **fixNoise caution** (for whenever new threshold-driven fields are added):
   noise clusters near 0.5; the synthcity range-remap makes thresholds honest —
   but retrofitting it onto existing fields reshuffles every world. New fields
@@ -96,6 +148,17 @@ explicitly a guess until the day it's real work.
   filler-tolerance idea (clustered blocky tops) as possible future crown
   chunk variety within fixed footprints, and noise-banded module choice
   when the facade kit lands.
+- **Voronoi distance metrics** (explored July 31 2026, shelved): the street
+  Voronoi's metric is an aesthetic knob — Manhattan with axis-aligned
+  districts yields rectilinear blocks whose corners chamfer at exactly 45°
+  (the same design language as the tunnel chamfers), Chebyshev gives square
+  press-stamped cells. Fun, works, but moves nothing forward right now. The
+  knob remains in road-field.ts (optional `metric`, default euclidean —
+  inert in-game; `--manhattan/--chebyshev` on tools/road-mask.ts) with axis
+  metrics auto-aligning their districts. NOTE: the shipped veins mode is
+  level-set based and has no distance metric — this applies only to the
+  Voronoi machinery (grid mode / future R1 street graph). If a "chamfered
+  quarter" district personality is ever wanted, this is it, ready.
 - **Sceelix** (MIT engine; reviewed July 30 2026) — the live takeaways are the
   junction polygon math and the CGA split arithmetic (facade/floor splitting);
   the full ranked review is in git history and `docs/roads-layer-design.md`

@@ -29,6 +29,8 @@ const PAIR_SALT = 0x52443033;
 /** Default world units per district tract. */
 export const DISTRICT_WU = 768;
 
+export type DistanceMetric = 'euclidean' | 'manhattan' | 'chebyshev';
+
 export interface RoadFieldParams {
   /** Base lattice spacing in world units (block size + street). */
   spacing: number;
@@ -46,6 +48,10 @@ export interface RoadFieldParams {
   terrainScale: number;
   /** 0 = random district grid angles, 1 = grids fully align to contours. */
   terrainFollow: number;
+  /** Distance metric for the Voronoi street borders — an AESTHETIC knob:
+   *  euclidean = organic cells, manhattan = diamond/45-degree blocks,
+   *  chebyshev = square axis-aligned blocks. */
+  metric?: DistanceMetric;
 }
 
 export const DEFAULT_ROAD_PARAMS: RoadFieldParams = {
@@ -102,6 +108,12 @@ function district(seed: number, dcx: number, dcz: number, p: RoadFieldParams): D
   const theta = p.terrainFollow >= 1 ? contourTheta
     : p.terrainFollow <= 0 ? randomTheta
     : contourTheta * p.terrainFollow + randomTheta * (1 - p.terrainFollow);
+  // Axis-aligned metrics want axis-aligned lattices: Manhattan/Chebyshev
+  // distances are locked to world axes, so rotated grids staircase their
+  // borders. Aligned districts get clean diamond/square blocks instead.
+  if (p.metric && p.metric !== 'euclidean') {
+    return { dcx, dcz, theta: 0, spacingMul, jitterMul };
+  }
   return { dcx, dcz, theta, spacingMul, jitterMul };
 }
 
@@ -442,10 +454,13 @@ export function roadAt(seed: number, x: number, z: number, p: RoadFieldParams = 
   let d1 = Infinity;
   let d2 = Infinity;
   let d3 = Infinity;
+  const metric = p.metric ?? 'euclidean';
   for (const site of sites) {
-    const dx = site.x - x;
-    const dz = site.z - z;
-    const d = Math.sqrt(dx * dx + dz * dz);
+    const dx = Math.abs(site.x - x);
+    const dz = Math.abs(site.z - z);
+    const d = metric === 'manhattan' ? dx + dz
+      : metric === 'chebyshev' ? Math.max(dx, dz)
+      : Math.sqrt(dx * dx + dz * dz);
     if (d < d1) {
       d3 = d2; n3 = n2; d2 = d1; n2 = n1; d1 = d; n1 = site;
     } else if (d < d2) {

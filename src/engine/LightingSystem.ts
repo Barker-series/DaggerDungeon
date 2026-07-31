@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { TILE_SIZE, WALL_HEIGHT } from '../game/types';
+import { TILE_SIZE, WALL_HEIGHT, TileType } from '../game/types';
 import type { DungeonData, WorldData } from '../game/types';
 import { tileBiome, type BiomeType } from '../game/dungeon/cells';
 
@@ -27,6 +27,14 @@ const BIOME_TORCH: Record<BiomeType, { color: number; intensity: number }> = {
 const CORRIDOR_LIGHT_COLOR = 0xcc8844;
 const CORRIDOR_LIGHT_INTENSITY = 1.5;
 const CORRIDOR_LIGHT_DISTANCE = TILE_SIZE * 4;
+/** THRESHOLD BEACONS — light marks the mouths of the permanent transit
+ *  corridors (the Mik principle: guide with light direction, never
+ *  yellow paint). The network was 100% reachable but experientially
+ *  invisible; a cold marker light at every mouth makes the
+ *  infrastructure legible without touching geometry or UI. */
+const THRESHOLD_COLOR = 0xbfd9ff;
+const THRESHOLD_INTENSITY = 2.6;
+const THRESHOLD_DISTANCE = TILE_SIZE * 6;
 
 /** FIXED point-light pool (the synthcity free-list idea): exactly this
  *  many real PointLights exist, always visible, recycled onto the nearest
@@ -250,6 +258,42 @@ export class LightingSystem {
           color: CORRIDOR_LIGHT_COLOR,
           intensity: CORRIDOR_LIGHT_INTENSITY,
           distance: CORRIDOR_LIGHT_DISTANCE,
+        });
+      }
+    }
+
+    // ── Threshold beacons at transit-corridor mouths. A mouth is a
+    // null-biome (tunnel-region) floor tile 4-adjacent to a real-biome
+    // floor tile — detected from data the level already carries, so it
+    // works identically from worker-generated worlds. One beacon per
+    // contiguous mouth (skip if the neighbor toward -x/-z already
+    // qualified). ──
+    const w = dungeon.width;
+    const isFloor = (tx: number, tz: number): boolean =>
+      tx >= 0 && tz >= 0 && tx < w && tz < dungeon.height
+      && dungeon.tiles[tz]![tx] !== TileType.Wall
+      && (dungeon.floorHeights[tz]![tx] ?? -1000) > -900;
+    const isMouth = (tx: number, tz: number): boolean => {
+      if (!isFloor(tx, tz)) return false;
+      if (tileBiome(dungeon.cellBiomes, tx, tz) !== null) return false;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        if (isFloor(tx + dx, tz + dz) && tileBiome(dungeon.cellBiomes, tx + dx, tz + dz) !== null) return true;
+      }
+      return false;
+    };
+    for (let tz = 0; tz < dungeon.height; tz++) {
+      for (let tx = 0; tx < w; tx++) {
+        if (!isMouth(tx, tz)) continue;
+        if (isMouth(tx - 1, tz) || isMouth(tx, tz - 1)) continue; // one per mouth
+        const mouthCeil = dungeon.ceilingHeights[tz]?.[tx] ?? WALL_HEIGHT;
+        const floorH = dungeon.floorHeights[tz]![tx]!;
+        fixtures.push({
+          x: tx * TILE_SIZE + TILE_SIZE / 2,
+          y: baseY + Math.max(floorH + 2, floorH + mouthCeil - 0.8),
+          z: tz * TILE_SIZE + TILE_SIZE / 2,
+          color: THRESHOLD_COLOR,
+          intensity: THRESHOLD_INTENSITY,
+          distance: THRESHOLD_DISTANCE,
         });
       }
     }

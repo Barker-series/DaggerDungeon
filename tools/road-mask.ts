@@ -43,6 +43,7 @@ const params: RoadFieldParams = {
   districtWu: flag('district', DEFAULT_ROAD_PARAMS.districtWu),
   terrainScale: flag('terrain', DEFAULT_ROAD_PARAMS.terrainScale),
   terrainFollow: flag('follow', DEFAULT_ROAD_PARAMS.terrainFollow),
+  metric: (args.includes('--manhattan') ? 'manhattan' : args.includes('--chebyshev') ? 'chebyshev' : 'euclidean') as import('../src/game/dungeon/road-field').DistanceMetric,
 };
 
 console.log(`road-mask seed=${seed} extent=${extent}wu size=${size}px`, params);
