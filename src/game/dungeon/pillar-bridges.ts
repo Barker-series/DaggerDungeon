@@ -45,11 +45,11 @@ const BRIDGE_CHANCE = 0.65;
 const BRIDGE_SALT = 5252;
 
 const SLAB = 0.5;
-const CLEARANCE = 3.5;
+export const CLEARANCE = 3.5;
 /** Enclosed PIPE crossings — sewer-scale ducts between pillars. Tighter
  *  bore than an open walkway, sealed by a roof slab. */
 const PIPE_CHANCE = 0.35;
-const PIPE_BORE = 2.6;
+export const PIPE_BORE = 2.6;
 const PIPE_ROOF = 0.5;
 /** Free-standing ARCHES between crowns — the canyon-of-arches
  *  silhouette. Pure mass, no walkway: beams the insane machines left. */
@@ -292,8 +292,8 @@ export function planOwnedBridges(worldSeed: number, cx: number, cz: number, at: 
 
 /** Every world tile a bridge occupies, with its walk height there.
  *  Walkways on the massive grid are 3 tiles wide. */
-export function bridgeTiles(br: BridgeSpec): { tx: number; tz: number; h: number; support: boolean }[] {
-  const out: { tx: number; tz: number; h: number; support: boolean }[] = [];
+export function bridgeTiles(br: BridgeSpec): { tx: number; tz: number; h: number; support: boolean; side: boolean }[] {
+  const out: { tx: number; tz: number; h: number; support: boolean; side: boolean }[] = [];
   for (let i = 0; i < GAP_TILES; i++) {
     const t = (i + 0.5) / GAP_TILES;
     const h = br.yA + (br.yB - br.yA) * t;
@@ -303,9 +303,10 @@ export function bridgeTiles(br: BridgeSpec): { tx: number; tz: number; h: number
       // One centered pier holds each exposed end of an open bridge. Whether
       // finite ground actually exists below is decided by the column pass.
       const support = !br.pipe && c === 28 && (i === 0 || i === GAP_TILES - 1);
+      const side = c !== 28;
       out.push(br.dir === 'east'
-        ? { tx: along, tz: cross, h, support }
-        : { tx: cross, tz: along, h, support });
+        ? { tx: along, tz: cross, h, support, side }
+        : { tx: cross, tz: along, h, support, side });
     }
   }
   return out;

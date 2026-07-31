@@ -4,6 +4,7 @@ import type { DungeonData, WorldData, ColumnSpan } from '../game/types';
 import { tileBiome, type BiomeType } from '../game/dungeon/cells';
 import { buildCornerField, sampleCornerField, PIT_LEVEL } from '../game/dungeon/heightfield';
 import { buildOrganicContour, isOrganicTileIn } from '../game/dungeon/organiccontour';
+import { bridgeTiles, PIPE_BORE, CLEARANCE } from '../game/dungeon/pillar-bridges';
 
 const loader = new THREE.TextureLoader();
 
@@ -305,6 +306,7 @@ export class DungeonRenderer {
       this.buildLevelSurfaces(world, li, cornerFloors[li]!, contours[li]!, this.materialsFor, this.meshGroup);
     }
     this.buildWalls(world, cornerFloors, contours, this.materialsFor, this.meshGroup);
+    this.buildPipeChamfers(world, this.meshGroup);
   }
 
   /** Build a neighboring window in pillar-cell-sized slices. Each slice
@@ -350,6 +352,7 @@ export class DungeonRenderer {
         );
       }
       this.buildWalls(world, cornerFloors, contours, this.materialsFor, prepared.group, bounds);
+      this.buildPipeChamfers(world, prepared.group);
       requestAnimationFrame(runNext);
     };
     requestAnimationFrame(runNext);
@@ -706,30 +709,62 @@ export class DungeonRenderer {
     const airRanges = (spans: ColumnSpan[]): [number, number][] =>
       spans.map((s) => [clipY(s.floor), clipY(s.ceil)] as [number, number]);
 
+    // ── Rock floors/ceilings and the roof plane, MERGED: flat quads at
+    // identical heights along a row collapse into one strip each, and
+    // roof-plane quads exist only within sight of a sky-open column —
+    // a quad buried in solid rock with rock in every direction can
+    // never be seen. (Wireframe audit: the per-tile version was ~130k
+    // hidden or redundant triangles per window.) ──
+    const reachesSkyAt = (x: number, z: number): boolean => {
+      if (x < 0 || z < 0 || x >= w || z >= h) return true;
+      const col = world.columns[z * w + x]!;
+      return col.length > 0 && col[col.length - 1]!.ceil >= SKY_CEIL;
+    };
+    const nearSky = (x: number, z: number): boolean => {
+      for (let dz2 = -2; dz2 <= 2; dz2++) {
+        for (let dx2 = -2; dx2 <= 2; dx2++) {
+          if (reachesSkyAt(x + dx2, z + dz2)) return true;
+        }
+      }
+      return false;
+    };
+    // Per row: runs of (height, up/down) keyed by exact height
+    type Run = { x0: number; x1: number; y: number; up: boolean };
+    const flushRuns = (runs: Map<string, Run>, z: number): void => {
+      for (const r of runs.values()) {
+        addFlatStrip(rockFloors, r.x0 * TILE_SIZE, z * TILE_SIZE, (r.x1 + 1) * TILE_SIZE, (z + 1) * TILE_SIZE, r.y, r.up);
+      }
+      runs.clear();
+    };
     for (let z = bounds?.z0 ?? 0; z < (bounds?.z1 ?? h); z++) {
+      const open = new Map<string, Run>();
       for (let x = bounds?.x0 ?? 0; x < (bounds?.x1 ?? w); x++) {
         const a = world.columns[z * w + x]!;
-
-        // Structural rock floors (a shaft ending on the slab below) and
-        // rock ceilings (pillar slab undersides, crown attic roofs)
+        const here = new Set<string>();
+        const want = (y: number, up: boolean): void => {
+          const k = `${up ? 'u' : 'd'}${y}`;
+          here.add(k);
+          const r = open.get(k);
+          if (r && r.x1 === x - 1) r.x1 = x;
+          else {
+            if (r) addFlatStrip(rockFloors, r.x0 * TILE_SIZE, z * TILE_SIZE, (r.x1 + 1) * TILE_SIZE, (z + 1) * TILE_SIZE, r.y, r.up);
+            open.set(k, { x0: x, x1: x, y, up });
+          }
+        };
         for (const s of a) {
-          if (s.owner === -1 && s.floor > ABYSS_FLOOR) {
-            addHorizontalQuad(rockFloors, x * TILE_SIZE, z * TILE_SIZE, s.floor, s.floor, s.floor, s.floor, true);
-          }
-          if (s.ceilOwner === -1 && s.ceil < SKY_CEIL) {
-            addHorizontalQuad(rockFloors, x * TILE_SIZE, z * TILE_SIZE, s.ceil, s.ceil, s.ceil, s.ceil, false);
-          }
+          if (s.owner === -1 && s.floor > ABYSS_FLOOR) want(s.floor, true);
+          if (s.ceilOwner === -1 && s.ceil < SKY_CEIL) want(s.ceil, false);
         }
-
-        // The world's top plane is WATERTIGHT: every column either opens
-        // to sky or carries a roof slab at the clip height. (The old
-        // near-sky-only hack left wide solid regions open-topped — from
-        // a pillar summit you looked down into holes. Roofs over deep
-        // interior tiles sit inside conceptual rock; a batched quad each
-        // is the price of unrepresentable leaks.)
-        const reachesSky = a.length > 0 && a[a.length - 1]!.ceil >= SKY_CEIL;
-        if (!reachesSky) {
-          addHorizontalQuad(rockFloors, x * TILE_SIZE, z * TILE_SIZE, skyTop, skyTop, skyTop, skyTop, true);
+        // The world's top plane is WATERTIGHT where it can be seen:
+        // every column within sight of sky either opens to it or carries
+        // a roof slab at the clip height.
+        if (!reachesSkyAt(x, z) && nearSky(x, z)) want(skyTop, true);
+        // Runs whose height vanished at this column flush now
+        for (const [k, r] of open) {
+          if (!here.has(k) && r.x1 < x) {
+            addFlatStrip(rockFloors, r.x0 * TILE_SIZE, z * TILE_SIZE, (r.x1 + 1) * TILE_SIZE, (z + 1) * TILE_SIZE, r.y, r.up);
+            open.delete(k);
+          }
         }
 
         // Two directed boundaries per column (east, south) — plus the
@@ -1121,15 +1156,145 @@ export class DungeonRenderer {
             } else {
               emitFlat(0, 1);
             }
+
+            // ── OCTAGONAL TUNNEL CORRIDORS: in the 'tunnel' region
+            // (transit corridors carved through the void — null-biome
+            // cells), every full-height wall segment gains additive 45°
+            // strips at its floor and ceiling junctions. The strips ride
+            // the segment's REFINED corner heights, so they follow the
+            // drawn surfaces exactly; the flat wall, floor, and ceiling
+            // stay in place behind them — interpenetration per the
+            // junction doctrine, so no new hole is representable. ──
+            {
+              const TUNNEL_CH = 0.6;
+              const airTile = airX >= 0 && airZ >= 0 && airX < w && airZ < h;
+              const isTunnel = airTile
+                && tileBiome(world.levels[0]!.cellBiomes, airX, airZ) === null
+                && world.levels[0]!.tiles[airZ]![airX] !== TileType.Wall;
+              const fullHeight = airTopKnown && !airIsSky
+                && Math.abs(hi - airSpanTop) < 0.03
+                && (spanAtFloor(airSpans, lo) !== undefined)
+                && hi - lo >= 2.2;
+              if (isTunnel && fullHeight && chamferLc < 0) {
+                const S2 = Math.SQRT1_2;
+                const inX = nrmX * TUNNEL_CH;
+                const inZ = nrmZ * TUNNEL_CH;
+                const push = (
+                  a0x: number, a0y: number, a0z: number,
+                  a1x: number, a1y: number, a1z: number,
+                  b1x: number, b1y: number, b1z: number,
+                  b0x: number, b0y: number, b0z: number,
+                  ny: number,
+                ): void => {
+                  const vi = buf.verts.length / 3;
+                  buf.verts.push(a0x, a0y, a0z, a1x, a1y, a1z, b1x, b1y, b1z, b0x, b0y, b0z);
+                  for (let k = 0; k < 4; k++) buf.norms.push(nrmX * S2, ny * S2, nrmZ * S2);
+                  buf.uvs.push(0, 0, 1, 0, 1, 0.3, 0, 0.3);
+                  addOrientedQuad(buf, vi, nrmX * S2, ny * S2, nrmZ * S2);
+                };
+                // Lower: wall plane at (lo+C) down-in to the floor at C inward
+                push(
+                  ex0, lo0 + TUNNEL_CH, ez0, ex1, lo1 + TUNNEL_CH, ez1,
+                  ex1 + inX, lo1, ez1 + inZ, ex0 + inX, lo0, ez0 + inZ,
+                  1,
+                );
+                // Upper: wall plane at (hi−C) up-in to the ceiling at C inward
+                push(
+                  ex0, hi0 - TUNNEL_CH, ez0, ex1, hi1 - TUNNEL_CH, ez1,
+                  ex1 + inX, hi1, ez1 + inZ, ex0 + inX, hi0, ez0 + inZ,
+                  -1,
+                );
+              }
+            }
           }
         }
       }
+      flushRuns(open, z);
     }
 
     for (const [key, buf] of buffers) {
       this.addMesh(group, buf, materialsFor(key).wall);
     }
     this.addMesh(group, rockFloors, materialsFor('tunnel').floor);
+  }
+
+  /**
+   * OCTAGONAL TUNNELS: pipe and subway bores are square in the column
+   * model (one flat span per tile — the leak-proofing contract), so the
+   * eight-sided cross-section is drawn: four 45-degree chamfer strips
+   * run the length of each bore, corner-filling where wall meets floor
+   * and ceiling. Emitted only where a REAL wall stands beyond the bore
+   * (solid across the band) — flying pipe causeways with open sides get
+   * no floating diagonals. Collision stays square: the wedges are within
+   * body-radius reach of walls, so the clip is imperceptible.
+   */
+  private buildPipeChamfers(world: WorldData, target: THREE.Group): void {
+    const C = 0.6; // chamfer leg — strong enough to read as an octagon
+    const S = Math.SQRT1_2;
+    const w = world.levels[0]!.width;
+    const buf = newBuffers();
+
+    const solidAcross = (tx: number, tz: number, lo: number, hi: number): boolean => {
+      if (tx < 0 || tz < 0 || tx >= w || tz >= w) return false;
+      const spans = world.columns[tz * w + tx]!;
+      return !spans.some((sp) => sp.floor < hi - 0.05 && sp.ceil > lo + 0.05);
+    };
+
+    /** One chamfer strip segment: a quad from edge (a0->a1) to edge (b0->b1). */
+    const strip = (
+      ax0: number, ay0: number, az0: number, ax1: number, ay1: number, az1: number,
+      bx0: number, by0: number, bz0: number, bx1: number, by1: number, bz1: number,
+      nx: number, ny: number, nz: number,
+    ): void => {
+      const vi = buf.verts.length / 3;
+      buf.verts.push(ax0, ay0, az0, ax1, ay1, az1, bx1, by1, bz1, bx0, by0, bz0);
+      for (let k = 0; k < 4; k++) buf.norms.push(nx, ny, nz);
+      buf.uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+      addOrientedQuad(buf, vi, nx, ny, nz);
+    };
+
+    // EVERY bore gets chamfers where it tunnels through solid — pipes,
+    // subways, AND ordinary bridges boring passages into pillars/walls.
+    // The wall gate keeps open-air spans clean.
+    const pipes = [...world.bridges, ...world.subways];
+    for (const br of pipes) {
+      const tiles = bridgeTiles(br);
+      for (let j = 0; j + 2 < tiles.length; j += 3) {
+        const lowT = tiles[j]!;
+        const center = tiles[j + 1]!;
+        const highT = tiles[j + 2]!;
+        const h = center.h;
+        const top = h + (br.pipe ? PIPE_BORE : CLEARANCE);
+        if (br.dir === 'east') {
+          const x0 = center.tx * TILE_SIZE;
+          const x1 = x0 + TILE_SIZE;
+          const zLo = lowT.tz * TILE_SIZE;
+          const zHi = (highT.tz + 1) * TILE_SIZE;
+          if (solidAcross(lowT.tx, lowT.tz - 1, h + 0.2, top - 0.2)) {
+            strip(x0, h, zLo + C, x1, h, zLo + C, x0, h + C, zLo, x1, h + C, zLo, 0, S, S);
+            strip(x0, top, zLo + C, x1, top, zLo + C, x0, top - C, zLo, x1, top - C, zLo, 0, -S, S);
+          }
+          if (solidAcross(highT.tx, highT.tz + 1, h + 0.2, top - 0.2)) {
+            strip(x0, h, zHi - C, x1, h, zHi - C, x0, h + C, zHi, x1, h + C, zHi, 0, S, -S);
+            strip(x0, top, zHi - C, x1, top, zHi - C, x0, top - C, zHi, x1, top - C, zHi, 0, -S, -S);
+          }
+        } else {
+          const z0 = center.tz * TILE_SIZE;
+          const z1 = z0 + TILE_SIZE;
+          const xLo = lowT.tx * TILE_SIZE;
+          const xHi = (highT.tx + 1) * TILE_SIZE;
+          if (solidAcross(lowT.tx - 1, lowT.tz, h + 0.2, top - 0.2)) {
+            strip(xLo + C, h, z0, xLo + C, h, z1, xLo, h + C, z0, xLo, h + C, z1, S, S, 0);
+            strip(xLo + C, top, z0, xLo + C, top, z1, xLo, top - C, z0, xLo, top - C, z1, S, -S, 0);
+          }
+          if (solidAcross(highT.tx + 1, highT.tz, h + 0.2, top - 0.2)) {
+            strip(xHi - C, h, z0, xHi - C, h, z1, xHi, h + C, z0, xHi, h + C, z1, -S, S, 0);
+            strip(xHi - C, top, z0, xHi - C, top, z1, xHi, top - C, z0, xHi, top - C, z1, -S, -S, 0);
+          }
+        }
+      }
+    }
+    this.addMesh(target, buf, this.materialsFor('tunnel').wall);
   }
 
   /**
@@ -1287,6 +1452,29 @@ function addOrientedQuad(
   // height-field and chamfer junctions.
   addTriangle(i, i + 1, i + 2);
   addTriangle(i, i + 2, i + 3);
+}
+
+/** A FLAT horizontal strip spanning [x0..x1] x [z0..z1] at one height —
+ *  the merged form of a run of identical addHorizontalQuad tiles. UVs in
+ *  tile units so the texture density matches the per-tile quads. */
+function addFlatStrip(
+  buf: MeshBuffers,
+  x0: number, z0: number, x1: number, z1: number,
+  y: number, facingUp: boolean,
+): void {
+  const i = buf.verts.length / 3;
+  const u1 = (x1 - x0) / TILE_SIZE;
+  const v1 = (z1 - z0) / TILE_SIZE;
+  if (facingUp) {
+    buf.verts.push(x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1);
+    buf.uvs.push(0, 0, u1, 0, u1, v1, 0, v1);
+  } else {
+    buf.verts.push(x0, y, z0, x0, y, z1, x1, y, z1, x1, y, z0);
+    buf.uvs.push(0, 0, 0, v1, u1, v1, u1, 0);
+  }
+  const ny = facingUp ? 1 : -1;
+  for (let k = 0; k < 4; k++) buf.norms.push(0, ny, 0);
+  addOrientedQuad(buf, i, 0, ny, 0);
 }
 
 /** Tessellation for floor tiles at hole boundaries */

@@ -379,9 +379,10 @@ pedestrian network; elevated endpoints have deterministic piers/abutments; and
 trains never depend on a window-local endpoint.
 
 ## Known Rough Edges (fix on encounter)
-- Short subway bores remain inaccessible visual scaffolding, but their fake
-  oscillating train cubes have been removed. Do not spend detail budget on
-  these bores; replace them with the routed rail system described below.
+- Short subway bores are REMOVED from generation (July 30 2026): they were
+  unreachable scaffolding visible only in wireframe and pit walls. The
+  planOwnedSubways machinery stays in pillar-bridges, unwired, until the
+  routed rail system (section 8) gives tunnels real identity and access.
 - Canyon arches verify-blind spot fixed via ring-scoped climb target (14..41);
   arch end tiles sit at ring+1 by design.
 - Trench mouths of down-spirals: the tread-marry pass only sees a column's

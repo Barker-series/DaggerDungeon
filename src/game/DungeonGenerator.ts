@@ -37,7 +37,7 @@ import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
 import { pillarFootprint, pillarAirSpans } from './dungeon/pillar-geometry';
 import {
-  planOwnedBridges, planOwnedSubways, planOwnedArches, GAP_TILES,
+  planOwnedBridges, planOwnedArches, GAP_TILES,
   bridgeTiles, carveBridgeIntoColumn, carveArchIntoColumn, addBridgeEndSupport,
   type BridgeSpec,
 } from './dungeon/pillar-bridges';
@@ -279,12 +279,14 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   for (const spec of pillars.values()) {
     bridges.push(...planOwnedBridges(stackSeed, spec.cx, spec.cz, specAt));
   }
-  // Subways: deep bores between below-grade pillars; ARCHES: skyline
-  // mass over canyon districts. Both ride the same pair machinery.
+  // ARCHES: skyline mass over canyon districts, on the pair machinery.
+  // (Subway bores are GONE: they were unreachable visual scaffolding —
+  // only wireframe mode and pit walls ever revealed them. Real rail is
+  // the plan-8 routed system; until it exists the world carries no fake
+  // infrastructure. planOwnedSubways stays in pillar-bridges, unwired.)
   const subways: BridgeSpec[] = [];
   const arches: BridgeSpec[] = [];
   for (const spec of pillars.values()) {
-    subways.push(...planOwnedSubways(stackSeed, spec.cx, spec.cz, specAt));
     arches.push(...planOwnedArches(stackSeed, spec.cx, spec.cz, specAt));
   }
   for (const ar of arches) {
