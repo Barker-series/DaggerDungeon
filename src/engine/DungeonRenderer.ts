@@ -39,15 +39,23 @@ const REGION_TINTS: Record<RegionKey, number> = {
   dungeon: 0xffffff,
   cave: 0xd8b494, // warm earth
   crypt: 0x9fb4cc, // cold blue-grey
-  ember: 0xff8866, // heat glow
+  ember: 0x8a827c, // darkened neutral stone — the heat lives in the fog now
   outside: 0xaec8d8, // moonlit stone
   tunnel: 0xb8b0a8, // drab passage
 };
 
-// Ember stone smolders faintly on its own
-const REGION_EMISSIVE: Partial<Record<RegionKey, number>> = {
-  ember: 0x2a0d04,
-};
+// Per-region self-illumination (currently none; ember's red moved to fog)
+const REGION_EMISSIVE: Partial<Record<RegionKey, number>> = {};
+
+/** REGION_TINTS unpacked to linear-ish RGB triplets for vertex colors. */
+const TINT_RGB: Record<RegionKey, [number, number, number]> = Object.fromEntries(
+  Object.entries(REGION_TINTS).map(([k, hex]) => {
+    const c = new THREE.Color(hex);
+    return [k, [c.r, c.g, c.b]];
+  }),
+) as Record<RegionKey, [number, number, number]>;
+
+const smooth01 = (t: number): number => t * t * (3 - 2 * t);
 
 /**
  * Standard-lit concrete with three albedo layers mixed by the geometry's
@@ -61,6 +69,7 @@ function makeConcreteMaterial(
   constructionSeams = false,
 ): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({
+    vertexColors: true,
     map: CONCRETE_CLEAN_TEX,
     color: tint,
     emissive,
@@ -220,6 +229,8 @@ export class DungeonRenderer {
   /** Materials and their compiled shader programs are window-independent.
    * Keeping them alive avoids a shader-compilation stall at every recenter. */
   private materials = new Map<RegionKey, RegionMaterials>();
+  /** World being built — read by the per-vertex tint sampler in addMesh. */
+  private tintWorld: WorldData | null = null;
   private stairsMaterial = new THREE.MeshStandardMaterial({
     map: STAIRS_TEX,
     roughness: 0.7,
@@ -261,12 +272,13 @@ export class DungeonRenderer {
   private materialsFor = (key: RegionKey): RegionMaterials => {
     let m = this.materials.get(key);
     if (!m) {
-      const tint = REGION_TINTS[key];
+      // Tint now arrives per-vertex (smoothly blended across biome
+      // boundaries by addMesh); the material itself stays white.
       const emissive = REGION_EMISSIVE[key] ?? 0x000000;
       m = {
-        wall: makeConcreteMaterial(tint, emissive, 0.9, true),
-        floor: makeConcreteMaterial(tint, emissive, 0.94),
-        ceil: makeConcreteMaterial(tint, emissive, 0.97),
+        wall: makeConcreteMaterial(0xffffff, emissive, 0.9, true),
+        floor: makeConcreteMaterial(0xffffff, emissive, 0.94),
+        ceil: makeConcreteMaterial(0xffffff, emissive, 0.97),
       };
       this.materials.set(key, m);
     }
@@ -280,6 +292,7 @@ export class DungeonRenderer {
    * adjacent columns — a face exists exactly where air meets solid.
    */
   build(world: WorldData): void {
+    this.tintWorld = world;
     const cornerFloors = world.levels.map((l) =>
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
 
@@ -298,6 +311,7 @@ export class DungeonRenderer {
    * yields to the browser, keeping mesh preparation out of the movement
    * frame that crosses a streaming boundary. */
   prepare(world: WorldData, onReady: (prepared: PreparedDungeonRender) => void): PreparedDungeonRender {
+    this.tintWorld = world;
     const prepared: PreparedDungeonRender = {
       group: new THREE.Group(),
       world,
@@ -919,7 +933,13 @@ export class DungeonRenderer {
             // Per-NEIGHBOR gating (see the cap): straddler walls in
             // outside cells still seal toward the interior rooms they
             // face; only interior ceilings define the override.
+            // Only for wall columns that actually CARRY the cap quad —
+            // bridge passages carved through walls have their own spans
+            // and no cap (span-derived rock ceilings instead), so the
+            // extension has nothing to meet and pokes out beside the
+            // bridge deck as a floating plate.
             if (solidIsWall && !pillarInternal && airTopKnown && !airIsSky
+              && world.columns[solidZ * w + solidX]!.length === 0
               && Math.abs(hi - airSpanTop) < 0.03) {
               const L = world.levels[0]!;
               let pc = -Infinity;
@@ -1112,6 +1132,50 @@ export class DungeonRenderer {
     this.addMesh(group, rockFloors, materialsFor('tunnel').floor);
   }
 
+  /**
+   * Biome tint at a world position, blended SMOOTHLY across cell
+   * boundaries (bilinear over the 2x2 nearest cells with smoothstep
+   * fractions) so districts fade into each other instead of switching
+   * at a line. Pillar structures override the blend entirely: one tint,
+   * sampled at the pillar's center cell, for the whole monument — a
+   * tower reads as a single object, never striped by the fields it
+   * happens to straddle.
+   */
+  private tintAt(x: number, z: number, out: [number, number, number]): void {
+    const w = this.tintWorld;
+    if (!w) { out[0] = out[1] = out[2] = 1; return; }
+    const L = w.levels[0]!;
+    const cellTiles = Math.floor(L.width / L.cellBiomes.length) || L.width;
+    const tx = Math.min(L.width - 1, Math.max(0, Math.floor(x / TILE_SIZE)));
+    const tz = Math.min(L.height - 1, Math.max(0, Math.floor(z / TILE_SIZE)));
+    if (L.pillarWall[tz]?.[tx]) {
+      const pillarTiles = cellTiles * 4; // one pillar cell = 4x4 dungeon cells
+      const ctx = Math.floor(tx / pillarTiles) * pillarTiles + Math.floor(pillarTiles / 2);
+      const ctz = Math.floor(tz / pillarTiles) * pillarTiles + Math.floor(pillarTiles / 2);
+      const t = TINT_RGB[tileBiome(L.cellBiomes, ctx, ctz) ?? 'tunnel'];
+      out[0] = t[0]; out[1] = t[1]; out[2] = t[2];
+      return;
+    }
+    const n = L.cellBiomes.length;
+    const cellWu = cellTiles * TILE_SIZE;
+    const cxf = x / cellWu - 0.5;
+    const czf = z / cellWu - 0.5;
+    const c0 = Math.floor(cxf);
+    const r0 = Math.floor(czf);
+    const fx = smooth01(Math.min(1, Math.max(0, cxf - c0)));
+    const fz = smooth01(Math.min(1, Math.max(0, czf - r0)));
+    out[0] = 0; out[1] = 0; out[2] = 0;
+    for (let dz = 0; dz <= 1; dz++) {
+      for (let dx = 0; dx <= 1; dx++) {
+        const cc = Math.min(n - 1, Math.max(0, c0 + dx));
+        const cr = Math.min(n - 1, Math.max(0, r0 + dz));
+        const t = TINT_RGB[(L.cellBiomes[cr]?.[cc] ?? 'tunnel') as RegionKey];
+        const wgt = (dx === 0 ? 1 - fx : fx) * (dz === 0 ? 1 - fz : fz);
+        out[0] += t[0] * wgt; out[1] += t[1] * wgt; out[2] += t[2] * wgt;
+      }
+    }
+  }
+
   private addMesh(parent: THREE.Group, buf: MeshBuffers, material: THREE.Material): void {
     if (buf.verts.length === 0) return;
     const geom = new THREE.BufferGeometry();
@@ -1132,6 +1196,14 @@ export class DungeonRenderer {
       splatWeights.push(r / sum, g / sum, b / sum);
     }
     geom.setAttribute('splatWeight', new THREE.Float32BufferAttribute(splatWeights, 3));
+    // Per-vertex biome tint — smoothly blended fields, single-tint pillars
+    const colors: number[] = [];
+    const tint: [number, number, number] = [1, 1, 1];
+    for (let i = 0; i < buf.verts.length; i += 3) {
+      this.tintAt(buf.verts[i]!, buf.verts[i + 2]!, tint);
+      colors.push(tint[0], tint[1], tint[2]);
+    }
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geom.setIndex(buf.idxs);
     if (import.meta.env?.DEV) {
       let reversed = 0;

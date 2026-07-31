@@ -9,6 +9,7 @@ import { Movers } from './Movers';
 import { buildCornerField, sampleCornerField } from '../game/dungeon/heightfield';
 import { spanAt } from '../game/dungeon/columns';
 import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
+import { tileBiome } from '../game/dungeon/cells';
 import { DungeonBot } from '../bot/DungeonBot';
 import { useGameStore } from '../store/gameStore';
 import { TileType, Direction, TILE_SIZE, EYE_HEIGHT, ABYSS_FLOOR } from '../game/types';
@@ -52,6 +53,12 @@ const GRAB_HEIGHT = 2.05; // max ledge rise above the feet that hands can catch
 const MANTLE_UP_SPEED = 6; // vertical pull speed (wu/s)
 const MANTLE_FWD_SPEED = 4; // horizontal tuck speed once above the lip
 const MANTLE_HEADROOM = 1.7; // the target span must fit a standing body
+/** Failed-mantle slingshot (the Lorne's Lure move): a mantle that jams —
+ *  blocked tuck, overdue TTL — LAUNCHES the player upward instead of
+ *  dropping them. Failure reads as "kicked off the wall": the boost
+ *  clears the lip they were grabbing and gravity resolves the rest. */
+const MANTLE_BOOST_VY = 5.2;
+const MANTLE_BOOST_FWD = 2.5; // gentle carry toward the ledge mid-boost
 
 // ── Body height ──
 // Standing body height for passability and ceiling collision. Low spans
@@ -60,6 +67,15 @@ const MANTLE_HEADROOM = 1.7; // the target span must fit a standing body
 // ceiling clamp keeps a jump from passing through solid overhead.
 const STAND_HEIGHT = 1.75;
 const CROUCH_HEIGHT = 1.15;
+
+// ── Area fog — the atmosphere follows where you are ──
+// Black is the default; specific places override, and the color FADES
+// between areas rather than switching (exponential chase toward the
+// target). Ember's red identity lives here now, not on its textures.
+const FOG_DEFAULT = 0x0f0e12;
+const FOG_ROADS = 0x26262b; // dark gray under the open street sky
+const FOG_EMBER = 0x2b0a06; // dark heat haze
+const FOG_FADE_RATE = 1.2; // per-second chase toward the target color
 const PLAYER_RADIUS = 0.35;
 const CROUCH_SPEED_MULT = 0.55;
 const CROUCH_EYE_DROP = 0.7; // eye height drop when fully crouched
@@ -137,13 +153,18 @@ export class GameEngine {
   private velX = 0;
   private velZ = 0;
   private wasBotDriving = false;
-  /** Active ledge mantle: rise to y, then tuck to (x, z). Null = none. */
-  private mantle: { x: number; z: number; y: number } | null = null;
+  /** Active ledge mantle: rise to y, then tuck to (x, z). Null = none.
+   *  ttl is a hard cap: a mantle that hasn't finished in this long is
+   *  cancelled into a plain fall — whatever state produced it, it can
+   *  never become sustained movement. */
+  private mantle: { x: number; z: number; y: number; ttl: number } | null = null;
   /** No re-grab for this long after a mantle ends — a mantle that lands
    *  on a surface lower than its span's nominal floor must FALL to it,
    *  not chain into the next grab (the ratchet flew players through
    *  walls at constant height). */
   private mantleCooldown = 0;
+  private fogColor = new THREE.Color(FOG_DEFAULT);
+  private readonly fogTarget = new THREE.Color(FOG_DEFAULT);
   /** Camera-only smoothed feet height. Physics snaps up stair risers
    *  tile by tile; the EYE eases onto each new level instead of popping
    *  with it — stairs read as a glide, not a jackhammer. */
@@ -763,6 +784,7 @@ export class GameEngine {
     // Nearest-K light culling follows the player
     const pos = this.gridCamera.position;
     this.lighting.update(pos.x, pos.y, pos.z);
+    this.updateAreaFog(dt, pos.x, pos.z);
 
     // Bot
     if (store.autoPlay) {
@@ -887,6 +909,12 @@ export class GameEngine {
     this.mantleCooldown = Math.max(0, this.mantleCooldown - dt);
     if (this.mantle) {
       const m = this.mantle;
+      m.ttl -= dt;
+      if (m.ttl <= 0) {
+        // Overdue: slingshot up and out of whatever state this was.
+        this.slingshotFromMantle(m, pos);
+        return;
+      }
       if (pos.y < m.y - 0.01) {
         pos.y = Math.min(m.y, pos.y + MANTLE_UP_SPEED * dt);
       } else {
@@ -917,9 +945,11 @@ export class GameEngine {
           const nx = pos.x + (ddx / dist) * step;
           const nz = pos.z + (ddz / dist) * step;
           if (this.collidesAt(nx, nz)) {
-            // Tuck blocked by a wall: abandon the mantle where we are
-            // instead of pushing through geometry.
-            finish();
+            // Tuck blocked by a wall: slingshot instead of grinding.
+            // (Finishing in place grounded the player on a footprint
+            // sample of the ledge while hanging beside it — the seed of
+            // the repeat-grab crawl.)
+            this.slingshotFromMantle(m, pos);
           } else {
             pos.x = nx;
             pos.z = nz;
@@ -1074,7 +1104,7 @@ export class GameEngine {
         for (const s of spans) {
           const rise = s.floor - pos.y;
           if (rise > AIR_STEP && rise <= GRAB_HEIGHT && s.ceil - s.floor >= MANTLE_HEADROOM) {
-            this.mantle = { x: px, z: pz, y: s.floor + 0.02 };
+            this.mantle = { x: px, z: pz, y: s.floor + 0.02, ttl: 0.6 };
             this.vy = 0;
             this.velX = 0;
             this.velZ = 0;
@@ -1187,6 +1217,40 @@ export class GameEngine {
       }
     }
     return false;
+  }
+
+  /** A jammed mantle launches instead of dropping: upward boost plus a
+   *  gentle carry toward the ledge. Long cooldown so the flight resolves
+   *  as a normal jump arc, never a re-grab chain. */
+  private slingshotFromMantle(m: { x: number; z: number }, pos: THREE.Vector3): void {
+    const ddx = m.x - pos.x;
+    const ddz = m.z - pos.z;
+    const dist = Math.hypot(ddx, ddz);
+    this.mantle = null;
+    this.mantleCooldown = 0.5;
+    this.isGrounded = false;
+    this.vy = MANTLE_BOOST_VY;
+    if (dist > 1e-4) {
+      this.velX = (ddx / dist) * MANTLE_BOOST_FWD;
+      this.velZ = (ddz / dist) * MANTLE_BOOST_FWD;
+    }
+  }
+
+  /** Fade the distance fog toward the color of the area the player is
+   *  in: dark gray in roads districts, dark red in ember, black default. */
+  private updateAreaFog(dt: number, x: number, z: number): void {
+    const L = this.world?.levels[0];
+    if (!L) return;
+    const tx = Math.floor(x / TILE_SIZE);
+    const tz = Math.floor(z / TILE_SIZE);
+    const cellTiles = Math.floor(L.width / L.cellBiomes.length) || L.width;
+    const inRoads = L.roadsCells?.[Math.floor(tz / cellTiles)]?.[Math.floor(tx / cellTiles)] ?? false;
+    const biome = tileBiome(L.cellBiomes, tx, tz);
+    this.fogTarget.setHex(inRoads ? FOG_ROADS : biome === 'ember' ? FOG_EMBER : FOG_DEFAULT);
+    this.fogColor.lerp(this.fogTarget, 1 - Math.exp(-FOG_FADE_RATE * dt));
+    const fog = this.scene.fog;
+    if (fog) fog.color.copy(this.fogColor);
+    if (this.scene.background instanceof THREE.Color) this.scene.background.copy(this.fogColor);
   }
 
   private syncGridPos(store: ReturnType<typeof useGameStore.getState>): void {

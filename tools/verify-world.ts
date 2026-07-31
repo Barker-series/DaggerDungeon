@@ -446,15 +446,20 @@ for (const seed of SEEDS) {
   for (let tz = 1; tz < L.height - 1; tz++) {
     for (let tx = 1; tx < W - 1; tx++) {
       if (!L.pillarWall[tz]![tx]) continue;
-      const spans = world.columns[tz * W + tx]!;
-      const s0 = spans[0];
-      if (!s0 || s0.owner === 0 || s0.floor < -100 || s0.floor > 30) continue;
+      // Ground span, not spans[0]: deep foundations put a below-grade
+      // clearance first, which made this check blind on those pillars.
+      const s0 = world.columns[tz * W + tx]!.find((sp) => sp.floor > -100 && sp.floor < 30);
+      if (!s0 || s0.owner === 0) continue;
       for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const nx = tx + dx!;
         const nz = tz + dz!;
         if (L.pillarWall[nz]![nx] || L.tiles[nz]![nx] === TileType.Wall) continue;
         const nf = L.floorHeights[nz]![nx]!;
-        if (nf > -900 && Math.abs(nf - s0.floor) < 0.8) cracks++;
+        // Mirrors the asymmetric marry window: a structural slab is only
+        // crack-prone when at/below terrain reach; above by a step it is
+        // sealed by its riser face.
+        const d = s0.floor - nf;
+        if (nf > -900 && d < 0.35 && d > -0.8) cracks++;
       }
     }
   }
@@ -469,8 +474,8 @@ for (const seed of SEEDS) {
       const tx = spec.cx * PILLAR_CELL_TILES + lx!;
       const tz = spec.cz * PILLAR_CELL_TILES + lz!;
       if (L.pillarGround[tz]?.[tx]) continue;
-      const s0 = world.columns[tz * W + tx]?.[0];
-      if (!s0 || s0.owner === 0 || s0.floor < -100 || s0.floor > 30) continue;
+      const s0 = world.columns[tz * W + tx]?.find((sp) => sp.floor > -100 && sp.floor < 30);
+      if (!s0 || s0.owner === 0) continue;
       for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
         const nlx = lx! + dx;
         const nlz = lz! + dz;
@@ -478,7 +483,9 @@ for (const seed of SEEDS) {
         const nx = spec.cx * PILLAR_CELL_TILES + nlx;
         const nz = spec.cz * PILLAR_CELL_TILES + nlz;
         if (!L.pillarGround[nz]?.[nx]) continue;
-        if (Math.abs(L.floorHeights[nz]![nx]! - s0.floor) <= 0.6) {
+        // Mirrors generation: propagation threshold is 0.55, strictly
+        // below one stair tread — flights are not eligible.
+        if (Math.abs(L.floorHeights[nz]![nx]! - s0.floor) <= 0.55) {
           unsettledMarriage++;
           break;
         }

@@ -211,19 +211,39 @@ export function generateWorld(opts: GenerateOpts): WorldData {
       // neighborhood: a surface within a step of ANY adjacent ground
       // must blend with it (only equal-height joints crack — anything
       // still structural has a real ≥1 wall face sealing it).
-      if (spans.length > 0) {
-        const f0 = spans[0]!.floor;
+      // The GROUND span is not always spans[0]: deep foundation
+      // clearances put a below-grade span first, and testing only that
+      // one skipped the marry entirely — leaving the real ground slab
+      // flat-structural beside corner-blended terrain (the crack
+      // condition, observed as footprint-edge holes). Marry whichever
+      // span actually sits at terrain height.
+      for (const span of spans) {
+        const f0 = span.floor;
+        if (f0 < -100 || f0 > 30) continue;
         let near = false;
         for (let dz = -1; dz <= 1 && !near; dz++) {
           for (let dx = -1; dx <= 1 && !near; dx++) {
             const t = origFloors[gz + dz]?.[gx + dx];
-            if (t !== undefined && t > PIT_FLOOR && Math.abs(f0 - Math.max(0, t)) < 1.0) near = true;
+            // ASYMMETRIC window: a slab at or below nearby terrain must
+            // marry (blended ground could rise past its lip — the crack
+            // condition), but a slab more than a step ABOVE the terrain
+            // is architecture: flat ground can't climb over its lip and
+            // the riser gets a real sealing face. Marrying those (stair
+            // treads over streets) tented the ground into humps.
+            if (t === undefined || t <= PIT_FLOOR) continue;
+            // Bankable window is NEAR-FLUSH only (< 0.35): anything
+            // higher reads as a deliberate step and keeps a hard riser
+            // face — a 0.6 riser is still under STEP_UP, so it stays
+            // walkable without the terrain humping up to meet it.
+            const d = f0 - Math.max(0, t);
+            if (d < 0.35 && d > -1.0) near = true;
           }
         }
         if (near) {
-          spans[0]!.owner = 0;
+          span.owner = 0;
           topFloors[gz]![gx] = f0;
           level.pillarGround[gz]![gx] = true;
+          break;
         }
       }
       if (spans.length > 0 && fullyOutside) {
@@ -272,9 +292,17 @@ export function generateWorld(opts: GenerateOpts): WorldData {
         const ngx = spec.cx * PILLAR_CELL_TILES + nx;
         const ngz = spec.cz * PILLAR_CELL_TILES + nz;
         if (level.pillarGround[ngz]?.[ngx]) continue;
-        const s0 = columns[ngz * GRID_TILES + ngx]?.[0];
-        if (!s0 || s0.owner === 0 || s0.floor < -100 || s0.floor > 30) continue;
-        if (Math.abs(topFloors[gz]![gx]! - s0.floor) > 0.6) continue;
+        // Same ground-span selection as the marry pass: the tile's
+        // walkable slab may sit above a foundation-clearance span.
+        // THRESHOLD 0.55 — strictly below one stair tread (0.6):
+        // propagation spreads across plazas and banked slabs but can
+        // never climb a flight. Chain-marrying treads dominated the
+        // corner field into terrain humps against the stairs and tore
+        // the drawn treads away from the column model.
+        const s0 = columns[ngz * GRID_TILES + ngx]?.find((sp) =>
+          sp.owner !== 0 && sp.floor > -100 && sp.floor < 30
+          && Math.abs(topFloors[gz]![gx]! - sp.floor) <= 0.55);
+        if (!s0) continue;
         s0.owner = 0;
         topFloors[ngz]![ngx] = s0.floor;
         level.pillarGround[ngz]![ngx] = true;
