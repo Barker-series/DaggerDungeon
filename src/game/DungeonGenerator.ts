@@ -32,7 +32,7 @@ import { applyFineNoise } from './dungeon/layer1-finenoise';
 import { carveRoadsRegion, cutRoadBlockTops, flattenRoadStreets, suppressRoadPits } from './dungeon/roads-region';
 import { regionAtCell } from './dungeon/region-layer';
 import { connectPermanentTransit, permanentTransitTiles } from './dungeon/layer4-connect';
-import { computeHeightFields, computePitMask, PIT_FLOOR } from './dungeon/layer6-heights';
+import { computeHeightFields, computePitMask, carvePitArches, PIT_FLOOR } from './dungeon/layer6-heights';
 import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
 import { pillarFootprint, pillarAirSpans } from './dungeon/pillar-geometry';
@@ -270,6 +270,10 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   // ── Roads districts: cut block mass down to per-block plinths under
   // open sky — the negative space between streets becomes usable form. ──
   cutRoadBlockTops(columns, level.tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed, pillarWall, level.floorHeights, level.pillarGround);
+
+  // ── Pit arches: land strips spanning between pits become archways —
+  // thin deck at the crown, legs thickening into the pit walls. ──
+  carvePitArches(columns, level.tiles, level.floorHeights, GRID_TILES, pillarWall);
 
   // ── Bridges: the neighbor-pair pass with the local degree guarantee.
   // Each cell owns its east and south pairs, so every pair is planned

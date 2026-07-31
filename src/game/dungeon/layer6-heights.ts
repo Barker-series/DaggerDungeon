@@ -115,7 +115,50 @@ export function computePitMask(
       if (voidNoise < p.pitThreshold) mask[tz]![tx] = true;
     }
   }
-  return mask;
+
+  // ── MORPHOLOGICAL OPENING (erode by R, dilate by R): pit slivers
+  // thinner than ~2R+1 tiles vanish — the wall buffer above shaves big
+  // void blobs into scattered 1x1 orphans wherever walkways tighten, and
+  // those ambush holes were pure annoyance. Large pits keep their
+  // footprint and lose their single-tile crenellations, so the map
+  // outline reads as deliberate excavation instead of moth-eaten slab.
+  // Bounded radius, deterministic; the outermost R tiles of a window can
+  // differ across windows, well inside the discarded edge padding. ──
+  const R = 2;
+  const eroded: boolean[][] = Array.from({ length: gridTiles }, () =>
+    Array.from({ length: gridTiles }, () => false),
+  );
+  for (let tz = 0; tz < gridTiles; tz++) {
+    for (let tx = 0; tx < gridTiles; tx++) {
+      if (!mask[tz]![tx]) continue;
+      let solid = true;
+      for (let dz = -R; dz <= R && solid; dz++) {
+        for (let dx = -R; dx <= R && solid; dx++) {
+          const nx = tx + dx;
+          const nz = tz + dz;
+          if (nx < 0 || nz < 0 || nx >= gridTiles || nz >= gridTiles || !mask[nz]![nx]) solid = false;
+        }
+      }
+      if (solid) eroded[tz]![tx] = true;
+    }
+  }
+  const opened: boolean[][] = Array.from({ length: gridTiles }, () =>
+    Array.from({ length: gridTiles }, () => false),
+  );
+  for (let tz = 0; tz < gridTiles; tz++) {
+    for (let tx = 0; tx < gridTiles; tx++) {
+      let near = false;
+      for (let dz = -R; dz <= R && !near; dz++) {
+        for (let dx = -R; dx <= R && !near; dx++) {
+          if (eroded[tz + dz]?.[tx + dx]) near = true;
+        }
+      }
+      // Opening is a strict subset of the raw mask, so the wall buffer
+      // and protection rules above keep holding by construction.
+      if (near) opened[tz]![tx] = true;
+    }
+  }
+  return opened;
 }
 
 export function computeHeightFields(
@@ -347,5 +390,81 @@ function applyMouthSweep(
       }
     }
     frontier = next;
+  }
+}
+
+
+/**
+ * PIT ARCHES — land strips spanning between bottomless pits stop being
+ * flat walls straight down. Any walkable tile with pit on both sides
+ * within MAX_ARCH_SPAN (checked on both axes; the tighter crossing
+ * wins) gets its underside carved to a parabolic arch: thin deck at the
+ * crown, legs thickening into the pit walls, open air joining the voids
+ * below. Pure per-column with a bounded scan — infinite-world legal.
+ * Runs on the finished column model; the walk surface is untouched.
+ */
+export function carvePitArches(
+  columns: import('../types').ColumnSpan[][],
+  tiles: TileType[][],
+  floorHeights: number[][],
+  gridTiles: number,
+  pillarWall?: boolean[][],
+): void {
+  const MAX_ARCH_SPAN = 12;
+  const DECK = 1.4; // minimum slab thickness at the crown
+  const ABYSS = -1e9 as number; // matches ABYSS_FLOOR sentinel scale
+  const isPit = (tx: number, tz: number): boolean =>
+    floorHeights[tz]?.[tx] !== undefined && floorHeights[tz]![tx]! <= PIT_FLOOR;
+  const spanAcross = (tx: number, tz: number, dx: number, dz: number): [number, number] | null => {
+    let a = 0;
+    for (let i = 1; i <= MAX_ARCH_SPAN; i++) {
+      const nx = tx + dx * i;
+      const nz = tz + dz * i;
+      if (nx < 0 || nz < 0 || nx >= gridTiles || nz >= gridTiles) return null;
+      if (tiles[nz]![nx] === TileType.Wall || pillarWall?.[nz]?.[nx]) return null;
+      if (isPit(nx, nz)) { a = i; break; }
+    }
+    if (a === 0) return null;
+    let b = 0;
+    for (let i = 1; i <= MAX_ARCH_SPAN; i++) {
+      const nx = tx - dx * i;
+      const nz = tz - dz * i;
+      if (nx < 0 || nz < 0 || nx >= gridTiles || nz >= gridTiles) return null;
+      if (tiles[nz]![nx] === TileType.Wall || pillarWall?.[nz]?.[nx]) return null;
+      if (isPit(nx, nz)) { b = i; break; }
+    }
+    if (b === 0 || a + b - 1 > MAX_ARCH_SPAN) return null;
+    return [a, b];
+  };
+
+  for (let tz = 0; tz < gridTiles; tz++) {
+    for (let tx = 0; tx < gridTiles; tx++) {
+      if (tiles[tz]![tx] === TileType.Wall || pillarWall?.[tz]?.[tx]) continue;
+      const f = floorHeights[tz]![tx]!;
+      if (f <= PIT_FLOOR) continue;
+      const sx = spanAcross(tx, tz, 1, 0);
+      const sz = spanAcross(tx, tz, 0, 1);
+      let best: [number, number] | null = null;
+      if (sx && (!sz || sx[0] + sx[1] <= sz[0] + sz[1])) best = sx;
+      else if (sz) best = sz;
+      if (!best) continue;
+      const [a, b] = best;
+      const S = a + b; // tiles from pit edge to pit edge
+      // Parameter across the span in [-1, 1]; 0 at the arch crown.
+      const u = (b - a) / S;
+      // Sag: how far below the deck the intrados drops at this tile.
+      // Scaled to the span so wide crossings get grand arches.
+      const sag = Math.max(4, S * 2.2) * u * u;
+      const openingTop = f - DECK - sag;
+      const spans = columns[tz * gridTiles + tx]!;
+      // Insert the under-arch void below everything this column has.
+      const lowest = spans.length > 0 ? spans[0]!.floor : f;
+      if (lowest <= PIT_FLOOR) continue; // already open below
+      if (openingTop >= lowest - 0.5) continue;
+      columns[tz * gridTiles + tx] = [
+        { floor: ABYSS, ceil: openingTop, owner: -1, ceilOwner: -1 },
+        ...spans,
+      ];
+    }
   }
 }
