@@ -526,15 +526,23 @@ export class DungeonRenderer {
             {
               let sum = 0;
               let count = 0;
+              let anyNonTunnel = false;
               for (let dz2 = -1; dz2 <= 1; dz2++) {
                 for (let dx2 = -1; dx2 <= 1; dx2++) {
                   const t2 = dungeon.tiles[y + dz2]?.[x + dx2];
                   if (t2 === undefined || t2 === TileType.Wall) continue;
                   if (tileBiome(dungeon.cellBiomes, x + dx2, y + dz2) === 'outside') continue;
+                  if (tileBiome(dungeon.cellBiomes, x + dx2, y + dz2) !== null) anyNonTunnel = true;
                   sum += dungeon.ceilingHeights[y + dz2]![x + dx2]!;
                   count++;
                 }
               }
+              // Wall tiles bordering ONLY tunnel corridors need no cap:
+              // the corridor ceiling is uniform carved rock, the wall
+              // face seals to cap height, and the mass above is solid —
+              // no sightline can ever reach these quads (wireframe
+              // audit: a buried strip ringing every tunnel).
+              if (!anyNonTunnel) count = 0;
               // Columns with their own air spans (bridge passages carved
               // through walls) get span-derived rock ceilings — a cap on
               // top would coincide with them
@@ -1140,6 +1148,19 @@ export class DungeonRenderer {
               addOrientedQuad(buf, vi, nrmX, 0, nrmZ);
             };
 
+            // Octagonal-tunnel gate: full-height wall segment facing a
+            // 'tunnel'-region corridor (null-biome cell, real floor).
+            const TUNNEL_CH = 0.6;
+            const emitOctagonal = (() => {
+              if (chamferLc >= 0 && (o0 || o1)) return false;
+              if (airX < 0 || airZ < 0 || airX >= w || airZ >= h) return false;
+              if (tileBiome(world.levels[0]!.cellBiomes, airX, airZ) !== null) return false;
+              if (world.levels[0]!.tiles[airZ]![airX] === TileType.Wall) return false;
+              return airTopKnown && !airIsSky
+                && Math.abs(hi - airSpanTop) < 0.03
+                && spanAtFloor(airSpans, lo) !== undefined
+                && hi - lo >= 2.2;
+            })();
             if (chamferLc >= 0 && (o0 || o1)) {
               if (o0) {
                 emitChamfer(0);
@@ -1153,58 +1174,156 @@ export class DungeonRenderer {
               } else {
                 emitFlat(0.5, 1);
               }
-            } else {
+            } else if (!emitOctagonal) {
               emitFlat(0, 1);
             }
 
-            // ── OCTAGONAL TUNNEL CORRIDORS: in the 'tunnel' region
-            // (transit corridors carved through the void — null-biome
-            // cells), every full-height wall segment gains additive 45°
-            // strips at its floor and ceiling junctions. The strips ride
-            // the segment's REFINED corner heights, so they follow the
-            // drawn surfaces exactly; the flat wall, floor, and ceiling
-            // stay in place behind them — interpenetration per the
-            // junction doctrine, so no new hole is representable. ──
-            {
-              const TUNNEL_CH = 0.6;
-              const airTile = airX >= 0 && airZ >= 0 && airX < w && airZ < h;
-              const isTunnel = airTile
-                && tileBiome(world.levels[0]!.cellBiomes, airX, airZ) === null
-                && world.levels[0]!.tiles[airZ]![airX] !== TileType.Wall;
-              const fullHeight = airTopKnown && !airIsSky
-                && Math.abs(hi - airSpanTop) < 0.03
-                && (spanAtFloor(airSpans, lo) !== undefined)
-                && hi - lo >= 2.2;
-              if (isTunnel && fullHeight && chamferLc < 0) {
-                const S2 = Math.SQRT1_2;
-                const inX = nrmX * TUNNEL_CH;
-                const inZ = nrmZ * TUNNEL_CH;
-                const push = (
-                  a0x: number, a0y: number, a0z: number,
-                  a1x: number, a1y: number, a1z: number,
-                  b1x: number, b1y: number, b1z: number,
-                  b0x: number, b0y: number, b0z: number,
-                  ny: number,
-                ): void => {
-                  const vi = buf.verts.length / 3;
-                  buf.verts.push(a0x, a0y, a0z, a1x, a1y, a1z, b1x, b1y, b1z, b0x, b0y, b0z);
-                  for (let k = 0; k < 4; k++) buf.norms.push(nrmX * S2, ny * S2, nrmZ * S2);
-                  buf.uvs.push(0, 0, 1, 0, 1, 0.3, 0, 0.3);
-                  addOrientedQuad(buf, vi, nrmX * S2, ny * S2, nrmZ * S2);
-                };
-                // Lower: wall plane at (lo+C) down-in to the floor at C inward
-                push(
-                  ex0, lo0 + TUNNEL_CH, ez0, ex1, lo1 + TUNNEL_CH, ez1,
-                  ex1 + inX, lo1, ez1 + inZ, ex0 + inX, lo0, ez0 + inZ,
-                  1,
-                );
-                // Upper: wall plane at (hi−C) up-in to the ceiling at C inward
-                push(
-                  ex0, hi0 - TUNNEL_CH, ez0, ex1, hi1 - TUNNEL_CH, ez1,
-                  ex1 + inX, hi1, ez1 + inZ, ex0 + inX, hi0, ez0 + inZ,
-                  -1,
+            // ── OCTAGONAL TUNNEL CORRIDORS — REAL wall geometry, not
+            // cladding. A full-height tunnel wall segment is emitted as
+            // three surfaces: shortened flat band, floor diagonal, and
+            // ceiling diagonal. Where the chamfer does not CONTINUE into
+            // the next segment along the wall (doorway, corner, span
+            // change), triangular END CAPS close the wedge. The floor
+            // and ceiling quads behind the diagonals stay full-width:
+            // hidden structural sealing per the junction doctrine.
+            // (This replaces emitFlat for these segments — see the
+            // emission choice above, which skips flat when octagonal.)
+            if (emitOctagonal) {
+              const TCH = TUNNEL_CH;
+              const S2 = Math.SQRT1_2;
+              const inX = nrmX * TCH;
+              const inZ = nrmZ * TCH;
+              const pushQ = (
+                a0x: number, a0y: number, a0z: number,
+                a1x: number, a1y: number, a1z: number,
+                b1x: number, b1y: number, b1z: number,
+                b0x: number, b0y: number, b0z: number,
+                qnx: number, qny: number, qnz: number,
+              ): void => {
+                const vi = buf.verts.length / 3;
+                buf.verts.push(a0x, a0y, a0z, a1x, a1y, a1z, b1x, b1y, b1z, b0x, b0y, b0z);
+                for (let k = 0; k < 4; k++) buf.norms.push(qnx, qny, qnz);
+                buf.uvs.push(0, a0y / TILE_SIZE, 1, a1y / TILE_SIZE, 1, b1y / TILE_SIZE, 0, b0y / TILE_SIZE);
+                addOrientedQuad(buf, vi, qnx, qny, qnz);
+              };
+              // Shortened flat wall band
+              pushQ(
+                ex0, lo0 + TCH, ez0, ex1, lo1 + TCH, ez1,
+                ex1, hi1 - TCH, ez1, ex0, hi0 - TCH, ez0,
+                nrmX, 0, nrmZ,
+              );
+              // Diagonals (floor and ceiling)
+              pushQ(
+                ex0, lo0 + TCH, ez0, ex1, lo1 + TCH, ez1,
+                ex1 + inX, lo1, ez1 + inZ, ex0 + inX, lo0, ez0 + inZ,
+                nrmX * S2, S2, nrmZ * S2,
+              );
+              pushQ(
+                ex0, hi0 - TCH, ez0, ex1, hi1 - TCH, ez1,
+                ex1 + inX, hi1, ez1 + inZ, ex0 + inX, hi0, ez0 + inZ,
+                nrmX * S2, -S2, nrmZ * S2,
+              );
+              // Cap band above the ceiling junction when the shared wall
+              // cap sits higher than this segment (the old override band)
+              if (topOverride !== null && topOverride > hi + 0.02) {
+                pushQ(
+                  ex0, hi0, ez0, ex1, hi1, ez1,
+                  ex1, topOverride, ez1, ex0, topOverride, ez0,
+                  nrmX, 0, nrmZ,
                 );
               }
+              // End caps: does the chamfer continue past each end? The
+              // next boundary along the wall must be the same pairing —
+              // tunnel air beside Wall — with the same span bounds.
+              const tangent: [number, number] = dx !== 0 ? [0, 1] : [1, 0];
+              const continues = (dir: 1 | -1): boolean => {
+                const nAirX = airX + tangent[0] * dir;
+                const nAirZ = airZ + tangent[1] * dir;
+                const nSolX = solidX + tangent[0] * dir;
+                const nSolZ = solidZ + tangent[1] * dir;
+                if (nAirX < 0 || nAirZ < 0 || nAirX >= w || nAirZ >= h) return false;
+                if (world.levels[0]!.tiles[nAirZ]![nAirX] === TileType.Wall) return false;
+                if (tileBiome(world.levels[0]!.cellBiomes, nAirX, nAirZ) !== null) return false;
+                if (nSolX < 0 || nSolZ < 0 || nSolX >= w || nSolZ >= h) return false;
+                if (world.levels[0]!.tiles[nSolZ]![nSolX] !== TileType.Wall) return false;
+                return world.columns[nAirZ * w + nAirX]!.some((s2) =>
+                  Math.abs(clipY(s2.floor) - lo) < 0.05 && Math.abs(clipY(s2.ceil) - hi) < 0.05);
+              };
+              /** Close one end of the octagonal run. Three cases:
+               *  - CONTINUES: nothing (handled by caller).
+               *  - CONVEX CORNER (the wall mass ends; a perpendicular
+               *    tunnel wall with the same span turns the corner):
+               *    emit MITER triangles — the corner pieces that make
+               *    the chamfer turn the corner as one surface. X-facing
+               *    boundaries own the miter so it isn't drawn twice.
+               *  - OTHERWISE (doorway, span change): plane end caps
+               *    close the wedges. */
+              const closeEnd = (end: 0 | 1): void => {
+                const ex = end === 0 ? ex0 : ex1;
+                const ez = end === 0 ? ez0 : ez1;
+                const loE = end === 0 ? lo0 : lo1;
+                const hiE = end === 0 ? hi0 : hi1;
+                const dirSign = end === 0 ? -1 : 1;
+                const cnx = tangent[0] * dirSign;
+                const cnz = tangent[1] * dirSign;
+                const tri = (
+                  p0x: number, p0y: number, p0z: number,
+                  p1x: number, p1y: number, p1z: number,
+                  p2x: number, p2y: number, p2z: number,
+                  gnx: number, gny: number, gnz: number,
+                ): void => {
+                  const vi = buf.verts.length / 3;
+                  buf.verts.push(p0x, p0y, p0z, p1x, p1y, p1z, p2x, p2y, p2z);
+                  const nl = Math.hypot(gnx, gny, gnz) || 1;
+                  for (let k = 0; k < 3; k++) buf.norms.push(gnx / nl, gny / nl, gnz / nl);
+                  buf.uvs.push(0, 0, 1, 0, 0.5, 1);
+                  const p = buf.verts;
+                  const b0 = vi * 3;
+                  const abx = p[b0 + 3]! - p[b0]!, aby = p[b0 + 4]! - p[b0 + 1]!, abz = p[b0 + 5]! - p[b0 + 2]!;
+                  const acx = p[b0 + 6]! - p[b0]!, acy2 = p[b0 + 7]! - p[b0 + 1]!, acz = p[b0 + 8]! - p[b0 + 2]!;
+                  const gx = aby * acz - abz * acy2;
+                  const gy = abz * acx - abx * acz;
+                  const gz = abx * acy2 - aby * acx;
+                  if (gx * gnx + gy * gny + gz * gnz >= 0) buf.idxs.push(vi, vi + 1, vi + 2);
+                  else buf.idxs.push(vi, vi + 2, vi + 1);
+                };
+                // Convex-corner test: past this end, the SOLID side opens
+                // to air whose column carries the same span — the wall
+                // turns; the corner piece belongs there.
+                const bSolX = solidX + tangent[0] * dirSign;
+                const bSolZ = solidZ + tangent[1] * dirSign;
+                const beyondOpen = bSolX >= 0 && bSolZ >= 0 && bSolX < w && bSolZ < h
+                  && world.levels[0]!.tiles[bSolZ]![bSolX] !== TileType.Wall
+                  && tileBiome(world.levels[0]!.cellBiomes, bSolX, bSolZ) === null
+                  && world.columns[bSolZ * w + bSolX]!.some((s2) =>
+                    Math.abs(clipY(s2.floor) - lo) < 0.05 && Math.abs(clipY(s2.ceil) - hi) < 0.05);
+                if (beyondOpen) {
+                  // The z-facing partner draws nothing: x-facing owns it.
+                  if (dx === 0) return;
+                  // Ceiling corner piece: corner edge at hi-C up to the
+                  // two inward ceiling points of the meeting chamfers.
+                  tri(
+                    ex, hiE - TCH, ez,
+                    ex + inX, hiE, ez + inZ,
+                    ex + cnx * TCH, hiE, ez + cnz * TCH,
+                    nrmX + cnx, -1, nrmZ + cnz,
+                  );
+                  // Floor corner piece, mirrored.
+                  tri(
+                    ex, loE + TCH, ez,
+                    ex + inX, loE, ez + inZ,
+                    ex + cnx * TCH, loE, ez + cnz * TCH,
+                    nrmX + cnx, 1, nrmZ + cnz,
+                  );
+                  return;
+                }
+                // Plane end caps (doorways, span changes; concave ends
+                // land buried inside the perpendicular wall — harmless).
+                tri(ex, loE, ez, ex, loE + TCH, ez, ex + inX, loE, ez + inZ, cnx, 0, cnz);
+                tri(ex, hiE, ez, ex, hiE - TCH, ez, ex + inX, hiE, ez + inZ, cnx, 0, cnz);
+              };
+              if (!continues(-1)) closeEnd(0);
+              if (!continues(1)) closeEnd(1);
             }
           }
         }
@@ -1258,6 +1377,9 @@ export class DungeonRenderer {
     // The wall gate keeps open-air spans clean.
     const pipes = [...world.bridges, ...world.subways];
     for (const br of pipes) {
+      // LEVEL bores only: on sloped decks the per-tile strips stagger
+      // against the stepped treads and read as broken paneling.
+      if (Math.abs(br.yB - br.yA) > 0.01) continue;
       const tiles = bridgeTiles(br);
       for (let j = 0; j + 2 < tiles.length; j += 3) {
         const lowT = tiles[j]!;
