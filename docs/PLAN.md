@@ -103,9 +103,12 @@ explicitly a guess until the day it's real work.
   classically hard part of prefab dungeons (connectivity) is already shipped.
   Cheap, customizable, and the dormant blocks.ts/prefabs.ts vocabulary was
   always headed here. Possible expansion (user): stamps with ELEVATION — 3D
-  vault shapes, not just floor plans. Details later. (Anderson-style
-  accretion was considered and rejected: sequential whole-map growth fights
-  the pure-function discipline at every level.)
+  vault shapes, not just floor plans. Details later. Failure contract, per
+  the marian42 infinite-WFC pattern: if a stamp doesn't fit (footprint,
+  transit, pit conflicts), silently keep the plain room carve — a
+  guaranteed-correct baseline, never a retry or a propagation.
+  (Anderson-style accretion was considered and rejected: sequential
+  whole-map growth fights the pure-function discipline at every level.)
 - **Hive-style organic layouts, sans GA** (user, July 31 2026): Joel Simon's
   evolved-floorplan AESTHETIC (cellular rooms, curved merging hallways,
   courtyards) without the genetic algorithm — his GA only picks room
@@ -131,6 +134,25 @@ explicitly a guess until the day it's real work.
   inside→outside alternation RATE a tunable field instead of a noise
   accident. A player climbing a supertower gets an authored dramatic arc
   with zero scripted triggers.
+- **Seeded wall art & the seed-collection gallery** (user + review of
+  marian42/proceduralart, July 31 2026): paintings/posters/signs placed on
+  walls by a fixture-style seeded layer — each artwork a small canvas
+  generated lazily from a seeded art function, so the piece at a given spot
+  is the same for everyone forever. COLLECTING stores only the seed: a
+  gallery is a list of numbers, re-rendered on demand — the purpose
+  statement applied to loot. Art-direction axes (user): creepy / elegant /
+  abstract — NOT planet-toy content; custom generators authored via the
+  contact-sheet iteration loop (assistant writes styles, user reacts).
+  Opening move: DIEGETIC pieces — framed street maps and contour surveys of
+  real places elsewhere in the same seed. Placement/gamification to be
+  workshopped. Cheap: lazy 256px canvases, bounded cache, quads.
+  EXPANSION (user): lean into seeded canvases as a general TEXTURE program —
+  NEON SIGS built from a seeded glyph/symbol generator (canvas as
+  emissiveMap: pairs directly with the queued emissive+bloom pass and the
+  light-fixture pool — a sign is a fixture with a picture), plus decals,
+  panel variation, stencils, and grime for environmental diversity. If we
+  are smart about it, one seeded-canvas system feeds art, signage, and
+  surface variety across the whole world.
 - **fixNoise caution** (for whenever new threshold-driven fields are added):
   noise clusters near 0.5; the synthcity range-remap makes thresholds honest —
   but retrofitting it onto existing fields reshuffles every world. New fields
@@ -159,6 +181,12 @@ explicitly a guess until the day it's real work.
   level-set based and has no distance metric — this applies only to the
   Voronoi machinery (grid mode / future R1 street graph). If a "chamfered
   quarter" district personality is ever wanted, this is it, ready.
+- **Infinite WFC (marian42.de/article/infinite-wfc)** — the reference for WHY
+  no WFC here: his chunkless attempt hit order-dependence, unbounded
+  propagation, and accumulating failures, and his fix reinvented LayerProcGen
+  (deterministic coarse base + bounded offset chunks + keep-the-baseline
+  fallback) with WFC demoted to a local decorator that still needs a solver.
+  He needed LayerProcGen, not WFC — we started there.
 - **Sceelix** (MIT engine; reviewed July 30 2026) — the live takeaways are the
   junction polygon math and the CGA split arithmetic (facade/floor splitting);
   the full ranked review is in git history and `docs/roads-layer-design.md`
