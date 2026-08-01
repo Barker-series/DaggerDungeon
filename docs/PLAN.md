@@ -225,7 +225,9 @@ explicitly a guess until the day it's real work.
   catacomb wall art is the seeded art system in its creepiest register;
   hand-saw tool marks are a bump story; old-cut rock vs newer reinforcement
   patches give two-material walls; flooded transparent pools and multi-level
-  sight-holes for verticality.
+  sight-holes for verticality. Depth-strata material banding (see Next Up)
+  is this stratum's signature look: the walls show the eras the machines
+  cut through.
 - **Audio direction** (ref: Von Hohenheim, "Silicon Soul" — a literal BLAME!
   tribute album; CC BY-NC-ND so REFERENCE ONLY as-is, though a separate game
   license is one flattering email away; July 31 2026). Full palette,
