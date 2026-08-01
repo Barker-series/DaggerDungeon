@@ -26,6 +26,17 @@ forever. They are the ruler the eye uses to measure the monuments; only
 COUNTS of modules grow with a structure, never module size. (Future props,
 furniture, and physics objects join this ruler set.)
 
+**The art bar** (July 31 2026): the handcrafted BLAME! corridor at
+artstation.com/artwork/KeoDgy — hold onto it as the standard we strive for,
+not the standard we demand of every corner. What it demonstrates, decomposed:
+Big/Medium/Small executed flawlessly (corridor volume / light coves + panel
+divisions / pipes + debris); lighting as BUILT geometry (recessed emissive
+coves, not floating points); conduits as the eye-guidance system (pipe runs
+converging down the corridor — guide-without-paint in pure geometry);
+hatched, pen-work surface language (Nihei's ink, not PBR realism); and
+SPARSE floor incident (five objects, not fifty). Shoot for the stars;
+land where we land.
+
 ## The Purpose
 
 The purpose is for the best **lightweight megastructure generation** ever
@@ -119,12 +130,37 @@ explicitly a guess until the day it's real work.
   classically hard part of prefab dungeons (connectivity) is already shipped.
   Cheap, customizable, and the dormant blocks.ts/prefabs.ts vocabulary was
   always headed here. Possible expansion (user): stamps with ELEVATION — 3D
-  vault shapes, not just floor plans. Details later. Failure contract, per
+  vault shapes, not just floor plans. Details later. Recommended reading
+  before building: Boris the Brave's Enter the Gungeon dungeon writeup
+  (boristhebrave.com/2019/07/28/dungeon-generation-in-enter-the-gungeon) —
+  the best composite-prefab-room-graph reference around; Gungeon composes
+  authored rooms on a layout graph, which is this idea's closest shipped
+  relative. Failure contract, per
   the marian42 infinite-WFC pattern: if a stamp doesn't fit (footprint,
   transit, pit conflicts), silently keep the plain room carve — a
   guaranteed-correct baseline, never a retry or a propagation.
   (Anderson-style accretion was considered and rejected: sequential
   whole-map growth fights the pure-function discipline at every level.)
+- **Warren chunks via constrained growth** (user: "hell yes... a possible
+  solution"; July 31 2026): fill the dead interiors of plain kebab chunks
+  with generated room layouts using the TU Delft constrained-growth method —
+  Lopes, Tutenel, Smelik, de Kraker & Bidarra, "A Constrained Growth Method
+  for Procedural Floor Plan Generation" (2010). Paper saved locally:
+  `docs/constrained growth method for procedural floor plan generation.pdf`.
+  The method: seed rooms on a weighted grid, grow rectangular then L-shaped
+  by size ratios, zone hierarchy (public/private), then a door-placement
+  pass with architectural privacy rules and a reachability repair step. Why
+  it fits: bounded to one footprint and fully seedable (a pure per-chunk
+  function), designer intent via adjacency/ratio constraints (NOT the
+  rejected random subtraction), L-shaped rooms first-class, connectivity by
+  construction. Performance: sub-ms to low-ms on our ~13×13-tile interior
+  bays, run inside the world workers — zero frame impact. Guardrails: room
+  dimensions obey the pillar-room kit (door widths, minimum sizes) so
+  layouts stay dressable by authored assets; entry via a ramp-landing door
+  socket (gallery pattern); storeys at the 4.5-unit rhythm using the
+  paper's multi-floor duplicate-the-stair-room trick; bounded retries then
+  the marian42 keep-the-baseline fallback; verified by the planned interior
+  reachability invariant.
 - **Hive-style organic layouts, sans GA** (user, July 31 2026): Joel Simon's
   evolved-floorplan AESTHETIC (cellular rooms, curved merging hallways,
   courtyards) without the genetic algorithm — his GA only picks room
@@ -162,6 +198,12 @@ explicitly a guess until the day it's real work.
   Opening move: DIEGETIC pieces — framed street maps and contour surveys of
   real places elsewhere in the same seed. Placement/gamification to be
   workshopped. Cheap: lazy 256px canvases, bounded cache, quads.
+  Draw technique (joyrok SDF tutorials + IQ's 2D shape library,
+  iquilezles.org): 2D SDF composition on the canvas — stroke = abs(d) −
+  thickness (a neon tube by construction), glow = the distance falloff
+  beyond it (emissive/bloom-ready), shapes combined by min/max booleans —
+  crisp at any resolution, pure math, weightless. The toolkit for signs,
+  glyphs, and the elegant art register.
   EXPANSION (user): lean into seeded canvases as a general TEXTURE program —
   NEON SIGS built from a seeded glyph/symbol generator (canvas as
   emissiveMap: pairs directly with the queued emissive+bloom pass and the
@@ -184,6 +226,19 @@ explicitly a guess until the day it's real work.
   hand-saw tool marks are a bump story; old-cut rock vs newer reinforcement
   patches give two-material walls; flooded transparent pools and multi-level
   sight-holes for verticality.
+- **Audio direction** (ref: Von Hohenheim, "Silicon Soul" — a literal BLAME!
+  tribute album; CC BY-NC-ND so REFERENCE ONLY as-is, though a separate game
+  license is one flattering email away; July 31 2026). Full palette,
+  principles, and Suno prompt library: `docs/music-direction.md`. Palette: drone
+  ambient, industrial, minimal synth, dark IDM — mechanical resonance and
+  decay, sparse and patient. Principles: (1) audio is another FIELD over
+  space — ambient beds keyed to region/biome, and the curves-over-altitude
+  idea extends to sound (organic drones in the depths, cleaner colder tones
+  toward the heights); (2) the structure is the instrument — diegetic
+  sources at machines, vents, elevators, pipes (the fixture system already
+  knows where they are); (3) silence and sparseness carry it — few sources,
+  long loops, huge atmosphere-per-byte. Acquisition paths: source artists in
+  this scene, generate via Suno/audio tooling, or license the reference.
 - **fixNoise caution** (for whenever new threshold-driven fields are added):
   noise clusters near 0.5; the synthcity range-remap makes thresholds honest —
   but retrofitting it onto existing fields reshuffles every world. New fields
