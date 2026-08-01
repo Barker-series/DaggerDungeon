@@ -48,6 +48,22 @@ The **column model** (`src/game/dungeon/columns.ts`) is the single source of
 truth: per-(x,z) sorted AIR spans. Renderer faces, physics, and agents all
 derive from span differences. If it isn't in the columns, it doesn't exist.
 
+## Next Up (committed — first task after the research phase)
+
+**Disc streaming (Streaming v2, step 1).** We currently build meshes for the
+whole 672-wu window while the camera far plane is 160 and fog seals just
+inside it — roughly 4× more world meshed and held than can ever be seen.
+Change the RENDER side to per-pillar-cell groups built only within a disc of
+radius ≈ far plane + one cell of padding around the player, adding/evicting
+groups as the player moves; tie the radius to the far plane so view distance
+and loading move together. Generation stays whole-window in the workers
+(settled, seam-proven). Expected: ~60% less main-thread geometry build and
+GPU memory. The renderer's bounds machinery already slices builds — most
+pieces are on the shelf. Watch the interplay with recenter, install/evict,
+and the grounded handoff. Step 2 (per-cell GENERATION with dependency
+padding, retiring windows) is a separate, much larger surgery — not part of
+this task.
+
 ## Ideas
 
 Future directions — none of these are commitments, and the rail one is
@@ -153,6 +169,21 @@ explicitly a guess until the day it's real work.
   panel variation, stencils, and grime for environmental diversity. If we
   are smart about it, one seeded-canvas system feeds art, signage, and
   surface variety across the whole world.
+- **Catacomb / quarry stratum** (user: "we will be making places like this";
+  ref: the Odessa catacombs — oneman-onemap.com, July 31 2026): a below-grade
+  warren biome with three imported truths. (1) QUARRY LOGIC: Odessa's 2500km
+  of catacombs are the negative space of the city built from their limestone —
+  ours reads the same field as the built mass above, so dense pillar
+  districts sit over dense warrens; the megastructure quarried itself.
+  (2) LEGIBILITY WITHDRAWN: no threshold beacons, minimal fixtures,
+  repetition instead of landmarks — horror through the absence of affordances
+  the player has learned to trust; surfacing delivers the inside→outside
+  rhythm at maximum contrast. (3) The dressing list cross-links: partisan-style
+  chambers (sleeping quarters, hospital, print room) are vault stamps;
+  catacomb wall art is the seeded art system in its creepiest register;
+  hand-saw tool marks are a bump story; old-cut rock vs newer reinforcement
+  patches give two-material walls; flooded transparent pools and multi-level
+  sight-holes for verticality.
 - **fixNoise caution** (for whenever new threshold-driven fields are added):
   noise clusters near 0.5; the synthcity range-remap makes thresholds honest —
   but retrofitting it onto existing fields reshuffles every world. New fields
