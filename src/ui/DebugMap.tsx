@@ -62,6 +62,7 @@ export function DebugMap() {
   const [mode, setMode] = useState<ViewMode>('slice');
   const dungeon = useGameStore((s) => s.dungeon);
   const world = useGameStore((s) => s.world);
+  const spawnAbs = useGameStore((s) => s.spawnAbs);
   const playerPos = useGameStore((s) => s.playerPos);
   const playerY = useGameStore((s) => s.playerY);
   const currentLevel = useGameStore((s) => s.currentLevel);
@@ -93,6 +94,17 @@ export function DebugMap() {
     const cells = dungeon?.cellDebug ?? [];
     const transitCells = new Set(dungeon?.transitCells ?? []);
     if (cells.length === 0) return;
+
+    // The run's ONE spawn point (absolute tiles), converted to this
+    // window's local frame. Each window recomputes a local `entrance`,
+    // but R always returns to this spot — draw only this, and only
+    // when the window contains it.
+    const spawnLocal = spawnAbs && world && dungeon
+      ? { x: spawnAbs.x - world.originPcx * 56, y: spawnAbs.y - world.originPcz * 56 }
+      : null;
+    const spawnVisible = spawnLocal !== null && dungeon !== null
+      && spawnLocal.x >= 0 && spawnLocal.y >= 0
+      && spawnLocal.x < dungeon.width && spawnLocal.y < dungeon.height;
 
     // Find grid bounds
     let maxCx = 0, maxCz = 0;
@@ -246,13 +258,15 @@ export function DebugMap() {
         ctx.beginPath(); ctx.moveTo(0, z); ctx.lineTo(dungeon.width * tilePx, z); ctx.stroke();
       }
 
-      // Spawn marker
-      const spx = dungeon.entrance.x * tilePx + tilePx / 2;
-      const spz = dungeon.entrance.y * tilePx + tilePx / 2;
-      ctx.fillStyle = '#0f0';
-      ctx.beginPath(); ctx.arc(spx, spz, 4, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#000'; ctx.font = 'bold 8px monospace';
-      ctx.fillText('S', spx - 3, spz + 3);
+      // Spawn marker — the run's fixed respawn point, if in this window
+      if (spawnVisible && spawnLocal) {
+        const spx = spawnLocal.x * tilePx + tilePx / 2;
+        const spz = spawnLocal.y * tilePx + tilePx / 2;
+        ctx.fillStyle = '#0f0';
+        ctx.beginPath(); ctx.arc(spx, spz, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#000'; ctx.font = 'bold 8px monospace';
+        ctx.fillText('S', spx - 3, spz + 3);
+      }
 
       if (world) {
         for (const spec of world.pillars.values()) {
@@ -440,13 +454,13 @@ export function DebugMap() {
       }
     }
 
-    // Draw spawn marker
-    if (dungeon) {
+    // Draw spawn marker — the run's fixed respawn point, if in this window
+    if (spawnVisible && spawnLocal) {
       const cellTileSize = 14; // must match CELL_TILE_SIZE in DungeonGenerator
 
       // Spawn — green circle with S
-      const spawnCx = Math.floor(dungeon.entrance.x / cellTileSize);
-      const spawnCz = Math.floor(dungeon.entrance.y / cellTileSize);
+      const spawnCx = Math.floor(spawnLocal.x / cellTileSize);
+      const spawnCz = Math.floor(spawnLocal.y / cellTileSize);
       ctx.fillStyle = '#0f0';
       ctx.beginPath();
       ctx.arc(spawnCx * CELL_PX + CELL_PX / 2, spawnCz * CELL_PX + CELL_PX / 2, 8, 0, Math.PI * 2);
@@ -454,7 +468,6 @@ export function DebugMap() {
       ctx.fillStyle = '#000';
       ctx.font = 'bold 12px monospace';
       ctx.fillText('S', spawnCx * CELL_PX + CELL_PX / 2 - 4, spawnCz * CELL_PX + CELL_PX / 2 + 4);
-
     }
 
     // Draw player position
@@ -516,7 +529,7 @@ export function DebugMap() {
       ctx.fillText(`${key}: ${val}`, legendX, ly);
       ly += 16;
     }
-  }, [visible, mode, dungeon, world, playerPos, playerY, currentLevel]);
+  }, [visible, mode, dungeon, world, spawnAbs, playerPos, playerY, currentLevel]);
 
   if (!visible) return null;
 

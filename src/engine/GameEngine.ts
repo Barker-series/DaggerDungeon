@@ -585,6 +585,9 @@ export class GameEngine {
     store.setCurrentFloor(stack);
 
     const top = this.world!.levels[0]!;
+    // loadStack always builds window (0,0), so this entrance IS the
+    // run's absolute spawn — record it for maps/respawn UI
+    store.setSpawnAbs({ x: top.entrance.x, y: top.entrance.y });
     const spawnX = top.entrance.x * TILE_SIZE + TILE_SIZE / 2;
     const spawnZ = top.entrance.y * TILE_SIZE + TILE_SIZE / 2;
     this.gridCamera.setPosition(

@@ -30,6 +30,11 @@ export interface GameState {
   /** Smoothed frames-per-second, published by the engine ~2x/second */
   fps: number;
 
+  /** The run's ONE spawn/respawn point in ABSOLUTE tiles (window (0,0)'s
+   *  entrance). Windows recompute a local `entrance` as they stream; this
+   *  is the fixed spot R returns to — what maps should mark. */
+  spawnAbs: GridPos | null;
+
   // ── Actions ──
   setScreen: (s: GameState['screen']) => void;
   setSeed: (seed: number) => void;
@@ -42,6 +47,7 @@ export interface GameState {
   setCurrentFloor: (f: number) => void;
   toggleAutoPlay: () => void;
   setFps: (fps: number) => void;
+  setSpawnAbs: (pos: GridPos) => void;
   startRun: () => void;
   resetRun: () => void;
 }
@@ -59,6 +65,7 @@ export const useGameStore = create<GameState>((set) => ({
   currentFloor: 1,
   autoPlay: false,
   fps: 0,
+  spawnAbs: null,
 
   setScreen: (screen) => set({ screen }),
   setSeed: (seed) => set({ seed }),
@@ -73,6 +80,7 @@ export const useGameStore = create<GameState>((set) => ({
   setCurrentFloor: (currentFloor) => set({ currentFloor }),
   toggleAutoPlay: () => set((s) => ({ autoPlay: !s.autoPlay })),
   setFps: (fps) => set({ fps }),
+  setSpawnAbs: (spawnAbs) => set({ spawnAbs }),
 
   startRun: () =>
     set({
