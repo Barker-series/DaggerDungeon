@@ -2,13 +2,14 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 export type RenderDebugMode = 'lit' | 'solid' | 'wireframe' | 'normals';
 
 export interface VisualSettings {
-  version: 4;
+  version: 6;
   postEnabled: boolean;
   bloomEnabled: boolean;
   bloomStrength: number;
@@ -18,10 +19,14 @@ export interface VisualSettings {
   saturation: number;
   vignette: number;
   renderMode: RenderDebugMode;
+  // ── Screen-space ambient occlusion (GTAO) ──
+  aoEnabled: boolean;
+  aoIntensity: number;
+  aoRadius: number;
 }
 
 export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
-  version: 4,
+  version: 6,
   postEnabled: true,
   bloomEnabled: true,
   bloomStrength: 0.1,
@@ -31,6 +36,9 @@ export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
   saturation: 1,
   vignette: 0.2,
   renderMode: 'lit',
+  aoEnabled: true,
+  aoIntensity: 0.5,
+  aoRadius: 1,
 };
 
 const FINISH_SHADER = {
@@ -69,6 +77,7 @@ const FINISH_SHADER = {
 
 export class PostProcessing {
   private composer: EffectComposer;
+  private gtao: GTAOPass;
   private bloom: UnrealBloomPass;
   private finish: ShaderPass;
   private settings = DEFAULT_VISUAL_SETTINGS;
@@ -81,6 +90,28 @@ export class PostProcessing {
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
     this.composer = new EffectComposer(renderer);
     this.composer.addPass(new RenderPass(scene, camera));
+    this.gtao = new GTAOPass(scene, camera, size.x, size.y);
+    this.gtao.output = GTAOPass.OUTPUT.Default;
+    // GTAOPass hides Points/Lines during its depth/normal prepass but NOT
+    // Sprites — additive halo glints would land in the AO depth buffer as
+    // solid squares and get boxed with occlusion. Extend its hide-list.
+    const gtaoInternals = this.gtao as unknown as {
+      _overrideVisibility: () => void;
+      _visibilityCache: THREE.Object3D[];
+    };
+    gtaoInternals._overrideVisibility = () => {
+      const cache = gtaoInternals._visibilityCache;
+      scene.traverse((object) => {
+        const o = object as THREE.Object3D & {
+          isPoints?: boolean; isLine?: boolean; isLine2?: boolean; isSprite?: boolean;
+        };
+        if ((o.isPoints || o.isLine || o.isLine2 || o.isSprite) && o.visible) {
+          o.visible = false;
+          cache.push(o);
+        }
+      });
+    };
+    this.composer.addPass(this.gtao);
     this.bloom = new UnrealBloomPass(size, 0.2, 0.3, 0.1);
     this.composer.addPass(this.bloom);
     this.finish = new ShaderPass(FINISH_SHADER);
@@ -91,6 +122,9 @@ export class PostProcessing {
 
   apply(settings: VisualSettings): void {
     this.settings = settings;
+    this.gtao.enabled = settings.postEnabled && settings.aoEnabled;
+    this.gtao.blendIntensity = THREE.MathUtils.clamp(settings.aoIntensity, 0, 1);
+    this.gtao.updateGtaoMaterial({ radius: THREE.MathUtils.clamp(settings.aoRadius, 0.3, 2) });
     this.bloom.enabled = settings.postEnabled && settings.bloomEnabled;
     this.bloom.strength = THREE.MathUtils.clamp(settings.bloomStrength, 0, 1);
     this.bloom.radius = THREE.MathUtils.clamp(settings.bloomRadius, 0, 1);
@@ -112,6 +146,7 @@ export class PostProcessing {
 
   dispose(): void {
     this.composer.dispose();
+    this.gtao.dispose();
     this.bloom.dispose();
     this.finish.dispose();
   }

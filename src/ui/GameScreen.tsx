@@ -38,17 +38,20 @@ function clampVisual(value: unknown, min: number, max: number, fallback: number)
 function loadVisualSettings(): VisualSettings {
   try {
     const saved = JSON.parse(localStorage.getItem(VISUAL_SETTINGS_KEY) ?? '');
-    if (saved.version !== 4) return { ...DEFAULT_VISUAL_SETTINGS };
+    if (saved.version !== 6) return { ...DEFAULT_VISUAL_SETTINGS };
     return {
       ...DEFAULT_VISUAL_SETTINGS,
       ...saved,
-      version: 4,
+      version: 6,
       bloomStrength: clampVisual(saved.bloomStrength, 0, 1, DEFAULT_VISUAL_SETTINGS.bloomStrength),
       bloomRadius: clampVisual(saved.bloomRadius, 0, 1, DEFAULT_VISUAL_SETTINGS.bloomRadius),
       bloomThreshold: clampVisual(saved.bloomThreshold, 0, 0.25, DEFAULT_VISUAL_SETTINGS.bloomThreshold),
       contrast: clampVisual(saved.contrast, 0.8, 1.2, DEFAULT_VISUAL_SETTINGS.contrast),
       saturation: clampVisual(saved.saturation, 0, 1.5, DEFAULT_VISUAL_SETTINGS.saturation),
       vignette: clampVisual(saved.vignette, 0, 0.5, DEFAULT_VISUAL_SETTINGS.vignette),
+      aoEnabled: typeof saved.aoEnabled === 'boolean' ? saved.aoEnabled : DEFAULT_VISUAL_SETTINGS.aoEnabled,
+      aoIntensity: clampVisual(saved.aoIntensity, 0, 1, DEFAULT_VISUAL_SETTINGS.aoIntensity),
+      aoRadius: clampVisual(saved.aoRadius, 0.3, 2, DEFAULT_VISUAL_SETTINGS.aoRadius),
     };
   } catch {
     return { ...DEFAULT_VISUAL_SETTINGS };

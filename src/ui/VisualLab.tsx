@@ -114,6 +114,25 @@ export function VisualLab({ settings, onChange, onClose }: VisualLabProps) {
       </section>
 
       <section>
+        <h3>Ambient occlusion</h3>
+        <label className="visual-toggle">
+          <span>SSAO (GTAO)</span>
+          <input
+            type="checkbox"
+            checked={settings.aoEnabled}
+            onChange={(event) => patch('aoEnabled', event.currentTarget.checked)}
+          />
+        </label>
+        <Range label="AO intensity" value={settings.aoIntensity} min={0} max={1} step={0.01}
+          onChange={(value) => patch('aoIntensity', value)} />
+        <Range label="AO radius" value={settings.aoRadius} min={0.3} max={2} step={0.05}
+          onChange={(value) => patch('aoRadius', value)} />
+        <div className="visual-control-note">
+          Depth-based crevice shading. Radius is in world units.
+        </div>
+      </section>
+
+      <section>
         <h3>Finish</h3>
         <Range label="Contrast" value={settings.contrast} min={0.8} max={1.2} step={0.01}
           onChange={(value) => patch('contrast', value)} />
