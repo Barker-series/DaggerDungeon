@@ -22,7 +22,7 @@
  *   Columns:  the column model, then pillar air spans, then bridges
  */
 
-import { TileType, SKY_CEIL, type DungeonData, type WorldData, type RoomData, type GridPos } from './types';
+import { TileType, SKY_CEIL, type ColumnSpan, type DungeonData, type WorldData, type RoomData, type GridPos } from './types';
 import { getOrCreateCell, getCell, getAllCells, resetCells, snapshotCellBiomes, setWindowOrigin, tileBiome } from './dungeon/cells';
 import { buildColumns, validateColumns } from './dungeon/columns';
 import { generateLayer0 } from './dungeon/layer0-noise';
@@ -48,6 +48,19 @@ const CELL_GRID_SIZE = 16;
 const CELL_TILE_SIZE = 14;
 const GRID_TILES = CELL_GRID_SIZE * CELL_TILE_SIZE;
 
+/** GUARD PADDING (pillar cells per side): the pipeline generates a
+ * padded window and only the core is returned. Every pass that
+ * special-cases the grid rim (kernel fallbacks, BFS truncations,
+ * boundary clamps) still does — but its damage lands entirely in the
+ * discarded padding, so the core is rim-exact: any two windows agree
+ * on every shared column. This is the docs' "input bounds always
+ * exceed output bounds" rule applied to the window as a whole
+ * (docs/layerprocgen/EffectDistance.md). One pillar cell (56 tiles)
+ * exceeds the largest compound effect distance in the pipeline
+ * (pit-deck leveling SPAN 12 + pit-mask opening ~4, mouth sweep 4 +
+ * biome buffer 3 + relax 4, CA 3+1, smoothing 2) with 2x headroom. */
+const PAD_PC = 1;
+
 // ── Public API ──
 
 interface GenerateOpts {
@@ -67,20 +80,31 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   const originPcx = opts.originPcx ?? 0;
   const originPcz = opts.originPcz ?? 0;
   const stackSeed = seed + stack * 100000;
+
+  // ── Padded generation frame: everything below runs on a window one
+  // pillar cell larger on every side, anchored one cell northwest.
+  // The crop back to the core happens once, at the very end. ──
+  const genPcx = originPcx - PAD_PC;
+  const genPcz = originPcz - PAD_PC;
+  const padCells = PAD_PC * PILLAR_FACTOR;
+  const padTiles = padCells * CELL_TILE_SIZE;
+  const genCellGrid = CELL_GRID_SIZE + padCells * 2;
+  const genTiles = genCellGrid * CELL_TILE_SIZE;
+
   // Every noise/RNG/region sample in the level pipeline offsets by the
   // window origin (dungeon cells = 4 per pillar cell)
-  setWindowOrigin(originPcx * PILLAR_FACTOR, originPcz * PILLAR_FACTOR);
+  setWindowOrigin(genPcx * PILLAR_FACTOR, genPcz * PILLAR_FACTOR);
 
   // ── Pillar kebabs — the coarse pillar layer's pure function over
   // this window (one pillar cell = 4x4 dungeon cells) ──
-  const pillarGrid = Math.floor(GRID_TILES / PILLAR_CELL_TILES);
-  const pillars = buildPillarField(stackSeed, 0, 0, pillarGrid, pillarGrid, originPcx, originPcz);
+  const pillarGrid = Math.floor(genTiles / PILLAR_CELL_TILES);
+  const pillars = buildPillarField(stackSeed, 0, 0, pillarGrid, pillarGrid, genPcx, genPcz);
 
   // Footprint tiles are WALL in the tile grid: connectivity, the golden
   // path, and pathfinding route around pillars by construction. Dungeon
   // cells a pillar touches are also barred from hosting spawn/exit rooms.
-  const pillarWall: boolean[][] = Array.from({ length: GRID_TILES }, () =>
-    Array.from({ length: GRID_TILES }, () => false),
+  const pillarWall: boolean[][] = Array.from({ length: genTiles }, () =>
+    Array.from({ length: genTiles }, () => false),
   );
   const pillarCells = new Set<string>();
   for (const spec of pillars.values()) {
@@ -93,7 +117,8 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   }
 
   const level = generateLevel(
-    seed, stack, stackSeed, pillarCells, pillarWall, originPcx, originPcz,
+    seed, stack, stackSeed, pillarCells, pillarWall, genPcx, genPcz,
+    genCellGrid, padCells,
   );
   const levels: DungeonData[] = [level];
 
@@ -135,7 +160,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
       for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
         const nx = gx + dx;
         const nz = gz + dz;
-        if (nx < 0 || nz < 0 || nx >= GRID_TILES || nz >= GRID_TILES) continue;
+        if (nx < 0 || nz < 0 || nx >= genTiles || nz >= genTiles) continue;
         if (pillarWall[nz]![nx] || level.tiles[nz]![nx] === TileType.Wall) continue;
         if (tileBiome(topBiomes, nx, nz) === 'outside') continue;
         boundaryCap = Math.min(boundaryCap, topCeils[nz]![nx]!);
@@ -261,7 +286,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
         const top = spans[spans.length - 1]!;
         if (Math.abs(top.floor - spec.totalHeight) < 0.01) spans = spans.slice(0, -1);
       }
-      columns[gz * GRID_TILES + gx] = spans;
+      columns[gz * genTiles + gx] = spans;
     }
   }
 
@@ -272,11 +297,11 @@ export function generateWorld(opts: GenerateOpts): WorldData {
 
   // ── Roads districts: cut block mass down to per-block plinths under
   // open sky — the negative space between streets becomes usable form. ──
-  cutRoadBlockTops(columns, level.tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed, pillarWall, level.floorHeights, level.pillarGround);
+  cutRoadBlockTops(columns, level.tiles, genTiles, CELL_TILE_SIZE, stackSeed, pillarWall, level.floorHeights, level.pillarGround);
 
   // ── Pit arches: land strips spanning between pits become archways —
   // thin deck at the crown, legs thickening into the pit walls. ──
-  carvePitArches(columns, level.tiles, level.floorHeights, GRID_TILES, pillarWall);
+  carvePitArches(columns, level.tiles, level.floorHeights, genTiles, pillarWall);
 
   // ── Bridges: the neighbor-pair pass with the local degree guarantee.
   // Each cell owns its east and south pairs, so every pair is planned
@@ -290,14 +315,14 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   // writes below stay clipped to this window and the neighbor window
   // deterministically emits the rest. ──
   const pillarsPadded = buildPillarField(
-    stackSeed, -2, -2, pillarGrid + 2, pillarGrid + 2, originPcx, originPcz,
+    stackSeed, -2, -2, pillarGrid + 2, pillarGrid + 2, genPcx, genPcz,
   );
   const specAt = (cx: number, cz: number): PillarSpec | null => pillarsPadded.get(`${cx},${cz}`) ?? null;
   const planningOwners = [...pillarsPadded.values()].filter(
     (s) => s.cx >= -1 && s.cx < pillarGrid && s.cz >= -1 && s.cz < pillarGrid,
   );
   const touchesWindow = (br: BridgeSpec): boolean =>
-    bridgeTiles(br).some(({ tx, tz }) => tx >= 0 && tz >= 0 && tx < GRID_TILES && tz < GRID_TILES);
+    bridgeTiles(br).some(({ tx, tz }) => tx >= 0 && tz >= 0 && tx < genTiles && tz < genTiles);
   const bridges: BridgeSpec[] = [];
   for (const spec of planningOwners) {
     bridges.push(...planOwnedBridges(stackSeed, spec.cx, spec.cz, specAt).filter(touchesWindow));
@@ -314,14 +339,14 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   }
   for (const ar of arches) {
     for (const { tx, tz, h } of bridgeTiles(ar)) {
-      if (tx < 0 || tz < 0 || tx >= GRID_TILES || tz >= GRID_TILES) continue;
-      columns[tz * GRID_TILES + tx] = carveArchIntoColumn(columns[tz * GRID_TILES + tx]!, h);
+      if (tx < 0 || tz < 0 || tx >= genTiles || tz >= genTiles) continue;
+      columns[tz * genTiles + tx] = carveArchIntoColumn(columns[tz * genTiles + tx]!, h);
     }
   }
   for (const sw of subways) {
     for (const { tx, tz, h } of bridgeTiles(sw)) {
-      if (tx < 0 || tz < 0 || tx >= GRID_TILES || tz >= GRID_TILES) continue;
-      columns[tz * GRID_TILES + tx] = carveBridgeIntoColumn(columns[tz * GRID_TILES + tx]!, h, true);
+      if (tx < 0 || tz < 0 || tx >= genTiles || tz >= genTiles) continue;
+      columns[tz * genTiles + tx] = carveBridgeIntoColumn(columns[tz * genTiles + tx]!, h, true);
     }
   }
   // Carve TOP-DOWN: when a pair stacks two bridges, the upper deck's
@@ -335,21 +360,96 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     const tread = Math.abs(br.yB - br.yA) / GAP_TILES;
     const slabDepth = Math.max(0.5, tread + 0.15);
     for (const { tx, tz, h, support } of bridgeTiles(br)) {
-      if (tx < 0 || tz < 0 || tx >= GRID_TILES || tz >= GRID_TILES) continue;
-      columns[tz * GRID_TILES + tx] = carveBridgeIntoColumn(columns[tz * GRID_TILES + tx]!, h, br.pipe, slabDepth);
+      if (tx < 0 || tz < 0 || tx >= genTiles || tz >= genTiles) continue;
+      columns[tz * genTiles + tx] = carveBridgeIntoColumn(columns[tz * genTiles + tx]!, h, br.pipe, slabDepth);
       if (support) {
-        columns[tz * GRID_TILES + tx] = addBridgeEndSupport(columns[tz * GRID_TILES + tx]!, h);
+        columns[tz * genTiles + tx] = addBridgeEndSupport(columns[tz * genTiles + tx]!, h);
       }
     }
   }
 
-  const errs = validateColumns(columns, GRID_TILES, GRID_TILES);
+  const errs = validateColumns(columns, genTiles, genTiles);
   if (errs.length > 0) {
     // A violation is a generation bug, never something to ship silently
     console.error(`[generateWorld] column model invariant violations (seed ${seed}, stack ${stack}):`, errs);
   }
 
-  return { seed, stack, originPcx, originPcz, levels, columns, pillars, bridges, subways };
+  // ── CROP: only the core window ships; the guard ring dies here.
+  // Every structure shifts one pillar cell northwest into core-local
+  // coordinates. Nothing after this point may touch padded indices. ──
+  const crop2D = <T,>(g: T[][]): T[][] =>
+    g.slice(padTiles, padTiles + GRID_TILES).map((row) => row.slice(padTiles, padTiles + GRID_TILES));
+  const cropCells = <T,>(g: T[][]): T[][] =>
+    g.slice(padCells, padCells + CELL_GRID_SIZE).map((row) => row.slice(padCells, padCells + CELL_GRID_SIZE));
+
+  const coreColumns: ColumnSpan[][] = new Array(GRID_TILES * GRID_TILES);
+  for (let tz = 0; tz < GRID_TILES; tz++) {
+    for (let tx = 0; tx < GRID_TILES; tx++) {
+      coreColumns[tz * GRID_TILES + tx] = columns[(tz + padTiles) * genTiles + (tx + padTiles)]!;
+    }
+  }
+
+  const corePillarGrid = Math.floor(GRID_TILES / PILLAR_CELL_TILES);
+  const corePillars = new Map<string, PillarSpec>();
+  for (const spec of pillars.values()) {
+    const cx = spec.cx - PAD_PC;
+    const cz = spec.cz - PAD_PC;
+    if (cx < 0 || cz < 0 || cx >= corePillarGrid || cz >= corePillarGrid) continue;
+    spec.cx = cx;
+    spec.cz = cz;
+    corePillars.set(`${cx},${cz}`, spec);
+  }
+
+  const touchesCore = (br: BridgeSpec): boolean =>
+    bridgeTiles(br).some(({ tx, tz }) => tx >= 0 && tz >= 0 && tx < GRID_TILES && tz < GRID_TILES);
+  const shiftBridge = (br: BridgeSpec): BridgeSpec => ({ ...br, cx: br.cx - PAD_PC, cz: br.cz - PAD_PC });
+  const coreBridges = bridges.map(shiftBridge).filter(touchesCore);
+  const coreSubways = subways.map(shiftBridge).filter(touchesCore);
+
+  const coreLevel: DungeonData = {
+    ...level,
+    width: GRID_TILES,
+    height: GRID_TILES,
+    tiles: crop2D(level.tiles),
+    floorHeights: crop2D(level.floorHeights),
+    ceilingHeights: crop2D(level.ceilingHeights),
+    pillarWall: crop2D(level.pillarWall),
+    pillarGround: crop2D(level.pillarGround),
+    cellBiomes: cropCells(level.cellBiomes),
+    roadsCells: level.roadsCells ? cropCells(level.roadsCells) : undefined,
+    cellDebug: level.cellDebug
+      .map((c) => ({ ...c, cx: c.cx - padCells, cz: c.cz - padCells }))
+      .filter((c) => c.cx >= 0 && c.cz >= 0 && c.cx < CELL_GRID_SIZE && c.cz < CELL_GRID_SIZE),
+    transitCells: level.transitCells.flatMap((key) => {
+      const comma = key.indexOf(',');
+      const cx = Number(key.slice(0, comma)) - padCells;
+      const cz = Number(key.slice(comma + 1)) - padCells;
+      return cx >= 0 && cz >= 0 && cx < CELL_GRID_SIZE && cz < CELL_GRID_SIZE ? [`${cx},${cz}`] : [];
+    }),
+    entrance: { x: level.entrance.x - padTiles, y: level.entrance.y - padTiles },
+    exit: { x: level.exit.x - padTiles, y: level.exit.y - padTiles },
+    rooms: level.rooms
+      .map((r) => ({
+        ...r,
+        left: r.left - padTiles,
+        top: r.top - padTiles,
+        center: { x: r.center.x - padTiles, y: r.center.y - padTiles },
+        doors: r.doors.map((d) => ({ x: d.x - padTiles, y: d.y - padTiles })),
+      }))
+      .filter((r) => r.left + r.width > 0 && r.top + r.height > 0 && r.left < GRID_TILES && r.top < GRID_TILES),
+  };
+
+  return {
+    seed,
+    stack,
+    originPcx,
+    originPcz,
+    levels: [coreLevel],
+    columns: coreColumns,
+    pillars: corePillars,
+    bridges: coreBridges,
+    subways: coreSubways,
+  };
 }
 
 // ── The floor pipeline ──
@@ -362,30 +462,34 @@ function generateLevel(
   pillarWall: boolean[][],
   originPcx: number,
   originPcz: number,
+  cellGrid: number,
+  padCells: number,
 ): DungeonData {
   const levelSeed = stackSeed;
+  const gridTiles = cellGrid * CELL_TILE_SIZE;
+  const padTiles = padCells * CELL_TILE_SIZE;
   resetCells();
 
   // Shared tile grid — layers read and write this directly
-  const tiles: TileType[][] = Array.from({ length: GRID_TILES }, () =>
-    Array.from({ length: GRID_TILES }, () => TileType.Wall),
+  const tiles: TileType[][] = Array.from({ length: gridTiles }, () =>
+    Array.from({ length: gridTiles }, () => TileType.Wall),
   );
   const rooms: RoomData[] = [];
 
   // ── Layer 0: Noise ──
-  for (let cz = 0; cz < CELL_GRID_SIZE; cz++) {
-    for (let cx = 0; cx < CELL_GRID_SIZE; cx++) {
+  for (let cz = 0; cz < cellGrid; cz++) {
+    for (let cx = 0; cx < cellGrid; cx++) {
       const cell = getOrCreateCell(cx, cz);
       generateLayer0(cell, levelSeed);
     }
   }
 
   // ── Layer 1: Tile grid ──
-  for (let cz = 0; cz < CELL_GRID_SIZE; cz++) {
-    for (let cx = 0; cx < CELL_GRID_SIZE; cx++) {
+  for (let cz = 0; cz < cellGrid; cz++) {
+    for (let cx = 0; cx < cellGrid; cx++) {
       const cell = getCell(cx, cz);
       if (!cell) continue;
-      generateLayer1TileGrid(cell, tiles, rooms, CELL_TILE_SIZE, GRID_TILES, 1);
+      generateLayer1TileGrid(cell, tiles, rooms, CELL_TILE_SIZE, gridTiles, 1);
     }
   }
 
@@ -393,35 +497,37 @@ function generateLevel(
   assignBiomes(CELL_TILE_SIZE, stackSeed, 0);
 
   // ── Layer 1.5: Fine noise — sculpt organic biome cells only ──
-  applyFineNoise(tiles, GRID_TILES, CELL_TILE_SIZE, levelSeed);
+  applyFineNoise(tiles, gridTiles, CELL_TILE_SIZE, levelSeed);
 
   // ── Roads districts: rasterize the street-vein field (crude slice —
   // docs/roads-layer-design.md). Before transit, so layer 4 still
   // guarantees connectivity over whatever the veins leave behind. ──
-  carveRoadsRegion(tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed);
+  carveRoadsRegion(tiles, gridTiles, CELL_TILE_SIZE, stackSeed);
 
   // ── Pillar footprints: solid wall in the 2D grid. The column model
   // carves the pillar's real interior later; here they are obstacles
   // that everything routes around and never carves through. ──
-  for (let tz = 0; tz < GRID_TILES; tz++) {
-    for (let tx = 0; tx < GRID_TILES; tx++) {
+  for (let tz = 0; tz < gridTiles; tz++) {
+    for (let tx = 0; tx < gridTiles; tx++) {
       if (pillarWall[tz]![tx]) tiles[tz]![tx] = TileType.Wall;
     }
   }
 
   // ── Layer 3: Spawn anchor — never in a pillar cell ──
-  const center = Math.floor(CELL_GRID_SIZE / 2);
+  const center = Math.floor(cellGrid / 2);
   // The streaming window recenters around its middle 2x2 pillar cells.
   // Starting outside that region causes an immediate window rebuild while
   // the player is still at the old local coordinates, which can put the
-  // first frame over a void. Keep the entrance inside the safe center;
+  // first frame over a void. Keep the entrance inside the safe center —
+  // measured from the CORE, not the padded frame.
   const centerMargin = PILLAR_FACTOR;
   const spawnCell = pickFarthestCell(
     center,
     center,
     pillarCells,
-    centerMargin,
-    CELL_GRID_SIZE - centerMargin,
+    padCells + centerMargin,
+    cellGrid - padCells - centerMargin,
+    cellGrid,
   );
   const spawnCx = spawnCell.cx;
   const spawnCz = spawnCell.cz;
@@ -434,47 +540,47 @@ function generateLevel(
   // and owned local routes replace the old whole-window island repair. ──
   connectPermanentTransit(
     tiles, rooms, stackSeed, originPcx, originPcz,
-    GRID_TILES, CELL_TILE_SIZE, pillarWall,
+    gridTiles, CELL_TILE_SIZE, pillarWall,
   );
   // Spawn is a marker on the already-owned permanent graph. It never
   // carves rooms, clears pits, or changes decorative construction.
   entrance = nearestPermanentTransit(
     entrance,
     permanentTransitTiles,
-    PILLAR_CELL_TILES,
-    GRID_TILES - PILLAR_CELL_TILES,
+    padTiles + PILLAR_CELL_TILES,
+    gridTiles - padTiles - PILLAR_CELL_TILES,
   ) ?? entrance;
 
   // ── Layer 4.5: Decorative pillars in built biomes ──
   placePillars(
-    tiles, GRID_TILES, CELL_TILE_SIZE,
+    tiles, gridTiles, CELL_TILE_SIZE,
     levelSeed, pillarWall, permanentTransitTiles,
   );
 
   // ── Layer 6: permanent transit reserves safe terrain. ──
   const pitMask = computePitMask(
-    tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed, permanentTransitTiles,
+    tiles, gridTiles, CELL_TILE_SIZE, stackSeed, permanentTransitTiles,
   );
 
   // ── Roads districts: arteries never break — no pits mid-street. ──
-  suppressRoadPits(pitMask, tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed);
+  suppressRoadPits(pitMask, tiles, gridTiles, CELL_TILE_SIZE, stackSeed);
 
   // ── Layer 6: Height fields (terrain flows under pillar footprints) ──
   const { floor: floorHeights, ceiling: ceilingHeights } = computeHeightFields(
-    tiles, GRID_TILES, CELL_TILE_SIZE, levelSeed, pitMask, pillarWall,
+    tiles, gridTiles, CELL_TILE_SIZE, levelSeed, pitMask, pillarWall,
   );
 
   // ── Roads districts: streets run at flat grade so quantized block
   // tops meet them with steppable or fully-walled edges only. ──
-  flattenRoadStreets(floorHeights, tiles, GRID_TILES, CELL_TILE_SIZE, stackSeed);
+  flattenRoadStreets(floorHeights, tiles, gridTiles, CELL_TILE_SIZE, stackSeed);
 
   // ── Pit decks hold the level of their banks — no mid-span dips. ──
-  levelPitDecks(floorHeights, tiles, GRID_TILES);
+  levelPitDecks(floorHeights, tiles, gridTiles);
 
   // ── Output ──
   return {
-    width: GRID_TILES,
-    height: GRID_TILES,
+    width: gridTiles,
+    height: gridTiles,
     tiles,
     floorHeights,
     ceilingHeights,
@@ -487,14 +593,14 @@ function generateLevel(
     floor: stack,
     level: 0,
     baseY: 0,
-    cellBiomes: snapshotCellBiomes(CELL_GRID_SIZE),
+    cellBiomes: snapshotCellBiomes(cellGrid),
     cellDebug: getAllCells().map((c) => (
       { cx: c.cx, cz: c.cz, noise: c.noise, active: c.active, biome: c.biome })),
     transitCells: [...hallwayCells],
     // Per-cell roads mask — contour/collision must know these are
     // rectilinear plinth districts, not organic cave mass
-    roadsCells: Array.from({ length: CELL_GRID_SIZE }, (_, cz) =>
-      Array.from({ length: CELL_GRID_SIZE }, (_, cx) =>
+    roadsCells: Array.from({ length: cellGrid }, (_, cz) =>
+      Array.from({ length: cellGrid }, (_, cx) =>
         regionAtCell(
           stackSeed,
           originPcx * PILLAR_FACTOR + cx,
@@ -503,8 +609,8 @@ function generateLevel(
     goldenPath: [],
     pillarWall,
     // Filled in by generateWorld once pillar spans are applied
-    pillarGround: Array.from({ length: GRID_TILES }, () =>
-      Array.from({ length: GRID_TILES }, () => false)),
+    pillarGround: Array.from({ length: gridTiles }, () =>
+      Array.from({ length: gridTiles }, () => false)),
   };
 }
 
@@ -539,8 +645,9 @@ function pickFarthestCell(
   fromCx: number,
   fromCz: number,
   exclude: Set<string>,
-  minCell = 0,
-  maxCell = CELL_GRID_SIZE,
+  minCell: number,
+  maxCell: number,
+  wholeGrid: number,
 ): { cx: number; cz: number } {
   const inBounds = (cx: number, cz: number): boolean =>
     cx >= minCell && cz >= minCell && cx < maxCell && cz < maxCell;
@@ -578,8 +685,8 @@ function pickFarthestCell(
     }
     // A bounded region could theoretically be entirely occupied by pillar
     // footprints. Preserve the old whole-window fallback in that case.
-    if (!best && (minCell !== 0 || maxCell !== CELL_GRID_SIZE)) {
-      return pickFarthestCell(fromCx, fromCz, exclude);
+    if (!best && (minCell !== 0 || maxCell !== wholeGrid)) {
+      return pickFarthestCell(fromCx, fromCz, exclude, 0, wholeGrid, wholeGrid);
     }
     best ??= { cx: 1, cz: 1 };
   }

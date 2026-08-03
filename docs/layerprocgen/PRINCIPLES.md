@@ -111,18 +111,21 @@ The project is LayerProcGen-**style**, not yet LayerProcGen-**correct**:
   from seed.
 - ✅ Region layer plans above biomes at a larger abstraction scale
   (rule 1's multi-scale planning, in spirit).
-- ❌ Layers run as sequential passes over one big finite **window**, not
-  as independent chunk grids with per-chunk `Create` (violates rules 1,
-  2, 7).
-- ❌ Context comes from "the whole window is in memory", not from
-  declared dependencies with padding (violates rules 4, 5). Window
-  borders are edge cases by construction (violates rule 6).
-- ❌ Crossing a window boundary rebuilds the world monolithically;
-  streaming was attempted (July 2026) as *render slices of the
-  monolithic window* and reverted — that approach is drift by
-  definition: streaming must come from top-dependency-driven chunk
-  lifetimes (rule 7), not from lazily rendering a monolith.
+- ✅ (Aug 2026) **Rendering streams via chunk lifetimes** (rule 7): one
+  render chunk per absolute pillar cell, created/evicted by a focus
+  disc, built ahead of fog range, surviving window recenters.
+- ✅ (Aug 2026) **Windows are rim-exact** (rules 5, 6 in effect):
+  generation runs on a guard-ring padded window (PAD_PC in
+  DungeonGenerator.ts) and only the core ships, so rim special-casing
+  lands in discarded padding. tools/verify-world.ts enforces 100%
+  overlap agreement on X/Z/diagonal shifts as a hard gate.
+- ❌ Layers still run as sequential passes over one (padded) window, not
+  as independent chunk grids with per-chunk `Create` (rules 1, 2) —
+  correctness is now right, the compute shape isn't: each window pays
+  ~2.25× generation for the guard ring, and context is still
+  "whole window in memory" rather than declared per-pass dependencies
+  (rule 4).
 
-The M3 roadmap item ("streamed endless window") is precisely the
-migration from window-passes to true chunked layers. It must be designed
-against this checklist before any code is written.
+Remaining migration (Phase 2 milestone B): restructure passes into
+per-chunk `Create` with per-pass effect-distance padding. The 100% seam
+gate makes that refactor mechanically safe — any drift fails the gate.

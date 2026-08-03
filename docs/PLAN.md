@@ -82,13 +82,20 @@ dependency (`docs/layerprocgen/PRINCIPLES.md`, rule 7):
   Expected: ~60% less meshed geometry and GPU memory, non-blocking
   recenters, pop-in eliminated by construction.
 
-**Phase 2 (later, the big surgery): per-cell GENERATION with dependency
-padding, retiring windows.** The audit showed every violating pass reads
-inputs that are pure fields, so chunks can recompute their own padded input
-rings (CA ~4 tiles, heights ~16) without neighbor-chunk data. Ends with
-windows, recenter, and the grounded-handoff repair deleted, spawn as a pure
-function anchored at world origin, and the seam test tightened from 90% to
-exactly 100%.
+**Phase 2, milestone A — SHIPPED: guard-ring padded generation.** The
+pipeline generates a 6×6-pillar-cell window and crops the center 4×4:
+every rim-special-casing pass still runs, but its damage lands in the
+discarded padding ("input bounds always exceed output bounds" applied to
+the window as a whole). Windows are now RIM-EXACT — the seam test is a
+hard 100% gate on X, Z, and diagonal shifts (was 90%/core-only) — and
+render chunks survive recenters unconditionally: each chunk is built
+once, ever. Cost: ~2.25× generation time (320–560 ms, worker-side).
+
+**Phase 2, milestone B (later): true per-cell generation.** Restructure
+the passes into per-chunk `Create` with per-pass effect-distance padding
+instead of the whole-window guard ring — wins back the 2.25× and retires
+windows, recenter, and the grounded-handoff repair entirely. The 100%
+seam gate makes this refactor safe: any behavioral drift fails the gate.
 
 ## Ideas
 

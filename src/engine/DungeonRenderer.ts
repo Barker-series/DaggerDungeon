@@ -288,8 +288,6 @@ export class DungeonRenderer {
 
   // ── Chunk streaming state ──
   private chunks = new Map<string, RenderChunk>();
-  /** Replacement builds for stale rim chunks, swapped in when complete */
-  private chunkRebuilds = new Map<string, RenderChunk>();
   private chunkWorld: WorldData | null = null;
   /** seed:stack of the adopted world — a change invalidates every chunk */
   private chunkStamp = '';
@@ -367,10 +365,11 @@ export class DungeonRenderer {
     this.buildPipeChamfers(world, this.meshGroup);
   }
 
-  /** Adopt a window as the chunk data source. Existing chunks are
-   * repositioned into the new window's frame. Chunks outside the
-   * retained-core guarantee are queued for a background rebuild — their
-   * old geometry keeps displaying until the replacement completes. */
+  /** Adopt a window as the chunk data source. Windows are RIM-EXACT
+   * (guard-ring padded generation; the 100% seam gate in
+   * tools/verify-world.ts): every window builds bit-identical geometry
+   * for a given absolute cell, so every existing chunk survives a
+   * recenter untouched — only its scene offset shifts. */
   setWindow(world: WorldData): void {
     const stamp = `${world.seed}:${world.levels[0]?.floor ?? 0}`;
     if (stamp !== this.chunkStamp) this.clearChunks();
@@ -382,17 +381,7 @@ export class DungeonRenderer {
         buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround)),
       contours: world.levels.map((l) => buildOrganicContour(l)),
     };
-    // In-flight rebuilds die with the window that sourced them
-    for (const [key, reb] of this.chunkRebuilds) {
-      this.disposeGroup(reb.group);
-      this.chunkRebuilds.delete(key);
-    }
-    for (const chunk of this.chunks.values()) {
-      this.positionChunk(chunk);
-      if (!this.chunkExact(chunk) && this.cellInWindow(chunk.acx, chunk.acz)) {
-        this.chunkRebuilds.set(`${chunk.acx},${chunk.acz}`, this.createChunk(chunk.acx, chunk.acz));
-      }
-    }
+    for (const chunk of this.chunks.values()) this.positionChunk(chunk);
   }
 
   /** Per-frame chunk lifecycle: create chunks entering the build disc,
@@ -421,16 +410,11 @@ export class DungeonRenderer {
       if (this.cellDist(absX, absZ, chunk.acx, chunk.acz) > EVICT_WU) {
         this.disposeGroup(chunk.group);
         this.chunks.delete(key);
-        const reb = this.chunkRebuilds.get(key);
-        if (reb) {
-          this.disposeGroup(reb.group);
-          this.chunkRebuilds.delete(key);
-        }
       }
     }
     const started = performance.now();
     for (;;) {
-      const pending = [...this.chunks.values(), ...this.chunkRebuilds.values()]
+      const pending = [...this.chunks.values()]
         .filter((c) => !c.complete)
         .sort((a, b) =>
           this.cellDist(absX, absZ, a.acx, a.acz) - this.cellDist(absX, absZ, b.acx, b.acz));
@@ -442,10 +426,10 @@ export class DungeonRenderer {
   }
 
   /** Live chunk count and completeness — DEV telemetry */
-  chunkStats(): { chunks: number; complete: number; rebuilding: number } {
+  chunkStats(): { chunks: number; complete: number } {
     let complete = 0;
     for (const c of this.chunks.values()) if (c.complete) complete++;
-    return { chunks: this.chunks.size, complete, rebuilding: this.chunkRebuilds.size };
+    return { chunks: this.chunks.size, complete };
   }
 
   private createChunk(acx: number, acz: number): RenderChunk {
@@ -493,14 +477,6 @@ export class DungeonRenderer {
       if (import.meta.env.DEV) {
         console.debug(`[chunk] ${chunk.acx},${chunk.acz} built in ${chunk.buildMs.toFixed(1)} ms`);
       }
-      const key = `${chunk.acx},${chunk.acz}`;
-      const displayed = this.chunks.get(key);
-      if (displayed && displayed !== chunk) {
-        // Rebuild swap: stale rim geometry leaves only now
-        this.disposeGroup(displayed.group);
-        this.chunkRebuilds.delete(key);
-      }
-      this.chunks.set(key, chunk);
       this.positionChunk(chunk);
       this.meshGroup.add(chunk.group);
     }
@@ -515,28 +491,6 @@ export class DungeonRenderer {
       0,
       (chunk.builtPcz - w.originPcz) * CHUNK_WU,
     );
-  }
-
-  /** True when the chunk's displayed geometry is guaranteed identical to
-   * what the current window would build for its cell: per axis, either
-   * the origin didn't move, or the cell is interior (≥1 cell from the
-   * edge) in BOTH windows — the retained-core band verify-world proves
-   * 100% identical across alignments. */
-  private chunkExact(chunk: RenderChunk): boolean {
-    const w = this.chunkWorld!;
-    const grid = Math.floor(w.levels[0]!.width / CHUNK_TILES);
-    const axis = (built: number, cur: number, ac: number): boolean =>
-      built === cur
-      || (ac >= built + 1 && ac <= built + grid - 2 && ac >= cur + 1 && ac <= cur + grid - 2);
-    return axis(chunk.builtPcx, w.originPcx, chunk.acx)
-      && axis(chunk.builtPcz, w.originPcz, chunk.acz);
-  }
-
-  private cellInWindow(acx: number, acz: number): boolean {
-    const w = this.chunkWorld!;
-    const grid = Math.floor(w.levels[0]!.width / CHUNK_TILES);
-    return acx >= w.originPcx && acx < w.originPcx + grid
-      && acz >= w.originPcz && acz < w.originPcz + grid;
   }
 
   /** Distance from a point to a cell's AABB, absolute world units */
@@ -557,9 +511,7 @@ export class DungeonRenderer {
 
   private clearChunks(): void {
     for (const chunk of this.chunks.values()) this.disposeGroup(chunk.group);
-    for (const reb of this.chunkRebuilds.values()) this.disposeGroup(reb.group);
     this.chunks.clear();
-    this.chunkRebuilds.clear();
     this.needsSyncFill = true;
   }
 
