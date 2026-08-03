@@ -288,6 +288,9 @@ export class DungeonRenderer {
 
   // ── Chunk streaming state ──
   private chunks = new Map<string, RenderChunk>();
+  /** Background replacements for stale border chunks — swapped in when
+   *  complete; the old geometry keeps displaying until then */
+  private chunkRebuilds = new Map<string, RenderChunk>();
   private chunkWorld: WorldData | null = null;
   /** seed:stack of the adopted world — a change invalidates every chunk */
   private chunkStamp = '';
@@ -381,6 +384,54 @@ export class DungeonRenderer {
         buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround)),
       contours: world.levels.map((l) => buildOrganicContour(l)),
     };
+    // Two classes of chunk cannot survive a window adoption unchanged
+    // (both found as walk-through phantom walls in playtest DDSNAPs,
+    // Aug 2026):
+    //  1. MID-BUILD chunks — their remaining quarter jobs hold
+    //     old-window-local tile bounds; run against the adopted window
+    //     they'd bake a neighboring cell's geometry into the chunk.
+    //     They were never in the scene, so they are DROPPED outright.
+    //  2. BORDER chunks (once the origin has moved) — cells on their
+    //     build window's outer ring bake the window-edge sealing
+    //     (beyond-window reads as solid/sky) into their geometry. The
+    //     seal is only correct for the window that built it; surviving
+    //     it plants phantom walls along old window border planes.
+    //     Border cells can sit RIGHT NEXT to the player laterally, so
+    //     dropping them flashes black — instead they are REBUILT in
+    //     the background while the old geometry keeps displaying. The
+    //     only difference between old and new geometry is the seal
+    //     planes themselves (window data is rim-exact), and those are
+    //     always ≥168wu out — beyond the 160wu far plane — so the
+    //     few-frame swap is invisible.
+    // In-flight rebuilds also die here: their job bounds belong to the
+    // window that scheduled them.
+    for (const [key, reb] of this.chunkRebuilds) {
+      this.disposeGroup(reb.group);
+      this.chunkRebuilds.delete(key);
+    }
+    const grid = Math.floor(world.levels[0]!.width / CHUNK_TILES);
+    for (const [key, chunk] of this.chunks) {
+      if (!chunk.complete) {
+        if (import.meta.env.DEV) {
+          console.debug(`[chunk] dropped mid-build ${key} at window adoption`);
+        }
+        this.disposeGroup(chunk.group);
+        this.chunks.delete(key);
+        continue;
+      }
+      const lx = chunk.acx - chunk.builtPcx;
+      const lz = chunk.acz - chunk.builtPcz;
+      const wasBorder = lx === 0 || lz === 0 || lx === grid - 1 || lz === grid - 1;
+      const originMoved = chunk.builtPcx !== world.originPcx || chunk.builtPcz !== world.originPcz;
+      const inWindow = chunk.acx >= world.originPcx && chunk.acx < world.originPcx + grid
+        && chunk.acz >= world.originPcz && chunk.acz < world.originPcz + grid;
+      if (wasBorder && originMoved && inWindow) {
+        if (import.meta.env.DEV) {
+          console.debug(`[chunk] rebuilding border ${key} in background`);
+        }
+        this.chunkRebuilds.set(key, this.createChunk(chunk.acx, chunk.acz));
+      }
+    }
     for (const chunk of this.chunks.values()) this.positionChunk(chunk);
   }
 
@@ -410,11 +461,16 @@ export class DungeonRenderer {
       if (this.cellDist(absX, absZ, chunk.acx, chunk.acz) > EVICT_WU) {
         this.disposeGroup(chunk.group);
         this.chunks.delete(key);
+        const reb = this.chunkRebuilds.get(key);
+        if (reb) {
+          this.disposeGroup(reb.group);
+          this.chunkRebuilds.delete(key);
+        }
       }
     }
     const started = performance.now();
     for (;;) {
-      const pending = [...this.chunks.values()]
+      const pending = [...this.chunks.values(), ...this.chunkRebuilds.values()]
         .filter((c) => !c.complete)
         .sort((a, b) =>
           this.cellDist(absX, absZ, a.acx, a.acz) - this.cellDist(absX, absZ, b.acx, b.acz));
@@ -426,10 +482,10 @@ export class DungeonRenderer {
   }
 
   /** Live chunk count and completeness — DEV telemetry */
-  chunkStats(): { chunks: number; complete: number } {
+  chunkStats(): { chunks: number; complete: number; rebuilding: number } {
     let complete = 0;
     for (const c of this.chunks.values()) if (c.complete) complete++;
-    return { chunks: this.chunks.size, complete };
+    return { chunks: this.chunks.size, complete, rebuilding: this.chunkRebuilds.size };
   }
 
   private createChunk(acx: number, acz: number): RenderChunk {
@@ -477,6 +533,14 @@ export class DungeonRenderer {
       if (import.meta.env.DEV) {
         console.debug(`[chunk] ${chunk.acx},${chunk.acz} built in ${chunk.buildMs.toFixed(1)} ms`);
       }
+      const key = `${chunk.acx},${chunk.acz}`;
+      if (this.chunkRebuilds.get(key) === chunk) {
+        // Border rebuild swap — stale seal geometry leaves only now
+        const displayed = this.chunks.get(key);
+        if (displayed) this.disposeGroup(displayed.group);
+        this.chunkRebuilds.delete(key);
+        this.chunks.set(key, chunk);
+      }
       this.positionChunk(chunk);
       this.meshGroup.add(chunk.group);
     }
@@ -511,7 +575,9 @@ export class DungeonRenderer {
 
   private clearChunks(): void {
     for (const chunk of this.chunks.values()) this.disposeGroup(chunk.group);
+    for (const reb of this.chunkRebuilds.values()) this.disposeGroup(reb.group);
     this.chunks.clear();
+    this.chunkRebuilds.clear();
     this.needsSyncFill = true;
   }
 
