@@ -19,6 +19,7 @@ const BRIGHTNESS_KEY = 'dagger-dungeon-brightness';
 const RENDER_SCALE_KEY = 'dagger-dungeon-render-scale';
 const SENSITIVITY_KEY = 'dagger-dungeon-mouse-sensitivity';
 const PLAYER_SPEED_KEY = 'dagger-dungeon-player-speed';
+const FPS_CAP_KEY = 'dagger-dungeon-fps-cap-60';
 const VISUAL_SETTINGS_KEY = 'dagger-dungeon-visual-settings-v4';
 const DEFAULT_BRIGHTNESS = 1.2;
 const DEFAULT_MOUSE_SENSITIVITY = 1;
@@ -76,6 +77,7 @@ export function GameScreen() {
   const [playerSpeed, setPlayerSpeed] = useState(() =>
     loadSetting(PLAYER_SPEED_KEY, DEFAULT_PLAYER_SPEED),
   );
+  const [fpsCap60, setFpsCap60] = useState(() => localStorage.getItem(FPS_CAP_KEY) === '1');
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -128,6 +130,11 @@ export function GameScreen() {
     engineRef.current?.setPlayerSpeed(playerSpeed);
     localStorage.setItem(PLAYER_SPEED_KEY, String(playerSpeed));
   }, [playerSpeed]);
+
+  useEffect(() => {
+    engineRef.current?.setFpsCap(fpsCap60 ? 60 : 0);
+    localStorage.setItem(FPS_CAP_KEY, fpsCap60 ? '1' : '0');
+  }, [fpsCap60]);
 
   useEffect(() => {
     engineRef.current?.setVisualSettings(visualSettings);
@@ -194,9 +201,11 @@ export function GameScreen() {
     setBrightness(DEFAULT_BRIGHTNESS);
     setMouseSensitivity(DEFAULT_MOUSE_SENSITIVITY);
     setPlayerSpeed(DEFAULT_PLAYER_SPEED);
+    setFpsCap60(false);
     localStorage.setItem(BRIGHTNESS_KEY, String(DEFAULT_BRIGHTNESS));
     localStorage.setItem(SENSITIVITY_KEY, String(DEFAULT_MOUSE_SENSITIVITY));
     localStorage.setItem(PLAYER_SPEED_KEY, String(DEFAULT_PLAYER_SPEED));
+    localStorage.setItem(FPS_CAP_KEY, '0');
   }, []);
 
   const handlePlayClick = useCallback(async () => {
@@ -279,6 +288,8 @@ export function GameScreen() {
           onRenderScaleChange={setRenderScale}
           onMouseSensitivityChange={setMouseSensitivity}
           onPlayerSpeedChange={setPlayerSpeed}
+          fpsCap60={fpsCap60}
+          onFpsCap60Change={setFpsCap60}
           onRestoreDefaults={handleRestoreDefaults}
           onResume={handleResume}
         />

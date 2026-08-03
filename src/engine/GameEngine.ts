@@ -140,6 +140,9 @@ export class GameEngine {
   private urgentPendingWorlds = new Set<string>();
   private readonly maxCachedWorlds = 10;
 
+  /** Frame-limiter period in ms; 0 = present at native refresh */
+  private fpsCapMs = 0;
+
   private world: WorldData | null = null;
   /** Per-level corner-averaged floor fields — physics samples the exact
    *  surfaces the renderer draws */
@@ -599,12 +602,29 @@ export class GameEngine {
     store.setPlayerFacing(Direction.North);
   }
 
+  /** 0 = uncapped (native refresh). Set 60 to skip vsync ticks down to
+   *  a 60 FPS presentation rate on high-refresh displays. */
+  setFpsCap(fps: number): void {
+    this.fpsCapMs = fps > 0 ? 1000 / fps : 0;
+  }
+
   start(): void {
     let fpsFrames = 0;
     let fpsWindowStart = 0;
+    let lastCapTick = 0;
     const loop = (timestamp: number) => {
       if (this.stopped) return;
       this.animFrameId = requestAnimationFrame(loop);
+      if (this.fpsCapMs > 0) {
+        // Frame limiter: skip vsync ticks until a cap period has passed.
+        // The -1ms tolerance stops refresh/cap beat frequencies from
+        // halving the rate; advancing by the period (not the timestamp)
+        // keeps long-run pacing exact, with a snap when we fall behind.
+        if (timestamp - lastCapTick < this.fpsCapMs - 1) return;
+        lastCapTick = timestamp - lastCapTick > this.fpsCapMs * 2
+          ? timestamp
+          : lastCapTick + this.fpsCapMs;
+      }
       this.timer.update(timestamp);
       const dt = Math.min(this.timer.getDelta(), 0.1);
       if (!this.paused) this.update(dt);

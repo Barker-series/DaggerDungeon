@@ -3,10 +3,12 @@ interface SettingsMenuProps {
   renderScale: number;
   mouseSensitivity: number;
   playerSpeed: number;
+  fpsCap60: boolean;
   onBrightnessChange: (value: number) => void;
   onRenderScaleChange: (value: number) => void;
   onMouseSensitivityChange: (value: number) => void;
   onPlayerSpeedChange: (value: number) => void;
+  onFpsCap60Change: (value: boolean) => void;
   onRestoreDefaults: () => void;
   onResume: () => void;
 }
@@ -16,10 +18,12 @@ export function SettingsMenu({
   renderScale,
   mouseSensitivity,
   playerSpeed,
+  fpsCap60,
   onBrightnessChange,
   onRenderScaleChange,
   onMouseSensitivityChange,
   onPlayerSpeedChange,
+  onFpsCap60Change,
   onRestoreDefaults,
   onResume,
 }: SettingsMenuProps) {
@@ -91,6 +95,18 @@ export function SettingsMenu({
             value={playerSpeed}
             onInput={(event) => onPlayerSpeedChange(Number(event.currentTarget.value))}
           />
+        </label>
+
+        <label className="settings-control">
+          <span className="settings-control-row">
+            <span>V-Sync 60 (cap framerate at 60 FPS)</span>
+            <input
+              aria-label="V-Sync 60"
+              type="checkbox"
+              checked={fpsCap60}
+              onChange={(event) => onFpsCap60Change(event.currentTarget.checked)}
+            />
+          </span>
         </label>
 
         <div className="settings-actions">
