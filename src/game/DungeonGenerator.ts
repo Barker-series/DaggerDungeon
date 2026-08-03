@@ -31,7 +31,7 @@ import { assignBiomes } from './dungeon/layer2-biome';
 import { applyFineNoise } from './dungeon/layer1-finenoise';
 import { carveRoadsRegion, cutRoadBlockTops, flattenRoadStreets, suppressRoadPits } from './dungeon/roads-region';
 import { regionAtCell } from './dungeon/region-layer';
-import { connectPermanentTransit, permanentTransitTiles } from './dungeon/layer4-connect';
+import { connectPermanentTransit, permanentTransitTiles, hallwayCells } from './dungeon/layer4-connect';
 import { computeHeightFields, computePitMask, carvePitArches, levelPitDecks, PIT_FLOOR } from './dungeon/layer6-heights';
 import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
@@ -97,7 +97,10 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   );
   const levels: DungeonData[] = [level];
 
-  // ── The column model — built LAST; nothing mutates the world after ──
+  // ── The column model — built from the finished tile pipeline. The
+  // passes below (pillar marry, road plinths, arches, bridges) still
+  // mutate columns AND the level height fields, always in tandem so the
+  // two never desync. After this function returns, nothing mutates. ──
   const columns = buildColumns(levels);
 
   // Pillar columns: footprint tiles are Wall (no spans); the pillar's
@@ -277,11 +280,27 @@ export function generateWorld(opts: GenerateOpts): WorldData {
 
   // ── Bridges: the neighbor-pair pass with the local degree guarantee.
   // Each cell owns its east and south pairs, so every pair is planned
-  // exactly once — and identically from either side in a streamed world. ──
-  const specAt = (cx: number, cz: number): PillarSpec | null => pillars.get(`${cx},${cz}`) ?? null;
+  // exactly once — and identically from either side in a streamed world.
+  //
+  // Planning reads a PADDED pillar field (padding ≥ effect distance):
+  // pair OWNERS need one ring beyond the window so rim pairs exist at
+  // all, and the degree guarantee scans radius 1 around both endpoints
+  // of a pair, so spec LOOKUPS need a second ring. Every window covering
+  // a pair then derives it from the identical full neighborhood; tile
+  // writes below stay clipped to this window and the neighbor window
+  // deterministically emits the rest. ──
+  const pillarsPadded = buildPillarField(
+    stackSeed, -2, -2, pillarGrid + 2, pillarGrid + 2, originPcx, originPcz,
+  );
+  const specAt = (cx: number, cz: number): PillarSpec | null => pillarsPadded.get(`${cx},${cz}`) ?? null;
+  const planningOwners = [...pillarsPadded.values()].filter(
+    (s) => s.cx >= -1 && s.cx < pillarGrid && s.cz >= -1 && s.cz < pillarGrid,
+  );
+  const touchesWindow = (br: BridgeSpec): boolean =>
+    bridgeTiles(br).some(({ tx, tz }) => tx >= 0 && tz >= 0 && tx < GRID_TILES && tz < GRID_TILES);
   const bridges: BridgeSpec[] = [];
-  for (const spec of pillars.values()) {
-    bridges.push(...planOwnedBridges(stackSeed, spec.cx, spec.cz, specAt));
+  for (const spec of planningOwners) {
+    bridges.push(...planOwnedBridges(stackSeed, spec.cx, spec.cz, specAt).filter(touchesWindow));
   }
   // ARCHES: skyline mass over canyon districts, on the pair machinery.
   // (Subway bores are GONE: they were unreachable visual scaffolding —
@@ -290,8 +309,8 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   // infrastructure. planOwnedSubways stays in pillar-bridges, unwired.)
   const subways: BridgeSpec[] = [];
   const arches: BridgeSpec[] = [];
-  for (const spec of pillars.values()) {
-    arches.push(...planOwnedArches(stackSeed, spec.cx, spec.cz, specAt));
+  for (const spec of planningOwners) {
+    arches.push(...planOwnedArches(stackSeed, spec.cx, spec.cz, specAt).filter(touchesWindow));
   }
   for (const ar of arches) {
     for (const { tx, tz, h } of bridgeTiles(ar)) {
@@ -305,7 +324,12 @@ export function generateWorld(opts: GenerateOpts): WorldData {
       columns[tz * GRID_TILES + tx] = carveBridgeIntoColumn(columns[tz * GRID_TILES + tx]!, h, true);
     }
   }
-  for (const br of bridges) {
+  // Carve TOP-DOWN: when a pair stacks two bridges, the upper deck's
+  // end-support pier fills the air column beneath it — carving the
+  // lower deck afterward lets its clearance bore cut a passage through
+  // the pier instead of being buried by it.
+  const carveOrder = [...bridges].sort((p, q) => Math.max(q.yA, q.yB) - Math.max(p.yA, p.yB));
+  for (const br of carveOrder) {
     // Sloped decks step tile to tile; the slab must reach DOWN past the
     // next tread's top or the steps float apart with air slits between.
     const tread = Math.abs(br.yB - br.yA) / GAP_TILES;
@@ -464,6 +488,9 @@ function generateLevel(
     level: 0,
     baseY: 0,
     cellBiomes: snapshotCellBiomes(CELL_GRID_SIZE),
+    cellDebug: getAllCells().map((c) => (
+      { cx: c.cx, cz: c.cz, noise: c.noise, active: c.active, biome: c.biome })),
+    transitCells: [...hallwayCells],
     // Per-cell roads mask — contour/collision must know these are
     // rectilinear plinth districts, not organic cave mass
     roadsCells: Array.from({ length: CELL_GRID_SIZE }, (_, cz) =>

@@ -185,8 +185,22 @@ const siteCache = new Map<string, Site | null>();
 const districtCache = new Map<string, District>();
 const CACHE_MAX = 200_000;
 
+/** Cached values depend on the params object, so it must be part of the
+ *  key — the game uses one constant set, but tools build their own and
+ *  would otherwise collide with it in the same process. */
+const paramsIds = new WeakMap<RoadFieldParams, number>();
+let nextParamsId = 1;
+function paramsId(p: RoadFieldParams): number {
+  let id = paramsIds.get(p);
+  if (id === undefined) {
+    id = nextParamsId++;
+    paramsIds.set(p, id);
+  }
+  return id;
+}
+
 function cachedDistrict(seed: number, dcx: number, dcz: number, p: RoadFieldParams): District {
-  const key = `${seed}:${dcx},${dcz}`;
+  const key = `${paramsId(p)}:${seed}:${dcx},${dcz}`;
   let d = districtCache.get(key);
   if (!d) {
     d = district(seed, dcx, dcz, p);
@@ -197,7 +211,7 @@ function cachedDistrict(seed: number, dcx: number, dcz: number, p: RoadFieldPara
 }
 
 function cachedSite(seed: number, d: District, i: number, j: number, p: RoadFieldParams): Site | null {
-  const key = `${seed}:${d.dcx},${d.dcz}:${i},${j}`;
+  const key = `${paramsId(p)}:${seed}:${d.dcx},${d.dcz}:${i},${j}`;
   let site = siteCache.get(key);
   if (site === undefined) {
     site = siteFor(seed, d, i, j, p);

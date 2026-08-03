@@ -74,6 +74,13 @@ export interface DungeonData {
   /** Per-cell biome snapshot (the global cell map only holds the last
    *  generated level, so each level carries its own) — null = inactive */
   cellBiomes: (BiomeType | null)[][];
+  /** Debug-map snapshot of the generation-time cell map. Generation runs
+   *  in workers with their own module instances, so main-thread reads of
+   *  the cell-map singleton would show a stale window. */
+  cellDebug: { cx: number; cz: number; noise: number; active: boolean; biome: BiomeType }[];
+  /** Cells carved as permanent transit hallways (layer 4 snapshot — same
+   *  worker-isolation reason as cellDebug) */
+  transitCells: string[];
   /** Guaranteed entrance→exit route on this level (debug map) */
   goldenPath: GridPos[];
   /** Pillar footprint tiles. Wall in `tiles`, but STRUCTURAL, not

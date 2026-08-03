@@ -20,7 +20,7 @@
 import type { ColumnSpan } from '../types';
 import { cellSeed, mulberry32 } from './rng';
 import { regionAtCell } from './region-layer';
-import type { PillarSpec, ResolvedSocket } from './pillar-layer';
+import { PILLAR_FACTOR, type PillarSpec, type ResolvedSocket } from './pillar-layer';
 
 const MAX_BRIDGES_PER_PAIR = 2;
 /** Max socket height difference a bridge will slope across. The gap
@@ -154,7 +154,8 @@ export function planOwnedArches(
   const a = at(cx, cz);
   if (!a) return [];
   const out: BridgeSpec[] = [];
-  const district = regionAtCell(worldSeed, cx * 4 + 2, cz * 4 + 2);
+  // Absolute coords — the district must not depend on the window origin
+  const district = regionAtCell(worldSeed, a.acx * PILLAR_FACTOR + 2, a.acz * PILLAR_FACTOR + 2);
   const chance = district === 'canyon' ? ARCH_CHANCE_CANYON : ARCH_CHANCE_ELSE;
   for (const dir of ['east', 'south'] as const) {
     const b = at(dir === 'east' ? cx + 1 : cx, dir === 'south' ? cz + 1 : cz);

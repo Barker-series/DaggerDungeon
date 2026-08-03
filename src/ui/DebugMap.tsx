@@ -1,7 +1,6 @@
 import { useRef, useEffect, useState } from 'react';
 import { useGameStore } from '../store/gameStore';
-import { getAllCells, tileBiome, type DungeonCell } from '../game/dungeon/cells';
-import { hallwayCells } from '../game/dungeon/layer4-connect';
+import { tileBiome } from '../game/dungeon/cells';
 import { PIT_LEVEL } from '../game/dungeon/heightfield';
 import { sliceAt } from '../game/mapslice';
 import { PILLAR_FACTOR } from '../game/dungeon/pillar-layer';
@@ -89,7 +88,10 @@ export function DebugMap() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const cells = getAllCells();
+    // Snapshots carried on the level — the generation-time singletons
+    // live in the worker's module instance, not this thread's
+    const cells = dungeon?.cellDebug ?? [];
+    const transitCells = new Set(dungeon?.transitCells ?? []);
     if (cells.length === 0) return;
 
     // Find grid bounds
@@ -110,7 +112,7 @@ export function DebugMap() {
     const cellTileSize = 14;
 
     // Build cell lookup (used by both tile and cell views)
-    const cellMap = new Map<string, DungeonCell>();
+    const cellMap = new Map<string, (typeof cells)[number]>();
     for (const cell of cells) {
       cellMap.set(`${cell.cx},${cell.cz}`, cell);
     }
@@ -317,7 +319,7 @@ export function DebugMap() {
             break;
           }
           case 'content': {
-            const isTransit = hallwayCells.has(`${cell.cx},${cell.cz}`);
+            const isTransit = transitCells.has(`${cell.cx},${cell.cz}`);
             if (isTransit) {
               color = '#4a3a1a';
               label = 'TRANSIT';
@@ -501,7 +503,7 @@ export function DebugMap() {
     const stats = {
       total: cells.length,
       active: cells.filter((c) => c.active).length,
-      transitCells: hallwayCells.size,
+      transitCells: transitCells.size,
       pillars: pillarSpecs.length,
       elevators: pillarSpecs.filter((p) => p.elevator).length,
       avgHeight: pillarSpecs.length

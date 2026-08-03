@@ -13,6 +13,7 @@ import { tileBiome } from '../game/dungeon/cells';
 import { DungeonBot } from '../bot/DungeonBot';
 import { useGameStore } from '../store/gameStore';
 import { TileType, Direction, TILE_SIZE, EYE_HEIGHT, ABYSS_FLOOR } from '../game/types';
+import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
 import type { DungeonData, WorldData } from '../game/types';
 import type { WorldWorkerRequest } from '../game/world-worker';
 import {
@@ -21,6 +22,10 @@ import {
   type RenderDebugMode,
 } from './PostProcessing';
 import { copyText } from '../utils/copyText';
+
+/** One pillar cell in world units (56 tiles × 3 wu) — the window
+ *  recenter/prefetch lattice */
+const PCELL = PILLAR_CELL_TILES * TILE_SIZE;
 
 const MOVE_SPEED = 7;
 const SPRINT_MULT = 1.6;
@@ -481,7 +486,6 @@ export class GameEngine {
    * direction changes. The exact next window gets a dedicated worker lane
    * well before the recenter threshold. */
   private prefetchApproachingWindow(stack: number): void {
-    const PCELL = 168;
     const margin = PCELL * 0.65;
     const pos = this.gridCamera.position;
     let dx = 0;
@@ -575,7 +579,6 @@ export class GameEngine {
    *  (v1: a full-window rebuild — a short hitch at each crossing.) */
   private recenterWindow(): void {
     if (!this.world) return;
-    const PCELL = 168; // pillar cell in wu (56 tiles * 3)
     const pos = this.gridCamera.position;
     let shiftX = 0;
     let shiftZ = 0;
