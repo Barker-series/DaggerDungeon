@@ -59,28 +59,20 @@ The **column model** (`src/game/dungeon/columns.ts`) is the single source of
 truth: per-(x,z) sorted AIR spans. Renderer faces, physics, and agents all
 derive from span differences. If it isn't in the columns, it doesn't exist.
 
-## Next Up (committed — Streaming v2, redesigned after the July failure)
+## Next Up (Streaming v2 — Phases 1 and 2A SHIPPED, milestone B remains)
 
-**Render chunks (Phase 1).** The first disc-streaming attempt (July 2026,
-reverted) lazily built window-local slices of the monolith with no
-build-ahead guarantee — slices entered view before they were built (black
-pop-in) and every recenter threw the whole disc away. The redesign follows
-the LayerProcGen rule that streaming = chunk lifetimes driven by a focus
-dependency (`docs/layerprocgen/PRINCIPLES.md`, rule 7):
-
-- **Chunk = one pillar cell (56 tiles / 168wu), keyed by ABSOLUTE cell
-  coords.** On recenter, chunks in the retained core survive (verify-world
-  proves that band 100% identical across window alignments) — only their
-  scene offset shifts. Rim chunks rebuild while their old geometry keeps
-  displaying until the swap. No full-scene teardown: the recenter hitch and
-  recenter pop die together.
-- **Disc top-dependency with a hard invariant:** a chunk must be FULLY
-  built before it can enter fog range. Build radius = fog plane + margin,
-  where the margin is set from MEASURED per-cell build times × max travel
-  speed, not hope. Evict radius one cell beyond build.
-- Generation stays whole-window in the workers (seam-proven, untouched).
-  Expected: ~60% less meshed geometry and GPU memory, non-blocking
-  recenters, pop-in eliminated by construction.
+**Phase 1 — SHIPPED (Aug 2026): render chunks.** One chunk per ABSOLUTE
+pillar cell (56 tiles / 168wu), created inside a 210wu build disc, built
+in quarter-cell jobs under an 8ms frame budget, in the scene only when
+COMPLETE, evicted past 260wu. Streaming = chunk lifetimes driven by a
+focus dependency (`docs/layerprocgen/PRINCIPLES.md`, rule 7). Measured:
+~11 chunks live while traveling (vs a whole window + 4 cached prepared
+windows before), crossings adopt in 37–73ms with no scene teardown.
+Post-ship playtesting found two chunk-survival bugs (walk-through
+phantom walls), both fixed: mid-build chunks are dropped at window
+adoption (stale job bounds), and border chunks background-rebuild with
+their old geometry displayed until the swap (their baked window-edge
+sealing is only valid for the window that built it).
 
 **Phase 2, milestone A — SHIPPED: guard-ring padded generation.** The
 pipeline generates a 6×6-pillar-cell window and crops the center 4×4:
@@ -189,9 +181,6 @@ explicitly a guess until the day it's real work.
   GLBs, and a loader/instancing path that marries authored modules to
   deterministic placement without generation ever depending on mesh contents.
   Prefer reusable authored/CC0 assets where license, scale, and topology fit.
-- **Long-distance rail.** Real regional rail — routes, stations, trains —
-  replacing the deleted subway-bore scaffolding someday. Everything beyond that
-  sentence is guessing; spec it when it's actually next.
 - **Vault stamping (Zorbus prefabs)** — likely a future workhorse: parse the
   CC0 zorbus_vaults ASCII shapes into a stamp library; dungeon/crypt cells
   deterministically pick-and-stamp per cellSeed (clipped to cell bounds,
@@ -297,9 +286,11 @@ explicitly a guess until the day it's real work.
   catacomb wall art is the seeded art system in its creepiest register;
   hand-saw tool marks are a bump story; old-cut rock vs newer reinforcement
   patches give two-material walls; flooded transparent pools and multi-level
-  sight-holes for verticality. Depth-strata material banding (see Next Up)
-  is this stratum's signature look: the walls show the eras the machines
-  cut through.
+  sight-holes for verticality. Depth-strata material banding would be this
+  stratum's signature look — the walls showing the eras the machines cut
+  through. (A first banding attempt was reverted July 2026 as random
+  altitude bands; done right it's a materials/texture pass, not luminance
+  noise.)
 - **Audio direction** (ref: Von Hohenheim, "Silicon Soul" — a literal BLAME!
   tribute album; CC BY-NC-ND so REFERENCE ONLY as-is, though a separate game
   license is one flattering email away; July 31 2026). Full palette,
@@ -364,11 +355,13 @@ explicitly a guess until the day it's real work.
 - Straddler crowns flatten their flight (sheltered landing); interior pillars
   keep attics; fully-outside pillars open to sky. If a stair "ends in a wall",
   suspect a new interaction with this three-way rule.
-- Bloom, neutral contrast/saturation, and vignette are the only retained
-  post-process controls. Homemade film grain and GTAO were removed after visual
-  validation failed. New effects require researched parameter semantics,
-  neutral defaults, useful bounded ranges, and in-game min/default/max testing
-  before they appear in the Visual Lab.
+- Post-process controls: bloom, neutral contrast/saturation, vignette, and
+  (since Aug 2026) SSAO via GTAOPass — user-validated defaults intensity
+  0.50 / radius 1.0, radius floored at 0.3 to dodge the self-occlusion
+  degenerate zone, sprites excluded from the AO prepass. Homemade film
+  grain stays removed. New effects require researched parameter semantics,
+  neutral defaults, useful bounded ranges, and in-game min/default/max
+  testing before they appear in the Visual Lab.
 
 ## Working Agreements
 - Playtest loop: user plays, F8-marks geometry, sends DDSNAP strings;
