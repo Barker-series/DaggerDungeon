@@ -12,6 +12,7 @@ export function HUD() {
   const dungeon = useGameStore((s) => s.dungeon);
   const world = useGameStore((s) => s.world);
   const playerPos = useGameStore((s) => s.playerPos);
+  const fps = useGameStore((s) => s.fps);
 
   // Absolute depth into the megastructure, counting every level of every stack
   const depth = floor + (level ?? 0);
@@ -37,6 +38,7 @@ export function HUD() {
           <span>Seed {seed}</span>
           <span>Biome {biome}</span>
           <span>Region {region}</span>
+          <span>{fps} FPS</span>
         </div>
       </div>
       <div className="hud-crosshair">+</div>

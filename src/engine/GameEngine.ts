@@ -600,6 +600,8 @@ export class GameEngine {
   }
 
   start(): void {
+    let fpsFrames = 0;
+    let fpsWindowStart = 0;
     const loop = (timestamp: number) => {
       if (this.stopped) return;
       this.animFrameId = requestAnimationFrame(loop);
@@ -607,6 +609,15 @@ export class GameEngine {
       const dt = Math.min(this.timer.getDelta(), 0.1);
       if (!this.paused) this.update(dt);
       this.postProcessing.render(dt);
+      // FPS: count real presented frames, publish twice a second
+      fpsFrames++;
+      if (fpsWindowStart === 0) fpsWindowStart = timestamp;
+      const elapsed = timestamp - fpsWindowStart;
+      if (elapsed >= 500) {
+        useGameStore.getState().setFps(Math.round((fpsFrames * 1000) / elapsed));
+        fpsFrames = 0;
+        fpsWindowStart = timestamp;
+      }
     };
     // Store the FIRST frame's id too — stop() before the first frame fires
     // (React StrictMode does exactly this) must not leave a zombie loop
@@ -1230,6 +1241,17 @@ export class GameEngine {
    *  only way back from a bottomless fall) */
   private respawn(): void {
     if (!this.world) return;
+    // The run has ONE respawn point: the original spawn of window (0,0)
+    // for this seed. Each window recomputes its own entrance, so
+    // respawning to the CURRENT window's entrance would make the respawn
+    // point drift as the player travels. Window (0,0) is deterministic
+    // per seed, so returning to it always lands on the same spot.
+    // (A set-respawn mechanic can move this later.)
+    if (this.originPcx !== 0 || this.originPcz !== 0) {
+      this.originPcx = 0;
+      this.originPcz = 0;
+      this.buildWindow(useGameStore.getState().currentFloor);
+    }
     this.teleport(this.world.levels[0]!.entrance.x, this.world.levels[0]!.entrance.y, undefined, 0);
     this.bot.reset();
   }

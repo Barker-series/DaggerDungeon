@@ -26,6 +26,10 @@ export interface GameState {
   // ── Auto-play ──
   autoPlay: boolean;
 
+  // ── Telemetry ──
+  /** Smoothed frames-per-second, published by the engine ~2x/second */
+  fps: number;
+
   // ── Actions ──
   setScreen: (s: GameState['screen']) => void;
   setSeed: (seed: number) => void;
@@ -37,6 +41,7 @@ export interface GameState {
   setCurrentLevel: (level: number) => void;
   setCurrentFloor: (f: number) => void;
   toggleAutoPlay: () => void;
+  setFps: (fps: number) => void;
   startRun: () => void;
   resetRun: () => void;
 }
@@ -53,6 +58,7 @@ export const useGameStore = create<GameState>((set) => ({
   currentLevel: 0,
   currentFloor: 1,
   autoPlay: false,
+  fps: 0,
 
   setScreen: (screen) => set({ screen }),
   setSeed: (seed) => set({ seed }),
@@ -66,6 +72,7 @@ export const useGameStore = create<GameState>((set) => ({
     set((s) => ({ currentLevel, dungeon: s.world?.levels[currentLevel] ?? null })),
   setCurrentFloor: (currentFloor) => set({ currentFloor }),
   toggleAutoPlay: () => set((s) => ({ autoPlay: !s.autoPlay })),
+  setFps: (fps) => set({ fps }),
 
   startRun: () =>
     set({
