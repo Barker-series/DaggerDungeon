@@ -139,6 +139,19 @@ explicitly a guess until the day it's real work.
   positions derived from absolute time + line topology (deterministic
   schedules so all windows agree where the train is).
 
+- **Light pop while traveling (KNOWN ISSUE, parked Aug 3 2026).** Subtle
+  shading refresh/pop during travel, user-visible, two mechanisms: (1) the
+  light pool is torn down and re-placed at every window crossing — most
+  lights land back identically but window-edge placement quirks can make
+  one appear/vanish in a frame; (2) nearest-K culling over the 16-light
+  pool reassigns INSTANTLY as the player moves — a light can snap off/on
+  with no crossing at all. Fixes, in order of size: (a) fade lights
+  in/out over a fraction of a second instead of snapping (~20 lines in
+  LightingSystem.update; softens both mechanisms); (b) persistent
+  lighting — key lights by absolute position like the render chunks and
+  diff at adoption instead of clear()+setup() (kills the crossing pop at
+  the source; the "lighting stops being dumb" refactor). Recommended
+  order: fade first, persistence only if pops remain visible.
 - **Demystification.** The path from here to "usable like a terrain
   generator": name and document the core concepts in plain language (columns,
   layers, ownership, seam doctrine), grow `world-reference.html` into the
