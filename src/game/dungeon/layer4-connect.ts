@@ -3,19 +3,54 @@
  *
  * The old implementation connected islands by flood-filling the complete
  * temporary window. Those corridors changed when the window moved. This layer
- * instead gives every absolute pillar cell a stable hub and four stable shared
- * sockets. Each cell routes and publishes only inside its own 56×56-tile
- * bounds, then attaches every local floor component to that permanent network.
+ * instead gives every absolute pillar cell four stable shared sockets. Each
+ * cell routes and publishes only inside its own 56×56-tile bounds, then
+ * attaches every local floor component to that permanent network.
+ *
+ * TRANSIT v2 (Aug 2026) — route SHAPING. The v1 look was pure algorithm:
+ * a hub in a random corner, four uniform-cost A* spokes (L-legs and
+ * staircases), and every isolated component carving its own private route
+ * to the hub (entrance clusters that merged two cells later). v2 keeps the
+ * exact connectivity guarantee and the same sockets but changes how routes
+ * are found:
+ *   - WEIGHTED A*: step cost carries a seeded noise field (the canonical
+ *     LayerProcGen natural-paths technique — corridors wander like they
+ *     were bored through weakness, docs/layerprocgen/ContextualGeneration.md),
+ *     a turn penalty (long straight runs, deliberate bends, no staircases),
+ *     and a strong discount for stepping on EXISTING transit — later routes
+ *     are attracted into earlier tunnels and merge instead of paralleling.
+ *   - THROUGH-ROUTES: the backbone is west↔east and north↔south paths
+ *     (the reuse discount fuses them where they meet), not four spokes
+ *     radiating from a corner. Cells read as places a tunnel passes
+ *     through. Sockets that a failed through-route stranded fall back to
+ *     a spoke toward the nearest transit (or a central hub, worst case).
+ *   - NEAREST ATTACHMENT: components connect to the nearest existing
+ *     transit tile (multi-source BFS picks the exit), not to the hub —
+ *     a tree instead of a star, one entrance where there were three.
+ * Everything stays clipped to the owning cell: same effect distance, same
+ * window-stability. verify-world's unreachable=0 and the 100% seam gate
+ * are the ratchets.
  */
 
-import { Path } from 'rot-js';
 import { RoomType, TileType, type GridPos, type RoomData } from '../types';
 import { cellSeed, mulberry32 } from './rng';
+import { sampleNoise } from './noise';
 import { PILLAR_CELL_TILES } from './pillar-layer';
 
 const TRANSIT_SALT = 0x4d335431;
 const HALLWAY_HALF_WIDTH = 1;
 const SOCKET_MARGIN = 6;
+
+// ── Route-shaping tuning ──
+/** How strongly the wander field bends a route (step cost 1..1+W) */
+const NOISE_WEIGHT = 2.5;
+/** Wander feature size in tiles */
+const NOISE_SCALE = 9;
+/** Cost added when a step changes direction — buys straight runs */
+const TURN_PENALTY = 2.0;
+/** Step-cost multiplier on existing transit — routes merge into tunnels */
+const REUSE_DISCOUNT = 0.3;
+const WANDER_SALT = TRANSIT_SALT + 77;
 
 /** Dungeon-cell keys touched by transit, consumed by the debug map. */
 export const hallwayCells = new Set<string>();
@@ -84,44 +119,182 @@ function carveSpot(
   }
 }
 
-function carveOwnedRoute(
-  tiles: TileType[][],
-  rooms: RoomData[],
-  from: GridPos,
-  to: GridPos,
-  x0: number,
-  z0: number,
-  x1: number,
-  z1: number,
-  cellTileSize: number,
-  locked?: boolean[][],
-): boolean {
-  const passable = (x: number, z: number): boolean =>
-    x >= x0 && z >= z0 && x < x1 && z < z1 && !locked?.[z]?.[x];
-  const astar = new Path.AStar(to.x, to.y, passable, { topology: 4 });
-  const route: GridPos[] = [];
-  astar.compute(from.x, from.y, (x, z) => route.push({ x, y: z }));
-  if (route.length === 0) return false;
+/** Per-cell routing context: bounds, wander field, bookkeeping. */
+interface CellCtx {
+  tiles: TileType[][];
+  rooms: RoomData[];
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+  cellTileSize: number;
+  locked?: boolean[][];
+  /** Precomputed wander noise per local tile (absolute-coord seeded) */
+  wander: Float64Array;
+}
 
+const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const;
+
+/**
+ * Weighted A* over the cell: noise wander + turn penalty + transit-reuse
+ * discount. State includes the entry direction so turning has a price.
+ * Heuristic = manhattan × cheapest possible step (admissible).
+ */
+function findWeightedRoute(ctx: CellCtx, from: GridPos, to: GridPos): GridPos[] | null {
+  const { x0, z0, x1, z1, locked, wander } = ctx;
+  const w = x1 - x0;
+  const h = z1 - z0;
+  const states = w * h * 5;
+  const gScore = new Float64Array(states).fill(Infinity);
+  const cameFrom = new Int32Array(states).fill(-1);
+  const stateOf = (x: number, z: number, dir: number): number =>
+    ((z - z0) * w + (x - x0)) * 5 + dir;
+  const minStep = REUSE_DISCOUNT;
+
+  // Binary min-heap of [f, state]
+  const heap: number[] = [];
+  const push = (f: number, s: number): void => {
+    heap.push(f, s);
+    let i = heap.length / 2 - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (heap[p * 2]! <= heap[i * 2]!) break;
+      const tf = heap[p * 2]!, ts = heap[p * 2 + 1]!;
+      heap[p * 2] = heap[i * 2]!; heap[p * 2 + 1] = heap[i * 2 + 1]!;
+      heap[i * 2] = tf; heap[i * 2 + 1] = ts;
+      i = p;
+    }
+  };
+  const pop = (): [number, number] | null => {
+    if (heap.length === 0) return null;
+    const top: [number, number] = [heap[0]!, heap[1]!];
+    const lastS = heap.pop()!;
+    const lastF = heap.pop()!;
+    if (heap.length > 0) {
+      heap[0] = lastF; heap[1] = lastS;
+      let i = 0;
+      const n = heap.length / 2;
+      for (;;) {
+        const l = i * 2 + 1, r = l + 1;
+        let m = i;
+        if (l < n && heap[l * 2]! < heap[m * 2]!) m = l;
+        if (r < n && heap[r * 2]! < heap[m * 2]!) m = r;
+        if (m === i) break;
+        const tf = heap[m * 2]!, ts = heap[m * 2 + 1]!;
+        heap[m * 2] = heap[i * 2]!; heap[m * 2 + 1] = heap[i * 2 + 1]!;
+        heap[i * 2] = tf; heap[i * 2 + 1] = ts;
+        i = m;
+      }
+    }
+    return top;
+  };
+
+  const start = stateOf(from.x, from.y, 4);
+  gScore[start] = 0;
+  push((Math.abs(from.x - to.x) + Math.abs(from.y - to.y)) * minStep, start);
+
+  let goalState = -1;
+  for (;;) {
+    const next = pop();
+    if (!next) break;
+    const [, s] = next;
+    const dir = s % 5;
+    const cell = (s - dir) / 5;
+    const x = x0 + (cell % w);
+    const z = z0 + Math.floor(cell / w);
+    if (x === to.x && z === to.y) { goalState = s; break; }
+    const g = gScore[s]!;
+    for (let d = 0; d < 4; d++) {
+      const nx = x + DIRS[d]![0];
+      const nz = z + DIRS[d]![1];
+      if (nx < x0 || nz < z0 || nx >= x1 || nz >= z1 || locked?.[nz]?.[nx]) continue;
+      const onTransit = permanentTransitTiles.has(`${nx},${nz}`);
+      let step = (1 + NOISE_WEIGHT * wander[(nz - z0) * w + (nx - x0)]!)
+        * (onTransit ? REUSE_DISCOUNT : 1);
+      if (dir !== 4 && d !== dir) step += TURN_PENALTY;
+      const ns = stateOf(nx, nz, d);
+      const ng = g + step;
+      if (ng >= gScore[ns]!) continue;
+      gScore[ns] = ng;
+      cameFrom[ns] = s;
+      push(ng + (Math.abs(nx - to.x) + Math.abs(nz - to.y)) * minStep, ns);
+    }
+  }
+  if (goalState < 0) return null;
+
+  const route: GridPos[] = [];
+  for (let s = goalState; s >= 0; s = cameFrom[s]!) {
+    const dir = s % 5;
+    const cell = (s - dir) / 5;
+    route.push({ x: x0 + (cell % w), y: z0 + Math.floor(cell / w) });
+  }
+  route.reverse();
+  return route;
+}
+
+/** Carve a weighted route and record its hallway room. */
+function carveRoute(ctx: CellCtx, from: GridPos, to: GridPos): boolean {
+  const route = findWeightedRoute(ctx, from, to);
+  if (!route) return false;
   let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
   for (const p of route) {
-    carveSpot(tiles, p.x, p.y, x0, z0, x1, z1, cellTileSize, locked);
+    carveSpot(ctx.tiles, p.x, p.y, ctx.x0, ctx.z0, ctx.x1, ctx.z1, ctx.cellTileSize, ctx.locked);
     minX = Math.min(minX, p.x);
     minZ = Math.min(minZ, p.y);
     maxX = Math.max(maxX, p.x);
     maxZ = Math.max(maxZ, p.y);
   }
-  rooms.push({
+  ctx.rooms.push({
     center: { x: Math.floor((minX + maxX) / 2), y: Math.floor((minZ + maxZ) / 2) },
-    left: Math.max(x0, minX - HALLWAY_HALF_WIDTH),
-    top: Math.max(z0, minZ - HALLWAY_HALF_WIDTH),
-    width: Math.min(x1 - 1, maxX + HALLWAY_HALF_WIDTH) - Math.max(x0, minX - HALLWAY_HALF_WIDTH) + 1,
-    height: Math.min(z1 - 1, maxZ + HALLWAY_HALF_WIDTH) - Math.max(z0, minZ - HALLWAY_HALF_WIDTH) + 1,
+    left: Math.max(ctx.x0, minX - HALLWAY_HALF_WIDTH),
+    top: Math.max(ctx.z0, minZ - HALLWAY_HALF_WIDTH),
+    width: Math.min(ctx.x1 - 1, maxX + HALLWAY_HALF_WIDTH) - Math.max(ctx.x0, minX - HALLWAY_HALF_WIDTH) + 1,
+    height: Math.min(ctx.z1 - 1, maxZ + HALLWAY_HALF_WIDTH) - Math.max(ctx.z0, minZ - HALLWAY_HALF_WIDTH) + 1,
     ceilingHeight: 3,
     type: RoomType.Combat,
     doors: [],
   });
   return true;
+}
+
+/**
+ * Multi-source BFS from every transit tile in the cell, over unlocked
+ * tiles (routes may carve walls). Returns per-tile distance and the
+ * nearest transit tile, or null when the cell has no transit yet.
+ */
+function transitField(ctx: CellCtx): { dist: Int32Array; nearest: Int32Array } | null {
+  const { x0, z0, x1, z1, locked } = ctx;
+  const w = x1 - x0;
+  const h = z1 - z0;
+  const dist = new Int32Array(w * h).fill(-1);
+  const nearest = new Int32Array(w * h).fill(-1);
+  const queue: number[] = [];
+  for (let z = z0; z < z1; z++) {
+    for (let x = x0; x < x1; x++) {
+      if (!permanentTransitTiles.has(`${x},${z}`)) continue;
+      const i = (z - z0) * w + (x - x0);
+      dist[i] = 0;
+      nearest[i] = i;
+      queue.push(i);
+    }
+  }
+  if (queue.length === 0) return null;
+  for (let head = 0; head < queue.length; head++) {
+    const i = queue[head]!;
+    const x = x0 + (i % w);
+    const z = z0 + Math.floor(i / w);
+    for (const [dx, dz] of DIRS) {
+      const nx = x + dx;
+      const nz = z + dz;
+      if (nx < x0 || nz < z0 || nx >= x1 || nz >= z1 || locked?.[nz]?.[nx]) continue;
+      const ni = (nz - z0) * w + (nx - x0);
+      if (dist[ni] !== -1) continue;
+      dist[ni] = dist[i]! + 1;
+      nearest[ni] = nearest[i]!;
+      queue.push(ni);
+    }
+  }
+  return { dist, nearest };
 }
 
 function localComponents(
@@ -144,7 +317,7 @@ function localComponents(
       for (let head = 0; head < queue.length; head++) {
         const p = queue[head]!;
         component.push(p);
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        for (const [dx, dz] of DIRS) {
           const nx = p.x + dx;
           const nz = p.y + dz;
           if (nx < x0 || nz < z0 || nx >= x1 || nz >= z1 || tiles[nz]![nx] === TileType.Wall) continue;
@@ -187,48 +360,75 @@ export function connectPermanentTransit(
       const z1 = Math.min(gridTiles, z0 + PILLAR_CELL_TILES);
       const apx = originPcx + pcx;
       const apz = originPcz + pcz;
+      const w = x1 - x0;
+      const h = z1 - z0;
 
-      // The corner choice is cell-local and permanent; keeping the hub away
-      // from the central kebab leaves four broad routing channels.
-      const hubRng = mulberry32(cellSeed(apx, apz, worldSeed, TRANSIT_SALT + 9));
-      const corner = Math.floor(hubRng() * 4);
-      const inset = 8;
-      const hubTargetX = corner === 0 || corner === 3 ? x0 + inset : x1 - 1 - inset;
-      const hubTargetZ = corner < 2 ? z0 + inset : z1 - 1 - inset;
-      const hub = nearestUnlocked(hubTargetX, hubTargetZ, x0, z0, x1, z1, locked);
-      if (!hub) continue;
+      // Wander field sampled at ABSOLUTE tile coords — identical from
+      // every window that covers this cell
+      const wander = new Float64Array(w * h);
+      const absX0 = (originPcx * PILLAR_CELL_TILES) + x0;
+      const absZ0 = (originPcz * PILLAR_CELL_TILES) + z0;
+      for (let z = 0; z < h; z++) {
+        for (let x = 0; x < w; x++) {
+          wander[z * w + x] = sampleNoise(absX0 + x, absZ0 + z, worldSeed + WANDER_SALT, NOISE_SCALE);
+        }
+      }
+      const ctx: CellCtx = { tiles, rooms, x0, z0, x1, z1, cellTileSize, locked, wander };
 
       const westOffset = transitSocketOffset(worldSeed, apx - 1, apz, 'east');
       const eastOffset = transitSocketOffset(worldSeed, apx, apz, 'east');
       const northOffset = transitSocketOffset(worldSeed, apx, apz - 1, 'south');
       const southOffset = transitSocketOffset(worldSeed, apx, apz, 'south');
-      const socketTargets: GridPos[] = [
-        { x: x0, y: z0 + westOffset },
-        { x: x1 - 1, y: z0 + eastOffset },
-        { x: x0 + northOffset, y: z0 },
-        { x: x0 + southOffset, y: z1 - 1 },
-      ];
-      for (const target of socketTargets) {
-        const socket = nearestUnlocked(target.x, target.y, x0, z0, x1, z1, locked);
-        if (socket) carveOwnedRoute(tiles, rooms, hub, socket, x0, z0, x1, z1, cellTileSize, locked);
+      const west = nearestUnlocked(x0, z0 + westOffset, x0, z0, x1, z1, locked);
+      const east = nearestUnlocked(x1 - 1, z0 + eastOffset, x0, z0, x1, z1, locked);
+      const north = nearestUnlocked(x0 + northOffset, z0, x0, z0, x1, z1, locked);
+      const south = nearestUnlocked(x0 + southOffset, z1 - 1, x0, z0, x1, z1, locked);
+
+      // Backbone: two through-routes. The transit-reuse discount fuses
+      // the second into the first where they meet.
+      if (west && east) carveRoute(ctx, west, east);
+      if (north && south) carveRoute(ctx, north, south);
+
+      // Any socket a failed/missing through-route left stranded gets a
+      // spoke to the nearest transit — or, worst case, a central hub.
+      const strandedTargets = [west, east, north, south].filter((s): s is GridPos =>
+        s !== null && !permanentTransitTiles.has(`${s.x},${s.y}`));
+      if (strandedTargets.length > 0) {
+        let field = transitField(ctx);
+        for (const socket of strandedTargets) {
+          if (permanentTransitTiles.has(`${socket.x},${socket.y}`)) continue;
+          let target: GridPos | null = null;
+          if (field) {
+            const ni = field.nearest[(socket.y - z0) * w + (socket.x - x0)]!;
+            if (ni >= 0) target = { x: x0 + (ni % w), y: z0 + Math.floor(ni / w) };
+          }
+          target ??= nearestUnlocked(
+            x0 + Math.floor(w / 2), z0 + Math.floor(h / 2), x0, z0, x1, z1, locked,
+          );
+          if (target && carveRoute(ctx, socket, target)) field = transitField(ctx);
+        }
       }
 
-      // Attach each remaining local component. Re-evaluate after the backbone
-      // carve; one representative per component is sufficient because all
-      // routes terminate on the hub component.
+      // Attach each local floor component to the NEAREST transit tile —
+      // a tree, not a star: one entrance where v1 carved three.
+      const field = transitField(ctx);
+      if (!field) continue;
       const components = localComponents(tiles, x0, z0, x1, z1);
       for (const component of components) {
-        if (component.some((p) => p.x === hub.x && p.y === hub.y)) continue;
-        let nearest = component[0]!;
-        let nearestDistance = Infinity;
+        if (component.some((p) => permanentTransitTiles.has(`${p.x},${p.y}`))) continue;
+        let exit = component[0]!;
+        let exitDist = Infinity;
         for (const p of component) {
-          const distance = Math.abs(p.x - hub.x) + Math.abs(p.y - hub.y);
-          if (distance < nearestDistance) {
-            nearest = p;
-            nearestDistance = distance;
+          const d = field.dist[(p.y - z0) * w + (p.x - x0)]!;
+          if (d >= 0 && d < exitDist) {
+            exit = p;
+            exitDist = d;
           }
         }
-        carveOwnedRoute(tiles, rooms, hub, nearest, x0, z0, x1, z1, cellTileSize, locked);
+        if (!Number.isFinite(exitDist)) continue;
+        const ni = field.nearest[(exit.y - z0) * w + (exit.x - x0)]!;
+        const target = { x: x0 + (ni % w), y: z0 + Math.floor(ni / w) };
+        carveRoute(ctx, exit, target);
       }
     }
   }

@@ -60,6 +60,10 @@ const MS_TABLE: number[][][] = [
 /** Is the tile in an organic-biome cell, per a level's biome snapshot */
 export function isOrganicTileIn(cellBiomes: (BiomeType | null)[][], tx: number, tz: number): boolean {
   const biome = tileBiome(cellBiomes, tx, tz);
+  // null (transit pseudo-biome) stays NON-organic: flipping it to
+  // contour-capable reclassified bore walls as soft and un-sealed
+  // tunnel ceilings (tunnels opened to sky — Aug 2026). Transit wall
+  // smoothing needs its own dedicated treatment, not this predicate.
   return biome ? isOrganicBiome(biome) : false;
 }
 
