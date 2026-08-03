@@ -398,11 +398,6 @@ export class GameEngine {
     }
     this.renderPreparing = true;
     this.activeRenderKey = next.key;
-    // Entry edge for disc streaming: which side of this neighbor window
-    // the player will cross in from. Diagonals/unknown build everything.
-    const edx = next.world.originPcx - this.originPcx;
-    const edz = next.world.originPcz - this.originPcz;
-    const entryEdge = Math.abs(edx) + Math.abs(edz) === 1 ? { dx: edx, dz: edz } : undefined;
     const preparation = this.dungeonRenderer.prepare(next.world, (prepared) => {
       if (this.stopped) {
         prepared.cancelled = true;
@@ -433,7 +428,7 @@ export class GameEngine {
       this.activeRenderPreparation = null;
       if (import.meta.env.DEV) console.debug(`[stream] geometry ready ${next.key}`);
       this.prepareNextRender();
-    }, entryEdge);
+    });
     this.activeRenderPreparation = preparation;
   }
 
@@ -553,16 +548,7 @@ export class GameEngine {
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
     this.contours = this.world.levels.map((l) => buildOrganicContour(l));
     markPhase('collision');
-    if (!preparedRender) {
-      // Disc-streamed build around the player (window center on first
-      // load, before the camera is placed).
-      const widthWu = this.world.levels[0]!.width * TILE_SIZE;
-      const pos = this.gridCamera.position;
-      const inWindow = pos.x > 0 && pos.x < widthWu && pos.z > 0 && pos.z < widthWu;
-      const px = inWindow ? pos.x : widthWu / 2;
-      const pz = inWindow ? pos.z : widthWu / 2;
-      this.dungeonRenderer.buildActive(this.world, px, pz);
-    }
+    if (!preparedRender) this.dungeonRenderer.build(this.world);
     markPhase('geometry');
     this.movers = new Movers(this.world, this.scene);
     markPhase('movers');
@@ -808,8 +794,6 @@ export class GameEngine {
     const pos = this.gridCamera.position;
     this.lighting.update(pos.x, pos.y, pos.z);
     this.updateAreaFog(dt, pos.x, pos.z);
-    // Disc streaming: build nearby slices, evict far ones (budgeted).
-    this.dungeonRenderer.updateDisc(pos.x, pos.z);
 
     // Bot
     if (store.autoPlay) {

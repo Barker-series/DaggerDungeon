@@ -172,7 +172,6 @@ uniform float constructionSeams;`,
             float joint = max(verticalJoint, horizontalJoint);
             diffuseColor.rgb *= mix(1.0, 0.76, joint);
           }
-
         #endif`,
       );
   };
@@ -225,45 +224,15 @@ interface RenderBounds {
   z1: number;
 }
 
-/** One render slice of a window: geometry builds lazily inside the disc
- *  and un-builds (reversibly) outside the evict ring. */
-interface RenderSlice {
-  bounds: RenderBounds;
-  group: THREE.Group;
-  built: boolean;
-}
-
 export interface PreparedDungeonRender {
   group: THREE.Group;
   world: WorldData;
   cancelled: boolean;
-  /** Per-slice lazy registry + the derived fields needed to build more
-   *  slices after install. */
-  slices: RenderSlice[];
-  cornerFloors: number[][][];
-  contours: ReturnType<typeof buildOrganicContour>[];
 }
-
-// ── DISC STREAMING ──
-// Meshes exist only within a disc around the player. The camera far plane
-// is 160 and fog is solved to seal just inside it, so geometry beyond
-// far + one pillar cell of padding can never be seen. Build radius adds
-// the pad; the evict ring adds hysteresis so walking a boundary doesn't
-// thrash build/dispose. Physics reads columns, never meshes — an unbuilt
-// slice is invisible, not intangible.
-const DISC_BUILD_RADIUS = 216; // far(160) + 56 pad
-const DISC_EVICT_RADIUS = 288; // + one more pillar cell of hysteresis
-const DISC_BUILD_BUDGET = 1; // one slice (~9ms) per frame — spikes stay under a 60fps budget
 
 export class DungeonRenderer {
   private scene: THREE.Scene;
   private meshGroup: THREE.Group;
-  /** Active window's lazy slice registry (null = full-build mode, e.g.
-   *  the headless debug tools). */
-  private activeSlices: RenderSlice[] | null = null;
-  private activeWorld: WorldData | null = null;
-  private activeCornerFloors: number[][][] = [];
-  private activeContours: ReturnType<typeof buildOrganicContour>[] = [];
   /** Materials and their compiled shader programs are window-independent.
    * Keeping them alive avoids a shader-compilation stall at every recenter. */
   private materials = new Map<RegionKey, RegionMaterials>();
@@ -295,104 +264,6 @@ export class DungeonRenderer {
     });
     this.meshGroup.clear();
     this.markers = [];
-    this.activeSlices = null;
-    this.activeWorld = null;
-    this.activeCornerFloors = [];
-    this.activeContours = [];
-  }
-
-  /** Distance (wu) from a point to a slice's tile rect. */
-  private static sliceDistance(b: RenderBounds, x: number, z: number): number {
-    const minX = b.x0 * TILE_SIZE;
-    const maxX = b.x1 * TILE_SIZE;
-    const minZ = b.z0 * TILE_SIZE;
-    const maxZ = b.z1 * TILE_SIZE;
-    const dx = x < minX ? minX - x : x > maxX ? x - maxX : 0;
-    const dz = z < minZ ? minZ - z : z > maxZ ? z - maxZ : 0;
-    return Math.hypot(dx, dz);
-  }
-
-  private static makeSlices(world: WorldData, parent: THREE.Group): RenderSlice[] {
-    const slices = 8;
-    const width = world.levels[0]!.width;
-    const sliceTiles = Math.ceil(width / slices);
-    const out: RenderSlice[] = [];
-    for (let cz = 0; cz < slices; cz++) {
-      for (let cx = 0; cx < slices; cx++) {
-        const group = new THREE.Group();
-        parent.add(group);
-        out.push({
-          bounds: {
-            x0: cx * sliceTiles,
-            z0: cz * sliceTiles,
-            x1: Math.min((cx + 1) * sliceTiles, width),
-            z1: Math.min((cz + 1) * sliceTiles, width),
-          },
-          group,
-          built: false,
-        });
-      }
-    }
-    return out;
-  }
-
-  private buildSlice(
-    world: WorldData,
-    cornerFloors: number[][][],
-    contours: ReturnType<typeof buildOrganicContour>[],
-    slice: RenderSlice,
-  ): void {
-    if (slice.built) return;
-    this.tintWorld = world;
-    for (let li = 0; li < world.levels.length; li++) {
-      this.buildLevelSurfaces(world, li, cornerFloors[li]!, contours[li]!, this.materialsFor, slice.group, slice.bounds);
-    }
-    this.buildWalls(world, cornerFloors, contours, this.materialsFor, slice.group, slice.bounds);
-    slice.built = true;
-  }
-
-  private unbuildSlice(slice: RenderSlice): void {
-    if (!slice.built) return;
-    slice.group.traverse((child) => {
-      if (child instanceof THREE.Mesh) child.geometry.dispose();
-    });
-    slice.group.clear();
-    slice.built = false;
-    if (import.meta.env?.DEV) {
-      console.debug(`[disc] evicted slice (${slice.bounds.x0},${slice.bounds.z0})`);
-    }
-  }
-
-  /**
-   * DISC STREAMING update: build the nearest missing slices inside the
-   * build radius (bounded per call), un-build slices outside the evict
-   * ring. No-op in full-build mode. Call every frame with the player.
-   */
-  updateDisc(x: number, z: number): void {
-    const slices = this.activeSlices;
-    const world = this.activeWorld;
-    if (!slices || !world) return;
-    let budget = DISC_BUILD_BUDGET;
-    const candidates: { slice: RenderSlice; d: number }[] = [];
-    for (const slice of slices) {
-      const d = DungeonRenderer.sliceDistance(slice.bounds, x, z);
-      if (!slice.built && d <= DISC_BUILD_RADIUS) candidates.push({ slice, d });
-      else if (slice.built && d > DISC_EVICT_RADIUS) this.unbuildSlice(slice);
-    }
-    candidates.sort((a, b) => a.d - b.d);
-    for (const c of candidates) {
-      if (budget-- <= 0) break;
-      this.buildSlice(world, this.activeCornerFloors, this.activeContours, c.slice);
-      if (import.meta.env?.DEV) {
-        const built = slices.filter((sl) => sl.built).length;
-        console.debug(`[disc] built slice (${c.slice.bounds.x0},${c.slice.bounds.z0}) — ${built}/${slices.length} meshed`);
-      }
-    }
-  }
-
-  /** Disc state for debug displays: which slices currently carry meshes. */
-  getDiscState(): { bounds: { x0: number; z0: number; x1: number; z1: number }; built: boolean }[] {
-    return (this.activeSlices ?? []).map((s2) => ({ bounds: s2.bounds, built: s2.built }));
   }
 
   /** Animate the exit marker (slow spin + bob). Call every frame. */
@@ -447,50 +318,47 @@ export class DungeonRenderer {
   /** Build a neighboring window in pillar-cell-sized slices. Each slice
    * yields to the browser, keeping mesh preparation out of the movement
    * frame that crosses a streaming boundary. */
-  prepare(
-    world: WorldData,
-    onReady: (prepared: PreparedDungeonRender) => void,
-    /** Which edge the player will enter from, as the neighbor's offset
-     *  from the current window (dx, dz in pillar-window steps). Only the
-     *  entry band builds ahead of time; the rest builds lazily from the
-     *  disc update after install. */
-    entryEdge?: { dx: number; dz: number },
-  ): PreparedDungeonRender {
+  prepare(world: WorldData, onReady: (prepared: PreparedDungeonRender) => void): PreparedDungeonRender {
     this.tintWorld = world;
-    const group = new THREE.Group();
+    const prepared: PreparedDungeonRender = {
+      group: new THREE.Group(),
+      world,
+      cancelled: false,
+    };
     const cornerFloors = world.levels.map((l) =>
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
     const contours = world.levels.map((l) => buildOrganicContour(l));
-    const slices = DungeonRenderer.makeSlices(world, group);
-    const prepared: PreparedDungeonRender = {
-      group, world, cancelled: false, slices, cornerFloors, contours,
-    };
-    // Chamfers span slices; build them exactly ONCE per window. (The old
-    // per-slice call duplicated every chamfer strip 64x.)
-    this.buildPipeChamfers(world, group);
-
-    // Entry band: slices within the disc radius of the edge the player
-    // crosses. Without a known edge (shouldn't happen), prepare all.
-    const widthWu = world.levels[0]!.width * TILE_SIZE;
-    const edgeDistance = (b: RenderBounds): number => {
-      if (!entryEdge) return 0;
-      if (entryEdge.dx > 0) return b.x0 * TILE_SIZE; // entering from west edge
-      if (entryEdge.dx < 0) return widthWu - b.x1 * TILE_SIZE; // east edge
-      if (entryEdge.dz > 0) return b.z0 * TILE_SIZE; // north edge
-      if (entryEdge.dz < 0) return widthWu - b.z1 * TILE_SIZE; // south edge
-      return 0;
-    };
-    const jobs = slices
-      .filter((slice) => edgeDistance(slice.bounds) <= DISC_BUILD_RADIUS)
-      .sort((a, b) => edgeDistance(a.bounds) - edgeDistance(b.bounds));
+    // 8x8 slices keep each geometry task comfortably below a frame.
+    // These are render-work slices, not world-generation cells; ownership
+    // and LayerProcGen continuity still use the original pillar-cell grid.
+    const slices = 8;
+    const sliceTiles = Math.ceil(world.levels[0]!.width / slices);
+    const jobs: RenderBounds[] = [];
+    for (let cz = 0; cz < slices; cz++) {
+      for (let cx = 0; cx < slices; cx++) {
+        jobs.push({
+          x0: cx * sliceTiles,
+          z0: cz * sliceTiles,
+          x1: Math.min((cx + 1) * sliceTiles, world.levels[0]!.width),
+          z1: Math.min((cz + 1) * sliceTiles, world.levels[0]!.height),
+        });
+      }
+    }
     const runNext = (): void => {
       if (prepared.cancelled) return;
-      const slice = jobs.shift();
-      if (!slice) {
+      const bounds = jobs.shift();
+      if (!bounds) {
         onReady(prepared);
         return;
       }
-      this.buildSlice(world, cornerFloors, contours, slice);
+      for (let li = 0; li < world.levels.length; li++) {
+        this.buildLevelSurfaces(
+          world, li, cornerFloors[li]!, contours[li]!, this.materialsFor,
+          prepared.group, bounds,
+        );
+      }
+      this.buildWalls(world, cornerFloors, contours, this.materialsFor, prepared.group, bounds);
+      this.buildPipeChamfers(world, prepared.group);
       requestAnimationFrame(runNext);
     };
     requestAnimationFrame(runNext);
@@ -500,39 +368,6 @@ export class DungeonRenderer {
   install(prepared: PreparedDungeonRender): void {
     this.clear();
     this.meshGroup.add(prepared.group);
-    this.activeSlices = prepared.slices;
-    this.activeWorld = prepared.world;
-    this.activeCornerFloors = prepared.cornerFloors;
-    this.activeContours = prepared.contours;
-    this.tintWorld = prepared.world;
-  }
-
-  /**
-   * Disc-streamed synchronous build (the engine's window path): create
-   * the lazy slice registry and build only the disc around (px, pz).
-   * The full build() below remains for headless tools, which must see
-   * every triangle.
-   */
-  buildActive(world: WorldData, px: number, pz: number): void {
-    this.tintWorld = world;
-    const cornerFloors = world.levels.map((l) =>
-      buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
-    const contours = world.levels.map((l) => buildOrganicContour(l));
-    const windowGroup = new THREE.Group();
-    this.meshGroup.add(windowGroup);
-    const slices = DungeonRenderer.makeSlices(world, windowGroup);
-    this.buildPipeChamfers(world, windowGroup);
-    this.activeSlices = slices;
-    this.activeWorld = world;
-    this.activeCornerFloors = cornerFloors;
-    this.activeContours = contours;
-    // Initial fill is synchronous — this replaces what was a whole-window
-    // build, and the disc is ~1/3 of the window's area.
-    for (const slice of slices) {
-      if (DungeonRenderer.sliceDistance(slice.bounds, px, pz) <= DISC_BUILD_RADIUS) {
-        this.buildSlice(world, cornerFloors, contours, slice);
-      }
-    }
   }
 
   /** Floors, ceilings, aprons, stairs and markers of one level —
@@ -1642,13 +1477,11 @@ export class DungeonRenderer {
       splatWeights.push(r / sum, g / sum, b / sum);
     }
     geom.setAttribute('splatWeight', new THREE.Float32BufferAttribute(splatWeights, 3));
-    // Per-vertex biome tint — smoothly blended fields, single-tint pillars.
+    // Per-vertex biome tint — smoothly blended fields, single-tint pillars
     const colors: number[] = [];
     const tint: [number, number, number] = [1, 1, 1];
     for (let i = 0; i < buf.verts.length; i += 3) {
-      const x = buf.verts[i]!;
-      const z = buf.verts[i + 2]!;
-      this.tintAt(x, z, tint);
+      this.tintAt(buf.verts[i]!, buf.verts[i + 2]!, tint);
       colors.push(tint[0], tint[1], tint[2]);
     }
     geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
