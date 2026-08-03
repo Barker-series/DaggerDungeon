@@ -102,6 +102,43 @@ seam gate makes this refactor safe: any behavioral drift fails the gate.
 Future directions — none of these are commitments, and the rail one is
 explicitly a guess until the day it's real work.
 
+- **The subway (plan-8 rail, design sketch — user + design conversation,
+  Aug 3 2026).** Endless point-to-point tunnels, done the LayerProcGen way:
+  not one infinite path (nothing holds global knowledge) but an endless
+  chain of LOCALLY-planned segments, each bounded, each derivable by any
+  window that overlaps it. Four layers:
+  1. **Stations** — a coarse layer at region scale, pure function of
+     `(seed, cell)` → zero/one station with an absolute position. Any
+     window can ask "what stations are near me" without generating
+     anything.
+  2. **Connections** — each station links to neighbors read from a padded
+     radius, owned-within-bounds so every edge is planned exactly once,
+     identically from either end (the pillar-bridge degree-guarantee
+     trick at region scale).
+  3. **Routes** — per owned connection, path the tunnel with the
+     pathfinding CLAMPED to a corridor around the station-to-station
+     line. The clamp is the docs' effect-distance move: choose the
+     effect distance, enforce it, and the padding is known and finite.
+     Routes wander organically inside the corridor.
+  4. **Carving** — window generation queries "route splines overlapping
+     my bounds + padding" (overlapping-bounds, same as roads) and bores
+     them into the column model. The 100% seam gate then enforces
+     cross-window identity automatically.
+  The payoff is The Cluster's road-sign trick underground: a platform
+  sign can say "NEXT STATION 2.3km EAST" about a place that has never
+  been generated, because names/positions/topology are pure upper-layer
+  functions. The 2D precedent already ships: the road-field layer
+  (districts/sites/veins) is exactly this pattern; the subway is the
+  same idea underground plus stations and carving. NOT a revival of the
+  old cell-pair subway bores (`planOwnedSubways`, deliberately unwired —
+  they were unreachable scaffolding, not routed rail).
+  Hard parts to design when it becomes real work: station placement
+  rules that make lines feel intentional (not nearest-neighbor
+  spaghetti); depth handling (fixed bore level vs ramping between
+  levels); and, if the PLAN's "few functioning trains" ever run, train
+  positions derived from absolute time + line topology (deterministic
+  schedules so all windows agree where the train is).
+
 - **Demystification.** The path from here to "usable like a terrain
   generator": name and document the core concepts in plain language (columns,
   layers, ownership, seam doctrine), grow `world-reference.html` into the
