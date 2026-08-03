@@ -5,6 +5,7 @@ import { tileBiome, type BiomeType } from '../game/dungeon/cells';
 import { buildCornerField, PIT_LEVEL } from '../game/dungeon/heightfield';
 import { buildOrganicContour, isOrganicTileIn } from '../game/dungeon/organiccontour';
 import { bridgeTiles, PIPE_BORE, CLEARANCE } from '../game/dungeon/pillar-bridges';
+import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
 
 const loader = new THREE.TextureLoader();
 
@@ -224,11 +225,48 @@ interface RenderBounds {
   z1: number;
 }
 
-export interface PreparedDungeonRender {
+/** ── Render chunks (Streaming v2, Phase 1) ──
+ * One chunk per ABSOLUTE pillar cell on the infinite plane. A chunk is
+ * created when its cell comes inside the build disc around the player,
+ * built in quarter-cell jobs spread across frames, added to the scene
+ * only once COMPLETE, and disposed when it leaves the evict disc.
+ * Because chunks are keyed by absolute cell they survive window
+ * recenters: the retained-core band is provably identical across window
+ * alignments (tools/verify-world.ts), so only rim cells rebuild — and
+ * their old geometry keeps displaying until the replacement is ready. */
+interface RenderChunk {
+  /** Absolute pillar-cell coords on the infinite plane */
+  acx: number;
+  acz: number;
   group: THREE.Group;
-  world: WorldData;
-  cancelled: boolean;
+  /** Origin of the window whose data built this chunk. The group is
+   *  positioned at (builtOrigin - currentOrigin) so vertices emitted in
+   *  the built window's local frame land at the right absolute place. */
+  builtPcx: number;
+  builtPcz: number;
+  /** Remaining quarter-cell build jobs (window-local tile bounds) */
+  jobs: RenderBounds[];
+  complete: boolean;
+  /** Accumulated build time across jobs (DEV telemetry) */
+  buildMs: number;
 }
+
+type Contour = ReturnType<typeof buildOrganicContour>;
+
+/** Chunk edge = one pillar cell */
+const CHUNK_TILES = PILLAR_CELL_TILES;
+const CHUNK_WU = CHUNK_TILES * TILE_SIZE;
+/** Chunks begin building when their cell comes this close. Headroom over
+ * the 160-wu far plane (fog seals inside it) is the build-ahead margin.
+ * Measured (Aug 2026, seed 42 travel): a chunk completes in 5-67 ms of
+ * budgeted frames, so a 50-wu margin covers a full frontier column
+ * entering at sprint speed with ~10x headroom. */
+const BUILD_WU = 210;
+const EVICT_WU = 260;
+/** Per-frame mesh-build budget. One quarter-cell job usually fits; a
+ * frontier column entering the window fills over a handful of frames
+ * while still ~100 wu beyond the fog line. */
+const CHUNK_BUDGET_MS = 8;
 
 export class DungeonRenderer {
   private scene: THREE.Scene;
@@ -248,6 +286,19 @@ export class DungeonRenderer {
   private markers: Marker[] = [];
   private markerTime = 0;
 
+  // ── Chunk streaming state ──
+  private chunks = new Map<string, RenderChunk>();
+  /** Replacement builds for stale rim chunks, swapped in when complete */
+  private chunkRebuilds = new Map<string, RenderChunk>();
+  private chunkWorld: WorldData | null = null;
+  /** seed:stack of the adopted world — a change invalidates every chunk */
+  private chunkStamp = '';
+  private chunkCtx: { cornerFloors: number[][][]; contours: Contour[] } | null = null;
+  /** Set when the chunk set was wiped (first load, seed/stack change):
+   *  the next updateChunks call builds synchronously so no empty frame
+   *  is ever presented. Ordinary recenters stay budgeted. */
+  private needsSyncFill = true;
+
   constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.meshGroup = new THREE.Group();
@@ -257,6 +308,7 @@ export class DungeonRenderer {
   clear(): void {
     // Geometry belongs to a generated window. Materials and textures do not:
     // retaining them keeps WebGL shader programs warm across window swaps.
+    this.clearChunks();
     this.meshGroup.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.geometry.dispose();
@@ -315,59 +367,200 @@ export class DungeonRenderer {
     this.buildPipeChamfers(world, this.meshGroup);
   }
 
-  /** Build a neighboring window in pillar-cell-sized slices. Each slice
-   * yields to the browser, keeping mesh preparation out of the movement
-   * frame that crosses a streaming boundary. */
-  prepare(world: WorldData, onReady: (prepared: PreparedDungeonRender) => void): PreparedDungeonRender {
+  /** Adopt a window as the chunk data source. Existing chunks are
+   * repositioned into the new window's frame. Chunks outside the
+   * retained-core guarantee are queued for a background rebuild — their
+   * old geometry keeps displaying until the replacement completes. */
+  setWindow(world: WorldData): void {
+    const stamp = `${world.seed}:${world.levels[0]?.floor ?? 0}`;
+    if (stamp !== this.chunkStamp) this.clearChunks();
+    this.chunkStamp = stamp;
+    this.chunkWorld = world;
     this.tintWorld = world;
-    const prepared: PreparedDungeonRender = {
-      group: new THREE.Group(),
-      world,
-      cancelled: false,
+    this.chunkCtx = {
+      cornerFloors: world.levels.map((l) =>
+        buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround)),
+      contours: world.levels.map((l) => buildOrganicContour(l)),
     };
-    const cornerFloors = world.levels.map((l) =>
-      buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
-    const contours = world.levels.map((l) => buildOrganicContour(l));
-    // 8x8 slices keep each geometry task comfortably below a frame.
-    // These are render-work slices, not world-generation cells; ownership
-    // and LayerProcGen continuity still use the original pillar-cell grid.
-    const slices = 8;
-    const sliceTiles = Math.ceil(world.levels[0]!.width / slices);
-    const jobs: RenderBounds[] = [];
-    for (let cz = 0; cz < slices; cz++) {
-      for (let cx = 0; cx < slices; cx++) {
-        jobs.push({
-          x0: cx * sliceTiles,
-          z0: cz * sliceTiles,
-          x1: Math.min((cx + 1) * sliceTiles, world.levels[0]!.width),
-          z1: Math.min((cz + 1) * sliceTiles, world.levels[0]!.height),
-        });
+    // In-flight rebuilds die with the window that sourced them
+    for (const [key, reb] of this.chunkRebuilds) {
+      this.disposeGroup(reb.group);
+      this.chunkRebuilds.delete(key);
+    }
+    for (const chunk of this.chunks.values()) {
+      this.positionChunk(chunk);
+      if (!this.chunkExact(chunk) && this.cellInWindow(chunk.acx, chunk.acz)) {
+        this.chunkRebuilds.set(`${chunk.acx},${chunk.acz}`, this.createChunk(chunk.acx, chunk.acz));
       }
     }
-    const runNext = (): void => {
-      if (prepared.cancelled) return;
-      const bounds = jobs.shift();
-      if (!bounds) {
-        onReady(prepared);
-        return;
-      }
-      for (let li = 0; li < world.levels.length; li++) {
-        this.buildLevelSurfaces(
-          world, li, cornerFloors[li]!, contours[li]!, this.materialsFor,
-          prepared.group, bounds,
-        );
-      }
-      this.buildWalls(world, cornerFloors, contours, this.materialsFor, prepared.group, bounds);
-      this.buildPipeChamfers(world, prepared.group);
-      requestAnimationFrame(runNext);
-    };
-    requestAnimationFrame(runNext);
-    return prepared;
   }
 
-  install(prepared: PreparedDungeonRender): void {
-    this.clear();
-    this.meshGroup.add(prepared.group);
+  /** Per-frame chunk lifecycle: create chunks entering the build disc,
+   * evict those leaving the evict disc, and spend the frame budget on
+   * the nearest incomplete build. `focus` is the player position in the
+   * current window's local frame. */
+  updateChunks(focusX: number, focusZ: number): void {
+    const w = this.chunkWorld;
+    if (!w || !this.chunkCtx) return;
+    const sync = this.needsSyncFill;
+    this.needsSyncFill = false;
+    const grid = Math.floor(w.levels[0]!.width / CHUNK_TILES);
+    const absX = focusX + w.originPcx * CHUNK_WU;
+    const absZ = focusZ + w.originPcz * CHUNK_WU;
+    for (let cz = 0; cz < grid; cz++) {
+      for (let cx = 0; cx < grid; cx++) {
+        const acx = w.originPcx + cx;
+        const acz = w.originPcz + cz;
+        const key = `${acx},${acz}`;
+        if (this.chunks.has(key)) continue;
+        if (this.cellDist(absX, absZ, acx, acz) >= BUILD_WU) continue;
+        this.chunks.set(key, this.createChunk(acx, acz));
+      }
+    }
+    for (const [key, chunk] of this.chunks) {
+      if (this.cellDist(absX, absZ, chunk.acx, chunk.acz) > EVICT_WU) {
+        this.disposeGroup(chunk.group);
+        this.chunks.delete(key);
+        const reb = this.chunkRebuilds.get(key);
+        if (reb) {
+          this.disposeGroup(reb.group);
+          this.chunkRebuilds.delete(key);
+        }
+      }
+    }
+    const started = performance.now();
+    for (;;) {
+      const pending = [...this.chunks.values(), ...this.chunkRebuilds.values()]
+        .filter((c) => !c.complete)
+        .sort((a, b) =>
+          this.cellDist(absX, absZ, a.acx, a.acz) - this.cellDist(absX, absZ, b.acx, b.acz));
+      const next = pending[0];
+      if (!next) break;
+      this.runChunkJob(next);
+      if (!sync && performance.now() - started >= CHUNK_BUDGET_MS) break;
+    }
+  }
+
+  /** Live chunk count and completeness — DEV telemetry */
+  chunkStats(): { chunks: number; complete: number; rebuilding: number } {
+    let complete = 0;
+    for (const c of this.chunks.values()) if (c.complete) complete++;
+    return { chunks: this.chunks.size, complete, rebuilding: this.chunkRebuilds.size };
+  }
+
+  private createChunk(acx: number, acz: number): RenderChunk {
+    const w = this.chunkWorld!;
+    const x0 = (acx - w.originPcx) * CHUNK_TILES;
+    const z0 = (acz - w.originPcz) * CHUNK_TILES;
+    const half = CHUNK_TILES / 2;
+    return {
+      acx,
+      acz,
+      group: new THREE.Group(),
+      builtPcx: w.originPcx,
+      builtPcz: w.originPcz,
+      jobs: [
+        { x0, z0, x1: x0 + half, z1: z0 + half },
+        { x0: x0 + half, z0, x1: x0 + CHUNK_TILES, z1: z0 + half },
+        { x0, z0: z0 + half, x1: x0 + half, z1: z0 + CHUNK_TILES },
+        { x0: x0 + half, z0: z0 + half, x1: x0 + CHUNK_TILES, z1: z0 + CHUNK_TILES },
+      ],
+      complete: false,
+      buildMs: 0,
+    };
+  }
+
+  /** Run ONE quarter-cell build job. On the last job the chunk becomes
+   * complete: it enters the scene, and if it was a rebuild it replaces
+   * the stale chunk it shadowed. */
+  private runChunkJob(chunk: RenderChunk): void {
+    const w = this.chunkWorld!;
+    const ctx = this.chunkCtx!;
+    const bounds = chunk.jobs.shift();
+    if (!bounds) return;
+    const jobStart = performance.now();
+    for (let li = 0; li < w.levels.length; li++) {
+      this.buildLevelSurfaces(
+        w, li, ctx.cornerFloors[li]!, ctx.contours[li]!, this.materialsFor,
+        chunk.group, bounds,
+      );
+    }
+    this.buildWalls(w, ctx.cornerFloors, ctx.contours, this.materialsFor, chunk.group, bounds);
+    this.buildPipeChamfers(w, chunk.group, bounds);
+    chunk.buildMs += performance.now() - jobStart;
+    if (chunk.jobs.length === 0) {
+      chunk.complete = true;
+      if (import.meta.env.DEV) {
+        console.debug(`[chunk] ${chunk.acx},${chunk.acz} built in ${chunk.buildMs.toFixed(1)} ms`);
+      }
+      const key = `${chunk.acx},${chunk.acz}`;
+      const displayed = this.chunks.get(key);
+      if (displayed && displayed !== chunk) {
+        // Rebuild swap: stale rim geometry leaves only now
+        this.disposeGroup(displayed.group);
+        this.chunkRebuilds.delete(key);
+      }
+      this.chunks.set(key, chunk);
+      this.positionChunk(chunk);
+      this.meshGroup.add(chunk.group);
+    }
+  }
+
+  /** Window-local vertices land at the right absolute place: offset by
+   * how far the current origin has moved since the chunk was built. */
+  private positionChunk(chunk: RenderChunk): void {
+    const w = this.chunkWorld!;
+    chunk.group.position.set(
+      (chunk.builtPcx - w.originPcx) * CHUNK_WU,
+      0,
+      (chunk.builtPcz - w.originPcz) * CHUNK_WU,
+    );
+  }
+
+  /** True when the chunk's displayed geometry is guaranteed identical to
+   * what the current window would build for its cell: per axis, either
+   * the origin didn't move, or the cell is interior (≥1 cell from the
+   * edge) in BOTH windows — the retained-core band verify-world proves
+   * 100% identical across alignments. */
+  private chunkExact(chunk: RenderChunk): boolean {
+    const w = this.chunkWorld!;
+    const grid = Math.floor(w.levels[0]!.width / CHUNK_TILES);
+    const axis = (built: number, cur: number, ac: number): boolean =>
+      built === cur
+      || (ac >= built + 1 && ac <= built + grid - 2 && ac >= cur + 1 && ac <= cur + grid - 2);
+    return axis(chunk.builtPcx, w.originPcx, chunk.acx)
+      && axis(chunk.builtPcz, w.originPcz, chunk.acz);
+  }
+
+  private cellInWindow(acx: number, acz: number): boolean {
+    const w = this.chunkWorld!;
+    const grid = Math.floor(w.levels[0]!.width / CHUNK_TILES);
+    return acx >= w.originPcx && acx < w.originPcx + grid
+      && acz >= w.originPcz && acz < w.originPcz + grid;
+  }
+
+  /** Distance from a point to a cell's AABB, absolute world units */
+  private cellDist(px: number, pz: number, acx: number, acz: number): number {
+    const minX = acx * CHUNK_WU;
+    const minZ = acz * CHUNK_WU;
+    const dx = Math.max(minX - px, 0, px - (minX + CHUNK_WU));
+    const dz = Math.max(minZ - pz, 0, pz - (minZ + CHUNK_WU));
+    return Math.hypot(dx, dz);
+  }
+
+  private disposeGroup(group: THREE.Group): void {
+    group.traverse((child) => {
+      if (child instanceof THREE.Mesh) child.geometry.dispose();
+    });
+    this.meshGroup.remove(group);
+  }
+
+  private clearChunks(): void {
+    for (const chunk of this.chunks.values()) this.disposeGroup(chunk.group);
+    for (const reb of this.chunkRebuilds.values()) this.disposeGroup(reb.group);
+    this.chunks.clear();
+    this.chunkRebuilds.clear();
+    this.needsSyncFill = true;
   }
 
   /** Floors, ceilings, aprons, stairs and markers of one level —
@@ -1341,7 +1534,7 @@ export class DungeonRenderer {
    * no floating diagonals. Collision stays square: the wedges are within
    * body-radius reach of walls, so the clip is imperceptible.
    */
-  private buildPipeChamfers(world: WorldData, target: THREE.Group): void {
+  private buildPipeChamfers(world: WorldData, target: THREE.Group, bounds?: RenderBounds): void {
     const C = 0.6; // chamfer leg — strong enough to read as an octagon
     const S = Math.SQRT1_2;
     const w = world.levels[0]!.width;
@@ -1379,6 +1572,10 @@ export class DungeonRenderer {
         const lowT = tiles[j]!;
         const center = tiles[j + 1]!;
         const highT = tiles[j + 2]!;
+        // Strip ownership follows the center tile, so bounded builds emit
+        // each chamfer strip exactly once
+        if (bounds && (center.tx < bounds.x0 || center.tx >= bounds.x1
+          || center.tz < bounds.z0 || center.tz >= bounds.z1)) continue;
         const h = center.h;
         const top = h + (br.pipe ? PIPE_BORE : CLEARANCE);
         if (br.dir === 'east') {

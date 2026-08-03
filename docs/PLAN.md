@@ -59,21 +59,36 @@ The **column model** (`src/game/dungeon/columns.ts`) is the single source of
 truth: per-(x,z) sorted AIR spans. Renderer faces, physics, and agents all
 derive from span differences. If it isn't in the columns, it doesn't exist.
 
-## Next Up (committed — first task after the research phase)
+## Next Up (committed — Streaming v2, redesigned after the July failure)
 
-**Disc streaming (Streaming v2, step 1).** We currently build meshes for the
-whole 672-wu window while the camera far plane is 160 and fog seals just
-inside it — roughly 4× more world meshed and held than can ever be seen.
-Change the RENDER side to per-pillar-cell groups built only within a disc of
-radius ≈ far plane + one cell of padding around the player, adding/evicting
-groups as the player moves; tie the radius to the far plane so view distance
-and loading move together. Generation stays whole-window in the workers
-(settled, seam-proven). Expected: ~60% less main-thread geometry build and
-GPU memory. The renderer's bounds machinery already slices builds — most
-pieces are on the shelf. Watch the interplay with recenter, install/evict,
-and the grounded handoff. Step 2 (per-cell GENERATION with dependency
-padding, retiring windows) is a separate, much larger surgery — not part of
-this task.
+**Render chunks (Phase 1).** The first disc-streaming attempt (July 2026,
+reverted) lazily built window-local slices of the monolith with no
+build-ahead guarantee — slices entered view before they were built (black
+pop-in) and every recenter threw the whole disc away. The redesign follows
+the LayerProcGen rule that streaming = chunk lifetimes driven by a focus
+dependency (`docs/layerprocgen/PRINCIPLES.md`, rule 7):
+
+- **Chunk = one pillar cell (56 tiles / 168wu), keyed by ABSOLUTE cell
+  coords.** On recenter, chunks in the retained core survive (verify-world
+  proves that band 100% identical across window alignments) — only their
+  scene offset shifts. Rim chunks rebuild while their old geometry keeps
+  displaying until the swap. No full-scene teardown: the recenter hitch and
+  recenter pop die together.
+- **Disc top-dependency with a hard invariant:** a chunk must be FULLY
+  built before it can enter fog range. Build radius = fog plane + margin,
+  where the margin is set from MEASURED per-cell build times × max travel
+  speed, not hope. Evict radius one cell beyond build.
+- Generation stays whole-window in the workers (seam-proven, untouched).
+  Expected: ~60% less meshed geometry and GPU memory, non-blocking
+  recenters, pop-in eliminated by construction.
+
+**Phase 2 (later, the big surgery): per-cell GENERATION with dependency
+padding, retiring windows.** The audit showed every violating pass reads
+inputs that are pure fields, so chunks can recompute their own padded input
+rings (CA ~4 tiles, heights ~16) without neighbor-chunk data. Ends with
+windows, recenter, and the grounded-handoff repair deleted, spawn as a pure
+function anchored at world origin, and the seam test tightened from 90% to
+exactly 100%.
 
 ## Ideas
 

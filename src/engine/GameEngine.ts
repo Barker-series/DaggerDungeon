@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { DungeonRenderer, type PreparedDungeonRender } from './DungeonRenderer';
+import { DungeonRenderer } from './DungeonRenderer';
 import { GridCamera } from './Camera';
 import { LightingSystem } from './LightingSystem';
 import { SpriteManager } from './SpriteManager';
@@ -136,12 +136,6 @@ export class GameEngine {
    * It must not wait behind speculative cardinal-neighbor generation. */
   private urgentWorldWorker: Worker;
   private worldCache = new Map<string, WorldData>();
-  private renderCache = new Map<string, PreparedDungeonRender>();
-  private renderQueue: { key: string; world: WorldData }[] = [];
-  private renderQueued = new Set<string>();
-  private renderPreparing = false;
-  private activeRenderKey: string | null = null;
-  private activeRenderPreparation: PreparedDungeonRender | null = null;
   private pendingWorlds = new Set<string>();
   private urgentPendingWorlds = new Set<string>();
   private readonly maxCachedWorlds = 10;
@@ -344,19 +338,6 @@ export class GameEngine {
     return `${this.seed}:${stack}:${originPcx},${originPcz}`;
   }
 
-  private interruptRenderPreparationFor(key: string): void {
-    if (!this.renderPreparing || this.activeRenderKey === key) return;
-    if (this.activeRenderPreparation) {
-      this.activeRenderPreparation.cancelled = true;
-      this.activeRenderPreparation.group.traverse((child) => {
-        if (child instanceof THREE.Mesh) child.geometry.dispose();
-      });
-    }
-    this.renderPreparing = false;
-    this.activeRenderKey = null;
-    this.activeRenderPreparation = null;
-  }
-
   private acceptPreparedWorld(
     event: MessageEvent<{ key: string; world: WorldData; generationMs: number }>,
     urgent: boolean,
@@ -367,18 +348,6 @@ export class GameEngine {
     if (!key.startsWith(`${this.seed}:`)) return;
     this.worldCache.delete(key);
     this.worldCache.set(key, world);
-    if (!this.renderCache.has(key) && !this.renderQueued.has(key)) {
-      this.renderQueued.add(key);
-      if (urgent) this.renderQueue.unshift({ key, world });
-      else this.renderQueue.push({ key, world });
-      if (urgent && this.renderPreparing && this.activeRenderKey !== key) {
-        // Direction changed while speculative geometry was being sliced.
-        // Stop spending frames on the old direction and service the exact
-        // approached boundary immediately.
-        this.interruptRenderPreparationFor(key);
-      }
-      this.prepareNextRender();
-    }
     while (this.worldCache.size > this.maxCachedWorlds) {
       const oldest = this.worldCache.keys().next().value as string | undefined;
       if (!oldest) break;
@@ -390,51 +359,6 @@ export class GameEngine {
         + `${generationMs.toFixed(1)} ms`,
       );
     }
-  }
-
-  private prepareNextRender(): void {
-    if (this.renderPreparing || this.stopped) return;
-    const next = this.renderQueue.shift();
-    if (!next) return;
-    this.renderQueued.delete(next.key);
-    if (this.renderCache.has(next.key)) {
-      this.prepareNextRender();
-      return;
-    }
-    this.renderPreparing = true;
-    this.activeRenderKey = next.key;
-    const preparation = this.dungeonRenderer.prepare(next.world, (prepared) => {
-      if (this.stopped) {
-        prepared.cancelled = true;
-        return;
-      }
-      if (!next.key.startsWith(`${this.seed}:`)) {
-        prepared.group.traverse((child) => {
-          if (child instanceof THREE.Mesh) child.geometry.dispose();
-        });
-        this.renderPreparing = false;
-        this.activeRenderKey = null;
-        this.activeRenderPreparation = null;
-        this.prepareNextRender();
-        return;
-      }
-      this.renderCache.set(next.key, prepared);
-      while (this.renderCache.size > 4) {
-        const oldest = this.renderCache.keys().next().value as string | undefined;
-        if (!oldest) break;
-        const stale = this.renderCache.get(oldest);
-        stale?.group.traverse((child) => {
-          if (child instanceof THREE.Mesh) child.geometry.dispose();
-        });
-        this.renderCache.delete(oldest);
-      }
-      this.renderPreparing = false;
-      this.activeRenderKey = null;
-      this.activeRenderPreparation = null;
-      if (import.meta.env.DEV) console.debug(`[stream] geometry ready ${next.key}`);
-      this.prepareNextRender();
-    });
-    this.activeRenderPreparation = preparation;
   }
 
   private requestWorld(stack: number, originPcx: number, originPcz: number): void {
@@ -453,24 +377,7 @@ export class GameEngine {
 
   private requestUrgentWorld(stack: number, originPcx: number, originPcz: number): void {
     const key = this.worldKey(stack, originPcx, originPcz);
-    if (this.renderCache.has(key)) return;
-    if (this.worldCache.has(key)) {
-      // Generation finished speculatively; move its geometry job ahead of
-      // irrelevant windows left over from earlier travel directions.
-      const index = this.renderQueue.findIndex((entry) => entry.key === key);
-      if (index > 0) {
-        const [entry] = this.renderQueue.splice(index, 1);
-        if (entry) this.renderQueue.unshift(entry);
-      } else if (index < 0 && this.activeRenderKey !== key) {
-        const world = this.worldCache.get(key)!;
-        this.renderQueued.add(key);
-        this.renderQueue.unshift({ key, world });
-      }
-      this.interruptRenderPreparationFor(key);
-      this.prepareNextRender();
-      return;
-    }
-    if (this.urgentPendingWorlds.has(key)) return;
+    if (this.worldCache.has(key) || this.urgentPendingWorlds.has(key)) return;
     this.urgentPendingWorlds.add(key);
     const request: WorldWorkerRequest = {
       key,
@@ -517,23 +424,13 @@ export class GameEngine {
       phaseStarted = now;
     };
     const key = this.worldKey(stack, this.originPcx, this.originPcz);
-    const preparedRender = this.renderCache.get(key);
-    if (preparedRender) {
-      this.renderCache.delete(key);
-      this.dungeonRenderer.install(preparedRender);
-    } else {
-      this.dungeonRenderer.clear();
-    }
     this.lighting.clear();
     this.sprites.clear();
     this.bot.reset();
     this.movers?.dispose(this.scene);
     markPhase('clear');
     const preparedWorld = this.worldCache.get(key);
-    if (preparedRender) {
-      this.worldCache.delete(key);
-      this.world = preparedRender.world;
-    } else if (preparedWorld) {
+    if (preparedWorld) {
       this.worldCache.delete(key);
       this.world = preparedWorld;
     } else {
@@ -552,8 +449,11 @@ export class GameEngine {
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
     this.contours = this.world.levels.map((l) => buildOrganicContour(l));
     markPhase('collision');
-    if (!preparedRender) this.dungeonRenderer.build(this.world);
-    markPhase('geometry');
+    // Adopt the window as the chunk data source. No geometry is built
+    // here: chunks stream in via updateChunks each frame — surviving
+    // core chunks carry across, rim chunks rebuild in the background.
+    this.dungeonRenderer.setWindow(this.world);
+    markPhase('geometry-adopt');
     this.movers = new Movers(this.world, this.scene);
     markPhase('movers');
     this.lighting.setup(this.world);
@@ -563,7 +463,7 @@ export class GameEngine {
     markPhase('state');
     if (import.meta.env.DEV) {
       console.info(
-        `[stream] installed ${key} (${preparedRender || preparedWorld ? 'prefetched' : 'synchronous'}) in `
+        `[stream] adopted ${key} (${preparedWorld ? 'prefetched' : 'synchronous'}) in `
         + `${(performance.now() - buildStarted).toFixed(1)} ms `
         + Object.entries(phaseTimes)
           .map(([name, ms]) => `${name}=${ms.toFixed(1)}`)
@@ -674,14 +574,6 @@ export class GameEngine {
     this.worldCache.clear();
     this.pendingWorlds.clear();
     this.urgentPendingWorlds.clear();
-    this.renderQueue = [];
-    this.renderQueued.clear();
-    for (const prepared of this.renderCache.values()) {
-      prepared.group.traverse((child) => {
-        if (child instanceof THREE.Mesh) child.geometry.dispose();
-      });
-    }
-    this.renderCache.clear();
     this.originPcx = 0;
     this.originPcz = 0;
     this.buildWindow(stack);
@@ -792,6 +684,9 @@ export class GameEngine {
     // Sprites + animated dungeon elements (exit markers)
     this.sprites.update(dt, this.threeCamera);
     this.dungeonRenderer.update(dt);
+    // Chunk streaming: create/evict/build render chunks around the
+    // player's final position for this frame
+    this.dungeonRenderer.updateChunks(this.gridCamera.position.x, this.gridCamera.position.z);
 
     // Nearest-K light culling follows the player
     const pos = this.gridCamera.position;
