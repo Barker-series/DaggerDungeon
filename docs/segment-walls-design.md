@@ -85,7 +85,17 @@ it ALONG SEGMENTS.
 - All gates green on this state; visuals are center-model bevels until
   the extruder lands.
 
-## EMBER LEAK — instrumented state (continue here)
+## RESOLVED (d5cf516): corner-wedge leak class — ember leak, canyon,
+## corridor-mouth slits. Root cause: a corner-cut diagonal makes the
+## wall tile's corner render-air, exposing boundary-plane strips above
+## the air span that were buried solid pre-v2. Fix: cap transoms on
+## suppressed halves (air-span top -> cap corner-field edge, facing the
+## wedge), triangulated (not bilinear) corner-surface sampling for
+## segment wall tops/bottoms, and segCap edge-seal triangles. Debug
+## tool: --ray=px,py single-ray microscope. Sections below kept for
+## history.
+
+## EMBER LEAK — instrumented state (historical)
 
 debug-view now has LEAK-ENTRY clustering (bad rays report where they
 first cross data-air → data-solid) and --faces[=x,z] quad dumps.
