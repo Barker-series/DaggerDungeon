@@ -2068,7 +2068,7 @@ export class DungeonRenderer {
       // cap it square, exactly like the old per-boundary end caps.
       if (list.length === 2) {
         const other = list[0] === self ? list[1]! : list[0]!;
-        if (Math.abs(other.lo - self.lo) > 0.1 || Math.abs(other.hi - self.hi) > 0.1) {
+        if (Math.abs(other.lo - self.lo) > 0.75 || Math.abs(other.hi - self.hi) > 0.75) {
           return { ox: self.nx * CH, oz: self.nz * CH, lo: self.lo, hi: self.hi, end: true };
         }
       }

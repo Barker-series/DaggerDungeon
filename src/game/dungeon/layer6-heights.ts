@@ -268,36 +268,68 @@ export function computeHeightFields(
     }
   }
 
-  // ── CHAMBER CROSSINGS OPEN UP: a transit corridor cutting through
-  // pre-existing open space must not keep its bore lid — the 3.5 roof
-  // renders as a floating slab hanging inside the room. Any null-biome
-  // corridor tile beside same-level walkable air clearly taller than
-  // the bore adopts that ceiling; three relaxation passes carry the
-  // opening across the corridor's width, and the bore re-roofs itself
-  // where rock actually surrounds it. Outside rims are excluded — the
-  // mouth sweep owns those transitions. Purely local (4-neighbor reads
-  // on this window's own grids), so seams stay exact by construction.
+  // ── INTERIOR MOUTH SWEEP: a transit corridor meeting tall interior
+  // space (a biome chamber) must not butt its 3.5 lid against the
+  // room as a floating slab — the same problem the cave-mouth sweep
+  // solves at outside rims. Corridor ceilings within MOUTH_RANGE of a
+  // BIOME-tall walkable tile ramp from that ceiling down to the bore
+  // clearance, landing at 3.5 BY CONSTRUCTION — no open-ended
+  // relaxation, so a bore chained to a chamber re-roofs a fixed few
+  // tiles in instead of hollowing to an arbitrary frontier shelf.
+  // Seeds are biome tiles only (their ceilings are profile-derived,
+  // never products of this sweep), outside rims stay with the
+  // cave-mouth sweep, and floors may only step level-or-down toward
+  // the chamber (never carving under higher ground). Bounded BFS on
+  // window-local grids: seams stay exact.
   {
-    const OPEN_MARGIN = 1.0;
-    for (let pass = 0; pass < 3; pass++) {
-      const snap = ceiling.map((row) => [...row]);
-      for (let tz = 0; tz < gridTiles; tz++) {
-        for (let tx = 0; tx < gridTiles; tx++) {
-          if (!isFloor(tx, tz)) continue;
-          if (biomeAt(tx, tz)) continue; // null-biome corridors only
-          const f = Math.max(floor[tz]![tx]!, 0);
-          let adopt = ceiling[tz]![tx]!;
-          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-            const nx = tx + dx;
-            const nz = tz + dz;
-            if (!isFloor(nx, nz)) continue;
-            if (biomeAt(nx, nz) === 'outside') continue;
-            if (Math.abs(Math.max(floor[nz]![nx]!, 0) - f) > 1.5) continue;
-            const nc = snap[nz]![nx]!;
-            if (nc > f + TUNNEL_CLEARANCE + OPEN_MARGIN) adopt = Math.max(adopt, nc);
-          }
-          ceiling[tz]![tx] = adopt;
+    const RANGE = 4;
+    const dist = new Int16Array(gridTiles * gridTiles).fill(-1);
+    const seedCeil = new Float64Array(gridTiles * gridTiles);
+    let frontier: number[] = [];
+    for (let tz = 0; tz < gridTiles; tz++) {
+      for (let tx = 0; tx < gridTiles; tx++) {
+        if (!isFloor(tx, tz)) continue;
+        const b = biomeAt(tx, tz);
+        if (!b || b === 'outside') continue;
+        const f = Math.max(floor[tz]![tx]!, 0);
+        const c = ceiling[tz]![tx]!;
+        if (c <= f + TUNNEL_CLEARANCE + 1.0) continue;
+        const k = tz * gridTiles + tx;
+        dist[k] = 0;
+        seedCeil[k] = c;
+        frontier.push(k);
+      }
+    }
+    for (let d = 1; d <= RANGE && frontier.length > 0; d++) {
+      const next: number[] = [];
+      for (const k of frontier) {
+        const tx = k % gridTiles;
+        const tz = Math.floor(k / gridTiles);
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+          const nx = tx + dx;
+          const nz = tz + dz;
+          if (!isFloor(nx, nz)) continue;
+          if (biomeAt(nx, nz)) continue; // sweep null-biome corridors only
+          const nk = nz * gridTiles + nx;
+          if (dist[nk]! >= 0) continue;
+          if (Math.max(floor[nz]![nx]!, 0) - Math.max(floor[tz]![tx]!, 0) > 1.5) continue;
+          dist[nk] = d;
+          seedCeil[nk] = seedCeil[k]!;
+          next.push(nk);
         }
+      }
+      frontier = next;
+    }
+    for (let tz = 0; tz < gridTiles; tz++) {
+      for (let tx = 0; tx < gridTiles; tx++) {
+        const k = tz * gridTiles + tx;
+        const d = dist[k]!;
+        if (d <= 0) continue; // seeds keep their own ceilings
+        const f = Math.max(floor[tz]![tx]!, 0);
+        const bore = f + TUNNEL_CLEARANCE;
+        const t = d / (RANGE + 1);
+        const swept = seedCeil[k]! * (1 - t) + bore * t;
+        ceiling[tz]![tx] = Math.max(ceiling[tz]![tx]!, swept);
       }
     }
   }
