@@ -367,6 +367,7 @@ export class DungeonRenderer {
     this.buildWalls(world, cornerFloors, contours, this.materialsFor, this.meshGroup);
     this.buildPipeChamfers(world, this.meshGroup);
     this.buildSegmentWalls(world, contours[0]!, cornerFloors[0]!, this.meshGroup);
+    this.buildTunnelTrim(world, contours[0]!, this.meshGroup);
   }
 
   /** Adopt a window as the chunk data source. Windows are RIM-EXACT
@@ -529,6 +530,7 @@ export class DungeonRenderer {
     this.buildWalls(w, ctx.cornerFloors, ctx.contours, this.materialsFor, chunk.group, bounds);
     this.buildPipeChamfers(w, chunk.group, bounds);
     this.buildSegmentWalls(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
+    this.buildTunnelTrim(w, ctx.contours[0]!, chunk.group, bounds);
     chunk.buildMs += performance.now() - jobStart;
     if (chunk.jobs.length === 0) {
       chunk.complete = true;
@@ -1464,9 +1466,6 @@ export class DungeonRenderer {
             // emission choice above, which skips flat when octagonal.)
             if (emitOctagonal) {
               const TCH = TUNNEL_CH;
-              const S2 = Math.SQRT1_2;
-              const inX = nrmX * TCH;
-              const inZ = nrmZ * TCH;
               const pushQ = (
                 a0x: number, a0y: number, a0z: number,
                 a1x: number, a1y: number, a1z: number,
@@ -1480,22 +1479,15 @@ export class DungeonRenderer {
                 buf.uvs.push(0, a0y / TILE_SIZE, 1, a1y / TILE_SIZE, 1, b1y / TILE_SIZE, 0, b0y / TILE_SIZE);
                 addOrientedQuad(buf, vi, qnx, qny, qnz);
               };
-              // Shortened flat wall band
+              // Shortened flat wall band. The 45° floor/ceiling flares
+              // that complete the profile come from buildTunnelTrim —
+              // ONE continuous mitered pass over ALL corridor wall
+              // pieces (this boundary included), so trim never breaks
+              // at segment/boundary/corner handoffs.
               pushQ(
                 ex0, lo0 + TCH, ez0, ex1, lo1 + TCH, ez1,
                 ex1, hi1 - TCH, ez1, ex0, hi0 - TCH, ez0,
                 nrmX, 0, nrmZ,
-              );
-              // Diagonals (floor and ceiling)
-              pushQ(
-                ex0, lo0 + TCH, ez0, ex1, lo1 + TCH, ez1,
-                ex1 + inX, lo1, ez1 + inZ, ex0 + inX, lo0, ez0 + inZ,
-                nrmX * S2, S2, nrmZ * S2,
-              );
-              pushQ(
-                ex0, hi0 - TCH, ez0, ex1, hi1 - TCH, ez1,
-                ex1 + inX, hi1, ez1 + inZ, ex0 + inX, hi0, ez0 + inZ,
-                nrmX * S2, -S2, nrmZ * S2,
               );
               // Cap band above the ceiling junction when the shared wall
               // cap sits higher than this segment (the old override band)
@@ -1506,98 +1498,6 @@ export class DungeonRenderer {
                   nrmX, 0, nrmZ,
                 );
               }
-              // End caps: does the chamfer continue past each end? The
-              // next boundary along the wall must be the same pairing —
-              // tunnel air beside Wall — with the same span bounds.
-              const tangent: [number, number] = dx !== 0 ? [0, 1] : [1, 0];
-              const continues = (dir: 1 | -1): boolean => {
-                const nAirX = airX + tangent[0] * dir;
-                const nAirZ = airZ + tangent[1] * dir;
-                const nSolX = solidX + tangent[0] * dir;
-                const nSolZ = solidZ + tangent[1] * dir;
-                if (nAirX < 0 || nAirZ < 0 || nAirX >= w || nAirZ >= h) return false;
-                if (world.levels[0]!.tiles[nAirZ]![nAirX] === TileType.Wall) return false;
-                if (tileBiome(world.levels[0]!.cellBiomes, nAirX, nAirZ) !== null) return false;
-                if (nSolX < 0 || nSolZ < 0 || nSolX >= w || nSolZ >= h) return false;
-                if (world.levels[0]!.tiles[nSolZ]![nSolX] !== TileType.Wall) return false;
-                return world.columns[nAirZ * w + nAirX]!.some((s2) =>
-                  Math.abs(clipY(s2.floor) - lo) < 0.05 && Math.abs(clipY(s2.ceil) - hi) < 0.05);
-              };
-              /** Close one end of the octagonal run. Three cases:
-               *  - CONTINUES: nothing (handled by caller).
-               *  - CONVEX CORNER (the wall mass ends; a perpendicular
-               *    tunnel wall with the same span turns the corner):
-               *    emit MITER triangles — the corner pieces that make
-               *    the chamfer turn the corner as one surface. X-facing
-               *    boundaries own the miter so it isn't drawn twice.
-               *  - OTHERWISE (doorway, span change): plane end caps
-               *    close the wedges. */
-              const closeEnd = (end: 0 | 1): void => {
-                const ex = end === 0 ? ex0 : ex1;
-                const ez = end === 0 ? ez0 : ez1;
-                const loE = end === 0 ? lo0 : lo1;
-                const hiE = end === 0 ? hi0 : hi1;
-                const dirSign = end === 0 ? -1 : 1;
-                const cnx = tangent[0] * dirSign;
-                const cnz = tangent[1] * dirSign;
-                const tri = (
-                  p0x: number, p0y: number, p0z: number,
-                  p1x: number, p1y: number, p1z: number,
-                  p2x: number, p2y: number, p2z: number,
-                  gnx: number, gny: number, gnz: number,
-                ): void => {
-                  const vi = buf.verts.length / 3;
-                  buf.verts.push(p0x, p0y, p0z, p1x, p1y, p1z, p2x, p2y, p2z);
-                  const nl = Math.hypot(gnx, gny, gnz) || 1;
-                  for (let k = 0; k < 3; k++) buf.norms.push(gnx / nl, gny / nl, gnz / nl);
-                  buf.uvs.push(0, 0, 1, 0, 0.5, 1);
-                  const p = buf.verts;
-                  const b0 = vi * 3;
-                  const abx = p[b0 + 3]! - p[b0]!, aby = p[b0 + 4]! - p[b0 + 1]!, abz = p[b0 + 5]! - p[b0 + 2]!;
-                  const acx = p[b0 + 6]! - p[b0]!, acy2 = p[b0 + 7]! - p[b0 + 1]!, acz = p[b0 + 8]! - p[b0 + 2]!;
-                  const gx = aby * acz - abz * acy2;
-                  const gy = abz * acx - abx * acz;
-                  const gz = abx * acy2 - aby * acx;
-                  if (gx * gnx + gy * gny + gz * gnz >= 0) buf.idxs.push(vi, vi + 1, vi + 2);
-                  else buf.idxs.push(vi, vi + 2, vi + 1);
-                };
-                // Convex-corner test: past this end, the SOLID side opens
-                // to air whose column carries the same span — the wall
-                // turns; the corner piece belongs there.
-                const bSolX = solidX + tangent[0] * dirSign;
-                const bSolZ = solidZ + tangent[1] * dirSign;
-                const beyondOpen = bSolX >= 0 && bSolZ >= 0 && bSolX < w && bSolZ < h
-                  && world.levels[0]!.tiles[bSolZ]![bSolX] !== TileType.Wall
-                  && tileBiome(world.levels[0]!.cellBiomes, bSolX, bSolZ) === null
-                  && world.columns[bSolZ * w + bSolX]!.some((s2) =>
-                    Math.abs(clipY(s2.floor) - lo) < 0.05 && Math.abs(clipY(s2.ceil) - hi) < 0.05);
-                if (beyondOpen) {
-                  // The z-facing partner draws nothing: x-facing owns it.
-                  if (dx === 0) return;
-                  // Ceiling corner piece: corner edge at hi-C up to the
-                  // two inward ceiling points of the meeting chamfers.
-                  tri(
-                    ex, hiE - TCH, ez,
-                    ex + inX, hiE, ez + inZ,
-                    ex + cnx * TCH, hiE, ez + cnz * TCH,
-                    nrmX + cnx, -1, nrmZ + cnz,
-                  );
-                  // Floor corner piece, mirrored.
-                  tri(
-                    ex, loE + TCH, ez,
-                    ex + inX, loE, ez + inZ,
-                    ex + cnx * TCH, loE, ez + cnz * TCH,
-                    nrmX + cnx, 1, nrmZ + cnz,
-                  );
-                  return;
-                }
-                // Plane end caps (doorways, span changes; concave ends
-                // land buried inside the perpendicular wall — harmless).
-                tri(ex, loE, ez, ex, loE + TCH, ez, ex + inX, loE, ez + inZ, cnx, 0, cnz);
-                tri(ex, hiE, ez, ex, hiE - TCH, ez, ex + inX, hiE, ez + inZ, cnx, 0, cnz);
-              };
-              if (!continues(-1)) closeEnd(0);
-              if (!continues(1)) closeEnd(1);
             }
           }
         }
@@ -1823,6 +1723,9 @@ export class DungeonRenderer {
         dz2 = -dz2;
       }
       const uAt = (px: number, pz: number): number => (px * dx2 + pz * dz2) / TILE_SIZE;
+      // (45° edge covers live in buildTunnelTrim — ONE unified pass
+      // over segment AND boundary pieces, so trim never breaks at
+      // system handoffs. The wall quad here is the sealed backing.)
       const emitHalf = (
         ax: number, az: number, aLo: number, aHi: number,
         bx: number, bz: number, bLo: number, bHi: number,
@@ -1844,6 +1747,282 @@ export class DungeonRenderer {
     for (const [key, buf] of bufs) {
       if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor(key).wall);
     }
+  }
+
+  /** UNIFIED TUNNEL TRIM — the octagonal profile's 45° floor/ceiling
+   * flares for corridor walls, emitted by ONE pass over every wall
+   * piece: emitting contour segments (smooth walls) AND the per-tile
+   * boundary halves the segments don't cover. Pieces share endpoints
+   * by construction; at every shared endpoint BOTH flares use the
+   * averaged span heights and a mitered offset computed from the two
+   * incident pieces — so trim runs continuously through turns,
+   * portals, and segment/boundary handoffs with no pairwise stitching
+   * (the pairwise miter/extend/taper patches never composed at
+   * junctions where several met; this replaces all of them).
+   * End caps are emitted only at true chain ends. */
+  private buildTunnelTrim(
+    world: WorldData,
+    contour: ReturnType<typeof buildOrganicContour>,
+    target: THREE.Group,
+    bounds?: RenderBounds,
+  ): void {
+    const CH = 0.6;
+    const S2 = Math.SQRT1_2;
+    const L = world.levels[0]!;
+    const w = L.width;
+    const h = L.height;
+    const x0b = bounds?.x0 ?? 0;
+    const z0b = bounds?.z0 ?? 0;
+    const x1b = bounds?.x1 ?? w;
+    const z1b = bounds?.z1 ?? h;
+    interface TrimPiece {
+      x0: number; z0: number; x1: number; z1: number;
+      nx: number; nz: number; // toward the air side
+      lo: number; hi: number; // adjacent corridor span heights
+      own: boolean; // emitted by this build (piece list is global so joints agree across chunks)
+    }
+    const pieces: TrimPiece[] = [];
+    const isCorridor = (tx: number, tz: number): boolean =>
+      tx >= 0 && tz >= 0 && tx < w && tz < h
+      && L.tiles[tz]![tx] !== TileType.Wall
+      && tileBiome(L.cellBiomes, tx, tz) === null;
+    const spanOf = (tx: number, tz: number): { lo: number; hi: number } | null => {
+      const lo = L.floorHeights[tz]![tx]!;
+      const hi = L.ceilingHeights[tz]![tx]!;
+      if (lo <= -100 || hi >= 100 || hi - lo < 2.2) return null;
+      return { lo, hi };
+    };
+    const org2 = (tx: number, tz: number): boolean =>
+      tx >= 0 && tz >= 0 && tx < w && tz < h
+      && (isOrganicTileIn(L.cellBiomes, tx, tz) || isTransitFloorIn(L, tx, tz));
+    // Face-pass chamfer replica: a soft-wall half the segments DECLINED
+    // renders as a recessed diagonal, not a plane — trim there would
+    // float in air. Mirrors chamferLc>=0 && openHalf (same predicates).
+    const chamfered = (
+      airX: number, airZ: number, solidX: number, solidZ: number,
+      tX: number, tZ: number, lo: number, hi: number,
+    ): boolean => {
+      if (!contour.softWalls.has(solidZ * w + solidX)) return false;
+      const dxT = solidX + tX;
+      const dzT = solidZ + tZ;
+      if (dxT < 0 || dzT < 0 || dxT >= w || dzT >= h) return false;
+      if (L.tiles[dzT]![dxT] === TileType.Wall) return false;
+      if (!world.columns[dzT * w + dxT]!.some((s2) =>
+        Math.abs(s2.floor - lo) < 0.05 && Math.abs(s2.ceil - hi) < 0.05)) return false;
+      return org2(airX, airZ) || org2(solidX, solidZ) || org2(dxT, dzT)
+        || org2(airX + tX, airZ + tZ);
+    };
+    // Segment-coverage replica (the symmetry contract, per half)
+    const halfCov = (airX: number, airZ: number, solidX: number, solidZ: number, k: 0 | 1): boolean => {
+      const dxb = solidX - airX;
+      const gx2 = dxb !== 0 ? Math.min(airX, solidX) : (k === 0 ? airX - 1 : airX);
+      const gz2 = dxb !== 0 ? (k === 0 ? airZ - 1 : airZ) : Math.min(airZ, solidZ);
+      if (!contour.segmentGroups.has(gz2 * w + gx2)) return false;
+      return this.segGroupEmits(L, contour, gx2, gz2).emits;
+    };
+    // ── Boundary pieces: corridor air beside a wall, in face-pass
+    // halves (k=0 = lower-coordinate half) so endpoints land on the
+    // same edge midpoints contour segments end on.
+    for (let tz = 0; tz < h; tz++) {
+      for (let tx = 0; tx < w; tx++) {
+        if (!isCorridor(tx, tz)) continue;
+        const span = spanOf(tx, tz);
+        if (!span) continue;
+        const own = tx >= x0b && tx < x1b && tz >= z0b && tz < z1b;
+        for (const [dxb, dzb] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+          const sx = tx + dxb;
+          const sz = tz + dzb;
+          if (sx < 0 || sz < 0 || sx >= w || sz >= h) continue;
+          if (L.tiles[sz]![sx] !== TileType.Wall) continue;
+          for (const k of [0, 1] as const) {
+            if (halfCov(tx, tz, sx, sz, k)) continue; // segment piece covers it
+            const tX = dxb !== 0 ? 0 : (k === 0 ? -1 : 1);
+            const tZ = dxb !== 0 ? (k === 0 ? -1 : 1) : 0;
+            if (chamfered(tx, tz, sx, sz, tX, tZ, span.lo, span.hi)) continue;
+            let p0x: number, p0z: number, p1x: number, p1z: number;
+            if (dxb !== 0) {
+              const bx = (dxb === 1 ? tx + 1 : tx) * TILE_SIZE;
+              const zs = tz * TILE_SIZE + k * (TILE_SIZE / 2);
+              p0x = bx; p0z = zs; p1x = bx; p1z = zs + TILE_SIZE / 2;
+            } else {
+              const bz = (dzb === 1 ? tz + 1 : tz) * TILE_SIZE;
+              const xs = tx * TILE_SIZE + k * (TILE_SIZE / 2);
+              p0x = xs; p0z = bz; p1x = xs + TILE_SIZE / 2; p1z = bz;
+            }
+            pieces.push({
+              x0: p0x, z0: p0z, x1: p1x, z1: p1z,
+              nx: -dxb, nz: -dzb, lo: span.lo, hi: span.hi, own,
+            });
+          }
+        }
+      }
+    }
+    // ── Segment pieces: emitting contour segments facing a corridor
+    for (const seg of contour.segments) {
+      if (!this.segGroupEmits(L, contour, seg.gx, seg.gz).emits) continue;
+      let nx = -(seg.z1 - seg.z0);
+      let nz = seg.x1 - seg.x0;
+      let wcx = 0;
+      let wcz = 0;
+      let wn = 0;
+      for (const [tx, tz] of [
+        [seg.gx, seg.gz], [seg.gx + 1, seg.gz], [seg.gx, seg.gz + 1], [seg.gx + 1, seg.gz + 1],
+      ] as const) {
+        if (tx < 0 || tz < 0 || tx >= w || tz >= h) continue;
+        if (L.tiles[tz]![tx] !== TileType.Wall) {
+          wcx += (tx + 0.5) * TILE_SIZE;
+          wcz += (tz + 0.5) * TILE_SIZE;
+          wn++;
+        }
+      }
+      if (wn === 0) continue;
+      const mx = (seg.x0 + seg.x1) / 2;
+      const mz = (seg.z0 + seg.z1) / 2;
+      if (nx * (wcx / wn - mx) + nz * (wcz / wn - mz) < 0) {
+        nx = -nx;
+        nz = -nz;
+      }
+      const nl = Math.hypot(nx, nz) || 1;
+      nx /= nl;
+      nz /= nl;
+      // Heights from the corridor tile the piece faces — SPAN heights,
+      // the same source the boundary pieces use, so joints are exact.
+      const aTx = Math.floor((mx + nx * 0.75) / TILE_SIZE);
+      const aTz = Math.floor((mz + nz * 0.75) / TILE_SIZE);
+      if (!isCorridor(aTx, aTz)) continue; // cave/roads walls keep plain faces
+      const span = spanOf(aTx, aTz);
+      if (!span) continue;
+      pieces.push({
+        x0: seg.x0, z0: seg.z0, x1: seg.x1, z1: seg.z1,
+        nx, nz, lo: span.lo, hi: span.hi,
+        own: seg.gx >= x0b && seg.gx < x1b && seg.gz >= z0b && seg.gz < z1b,
+      });
+    }
+    // ── Joints: endpoint-shared piece lists. Heights averaged over all
+    // incident pieces (both sides compute the same average → trim edges
+    // meet point-for-point); offsets mitered when exactly two meet.
+    const jkey = (px: number, pz: number): string =>
+      `${Math.round(px * 4)},${Math.round(pz * 4)}`;
+    const joints = new Map<string, TrimPiece[]>();
+    for (const p of pieces) {
+      for (const k of [jkey(p.x0, p.z0), jkey(p.x1, p.z1)]) {
+        let list = joints.get(k);
+        if (!list) {
+          list = [];
+          joints.set(k, list);
+        }
+        list.push(p);
+      }
+    }
+    const jointAt = (self: TrimPiece, px: number, pz: number): {
+      ox: number; oz: number; lo: number; hi: number; end: boolean;
+    } => {
+      const list = joints.get(jkey(px, pz))!;
+      let lo = 0;
+      let hi = 0;
+      for (const p of list) {
+        lo += p.lo;
+        hi += p.hi;
+      }
+      lo /= list.length;
+      hi /= list.length;
+      if (list.length === 2) {
+        let mx2 = 0;
+        let mz2 = 0;
+        for (const p of list) {
+          const flip = p.nx * self.nx + p.nz * self.nz < 0 ? -1 : 1;
+          mx2 += p.nx * flip;
+          mz2 += p.nz * flip;
+        }
+        const ml = Math.hypot(mx2, mz2);
+        if (ml >= 0.3) {
+          mx2 /= ml;
+          mz2 /= ml;
+          const dotN = Math.max(0.4, mx2 * self.nx + mz2 * self.nz);
+          return { ox: mx2 * (CH / dotN), oz: mz2 * (CH / dotN), lo, hi, end: false };
+        }
+      }
+      return { ox: self.nx * CH, oz: self.nz * CH, lo, hi, end: list.length === 1 };
+    };
+    // ── Emission
+    const buf = newBuffers();
+    const quad = (
+      ax: number, ay: number, az: number, bx: number, by: number, bz: number,
+      cx: number, cy: number, cz: number, dx3: number, dy3: number, dz3: number,
+      qnx: number, qny: number, qnz: number,
+      ux: number, uz: number,
+    ): void => {
+      const vi = buf.verts.length / 3;
+      buf.verts.push(ax, ay, az, bx, by, bz, cx, cy, cz, dx3, dy3, dz3);
+      for (let k = 0; k < 4; k++) buf.norms.push(qnx, qny, qnz);
+      buf.uvs.push(
+        (ax * ux + az * uz) / TILE_SIZE, ay / TILE_SIZE,
+        (bx * ux + bz * uz) / TILE_SIZE, by / TILE_SIZE,
+        (cx * ux + cz * uz) / TILE_SIZE, cy / TILE_SIZE,
+        (dx3 * ux + dz3 * uz) / TILE_SIZE, dy3 / TILE_SIZE,
+      );
+      addOrientedQuad(buf, vi, qnx, qny, qnz);
+    };
+    const tri = (
+      p0x: number, p0y: number, p0z: number,
+      p1x: number, p1y: number, p1z: number,
+      p2x: number, p2y: number, p2z: number,
+      gnx: number, gny: number, gnz: number,
+    ): void => {
+      const vi = buf.verts.length / 3;
+      buf.verts.push(p0x, p0y, p0z, p1x, p1y, p1z, p2x, p2y, p2z);
+      const nl2 = Math.hypot(gnx, gny, gnz) || 1;
+      for (let k = 0; k < 3; k++) buf.norms.push(gnx / nl2, gny / nl2, gnz / nl2);
+      buf.uvs.push(0, 0, 1, 0, 0.5, 1);
+      const abx = p1x - p0x;
+      const aby = p1y - p0y;
+      const abz = p1z - p0z;
+      const acx = p2x - p0x;
+      const acy = p2y - p0y;
+      const acz = p2z - p0z;
+      const gx = aby * acz - abz * acy;
+      const gy = abz * acx - abx * acz;
+      const gz = abx * acy - aby * acx;
+      if (gx * gnx + gy * gny + gz * gnz >= 0) buf.idxs.push(vi, vi + 1, vi + 2);
+      else buf.idxs.push(vi, vi + 2, vi + 1);
+    };
+    for (const p of pieces) {
+      if (!p.own) continue;
+      const j0 = jointAt(p, p.x0, p.z0);
+      const j1 = jointAt(p, p.x1, p.z1);
+      let ux = p.x1 - p.x0;
+      let uz = p.z1 - p.z0;
+      const ul = Math.hypot(ux, uz) || 1;
+      ux /= ul;
+      uz /= ul;
+      if (ux < 0 || (ux === 0 && uz < 0)) {
+        ux = -ux;
+        uz = -uz;
+      }
+      // Floor flare: wall edge at lo+CH flaring out/down to the floor
+      quad(
+        p.x0, j0.lo + CH, p.z0, p.x1, j1.lo + CH, p.z1,
+        p.x1 + j1.ox, j1.lo, p.z1 + j1.oz, p.x0 + j0.ox, j0.lo, p.z0 + j0.oz,
+        p.nx * S2, S2, p.nz * S2, ux, uz,
+      );
+      // Ceiling flare: wall edge at hi-CH flaring out/up to the ceiling
+      quad(
+        p.x0, j0.hi - CH, p.z0, p.x1, j1.hi - CH, p.z1,
+        p.x1 + j1.ox, j1.hi, p.z1 + j1.oz, p.x0 + j0.ox, j0.hi, p.z0 + j0.oz,
+        p.nx * S2, -S2, p.nz * S2, ux, uz,
+      );
+      // End caps at true chain ends only (doorways, region edges)
+      const cap = (px: number, pz: number, j: typeof j0, tx3: number, tz3: number): void => {
+        tri(px, j.lo, pz, px, j.lo + CH, pz, px + j.ox, j.lo, pz + j.oz, tx3, 0, tz3);
+        tri(px, j.hi, pz, px, j.hi - CH, pz, px + j.ox, j.hi, pz + j.oz, tx3, 0, tz3);
+      };
+      const dl2 = Math.hypot(p.x1 - p.x0, p.z1 - p.z0) || 1;
+      const tdx = (p.x1 - p.x0) / dl2;
+      const tdz = (p.z1 - p.z0) / dl2;
+      if (j0.end) cap(p.x0, p.z0, j0, -tdx, -tdz);
+      if (j1.end) cap(p.x1, p.z1, j1, tdx, tdz);
+    }
+    if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor('tunnel').wall);
   }
 
   private buildPipeChamfers(world: WorldData, target: THREE.Group, bounds?: RenderBounds): void {
