@@ -9,6 +9,7 @@ import { Movers } from './Movers';
 import { buildCornerField, sampleCornerField } from '../game/dungeon/heightfield';
 import { spanAt } from '../game/dungeon/columns';
 import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
+import { buildRoadsContour, type RoadsContour } from '../game/dungeon/roadscontour';
 import { tileBiome } from '../game/dungeon/cells';
 import { DungeonBot } from '../bot/DungeonBot';
 import { useGameStore } from '../store/gameStore';
@@ -148,6 +149,7 @@ export class GameEngine {
    *  surfaces the renderer draws */
   private cornerFloors: number[][][] = [];
   private contours: OrganicContour[] = [];
+  private roadsContour: RoadsContour | null = null;
   private seed = 0;
   private vy = 0; // vertical velocity; gridCamera.position.y is the feet
   // Persistent horizontal velocity (Source model) — survives frames and
@@ -451,6 +453,7 @@ export class GameEngine {
     this.cornerFloors = this.world.levels.map((l) =>
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
     this.contours = this.world.levels.map((l) => buildOrganicContour(l));
+    this.roadsContour = buildRoadsContour(this.world);
     markPhase('collision');
     // Adopt the window as the chunk data source. No geometry is built
     // here: chunks stream in via updateChunks each frame — surviving
@@ -1103,6 +1106,7 @@ export class GameEngine {
     const cx = Math.floor(x / TILE_SIZE);
     const cz = Math.floor(z / TILE_SIZE);
     const seen = new Set<unknown>();
+    const seenRoads = new Set<unknown>();
     for (let tz = cz - 1; tz <= cz + 1; tz++) {
       for (let tx = cx - 1; tx <= cx + 1; tx++) {
         // Solidity comes from the column model: a column blocks the body
@@ -1114,7 +1118,8 @@ export class GameEngine {
           : undefined;
         const soft = dungeon !== undefined
           && dungeon.tiles[tz]?.[tx] === TileType.Wall
-          && contour?.softWalls.has(tz * w + tx);
+          && (contour?.softWalls.has(tz * w + tx)
+            || this.roadsContour?.softPlinths.has(tz * w + tx));
         if (!soft) {
           // A span admits the body only if there's BODY HEIGHT of air
           // between the standing surface and its ceiling. Crouching
@@ -1152,6 +1157,20 @@ export class GameEngine {
           for (const seg of segs) {
             if (seen.has(seg)) continue;
             seen.add(seg);
+            if (segmentDistSq(seg, x, z) < r * r) return true;
+          }
+        }
+        // Roads contour bands (plinth cliffs, One Wall v2 slice 2):
+        // height-banded with the SQUARE span rule's semantics — a body
+        // passes a band once its feet are within 1.5 of the band top
+        // (exactly when the old square tile check let it through), so
+        // mantling onto plinths and walking their tops is unchanged.
+        const rsegs = this.roadsContour?.byTile.get(tz * w + tx);
+        if (rsegs) {
+          for (const seg of rsegs) {
+            if (seenRoads.has(seg)) continue;
+            seenRoads.add(seg);
+            if (feetY > seg.hi - 1.5) continue;
             if (segmentDistSq(seg, x, z) < r * r) return true;
           }
         }

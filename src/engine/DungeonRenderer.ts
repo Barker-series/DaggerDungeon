@@ -4,6 +4,7 @@ import type { DungeonData, WorldData, ColumnSpan } from '../game/types';
 import { tileBiome, type BiomeType } from '../game/dungeon/cells';
 import { buildCornerField, sampleCornerField, PIT_LEVEL } from '../game/dungeon/heightfield';
 import { buildOrganicContour, isOrganicTileIn, isTransitFloorIn } from '../game/dungeon/organiccontour';
+import { buildRoadsContour, ROAD_WALL_LEVELS, ROAD_WALL_MODULE, type RoadsContour } from '../game/dungeon/roadscontour';
 import { bridgeTiles, PIPE_BORE, CLEARANCE } from '../game/dungeon/pillar-bridges';
 import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
 
@@ -294,7 +295,7 @@ export class DungeonRenderer {
   private chunkWorld: WorldData | null = null;
   /** seed:stack of the adopted world — a change invalidates every chunk */
   private chunkStamp = '';
-  private chunkCtx: { cornerFloors: number[][][]; contours: Contour[] } | null = null;
+  private chunkCtx: { cornerFloors: number[][][]; contours: Contour[]; roadsContour: RoadsContour } | null = null;
   /** Set when the chunk set was wiped (first load, seed/stack change):
    *  the next updateChunks call builds synchronously so no empty frame
    *  is ever presented. Ordinary recenters stay budgeted. */
@@ -360,14 +361,16 @@ export class DungeonRenderer {
     // authority on organic wall SHAPE — collision segments and the
     // chamfered wall quads both come from it
     const contours = world.levels.map((l) => buildOrganicContour(l));
+    const roadsContour = buildRoadsContour(world);
 
     for (let li = 0; li < world.levels.length; li++) {
       this.buildLevelSurfaces(world, li, cornerFloors[li]!, contours[li]!, this.materialsFor, this.meshGroup);
     }
-    this.buildWalls(world, cornerFloors, contours, this.materialsFor, this.meshGroup);
+    this.buildWalls(world, cornerFloors, contours, roadsContour, this.materialsFor, this.meshGroup);
     this.buildPipeChamfers(world, this.meshGroup);
     this.buildSegmentWalls(world, contours[0]!, cornerFloors[0]!, this.meshGroup);
     this.buildTunnelTrim(world, contours[0]!, this.meshGroup);
+    this.buildRoadsWalls(world, roadsContour, this.meshGroup);
   }
 
   /** Adopt a window as the chunk data source. Windows are RIM-EXACT
@@ -385,6 +388,7 @@ export class DungeonRenderer {
       cornerFloors: world.levels.map((l) =>
         buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround)),
       contours: world.levels.map((l) => buildOrganicContour(l)),
+      roadsContour: buildRoadsContour(world),
     };
     // Two classes of chunk cannot survive a window adoption unchanged
     // (both found as walk-through phantom walls in playtest DDSNAPs,
@@ -527,10 +531,11 @@ export class DungeonRenderer {
         chunk.group, bounds,
       );
     }
-    this.buildWalls(w, ctx.cornerFloors, ctx.contours, this.materialsFor, chunk.group, bounds);
+    this.buildWalls(w, ctx.cornerFloors, ctx.contours, ctx.roadsContour, this.materialsFor, chunk.group, bounds);
     this.buildPipeChamfers(w, chunk.group, bounds);
     this.buildSegmentWalls(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
     this.buildTunnelTrim(w, ctx.contours[0]!, chunk.group, bounds);
+    this.buildRoadsWalls(w, ctx.roadsContour, chunk.group, bounds);
     chunk.buildMs += performance.now() - jobStart;
     if (chunk.jobs.length === 0) {
       chunk.complete = true;
@@ -887,6 +892,7 @@ export class DungeonRenderer {
     world: WorldData,
     cornerFloors: number[][][],
     contours: ReturnType<typeof buildOrganicContour>[],
+    roadsContour: RoadsContour,
     materialsFor: (key: RegionKey) => RegionMaterials,
     target: THREE.Group,
     bounds?: RenderBounds,
@@ -1439,8 +1445,37 @@ export class DungeonRenderer {
               if (!contourC.segmentGroups.has(gz2 * w + gx2)) return false;
               return this.segGroupEmits(world, Lc, contourC, gx2, gz2).emits;
             };
+            // ROADS COVERAGE (slice 2): plinth cliff faces — street
+            // walls AND wall|wall stair risers — are replaced by the
+            // per-module-level roads contour bands. A half is covered
+            // only when EVERY module band this sub-range crosses was
+            // emitted for its group (the symmetry contract, roads
+            // edition). Sub-module lips (courts, 0.1) cross no band
+            // and stay square.
+            const roadsCovered = (k: 0 | 1): boolean => {
+              if (roadsContour.groupLevels.size === 0) return false;
+              const gx2 = dx !== 0
+                ? Math.min(airX, solidX)
+                : (k === 0 ? airX - 1 : airX);
+              const gz2 = dx !== 0
+                ? (k === 0 ? airZ - 1 : airZ)
+                : Math.min(airZ, solidZ);
+              if (gx2 < 0 || gz2 < 0 || gx2 >= w - 1 || gz2 >= h - 1) return false;
+              const g = (gz2 * w + gx2) * ROAD_WALL_LEVELS.length;
+              let needed = 0;
+              for (let li2 = 0; li2 < ROAD_WALL_LEVELS.length; li2++) {
+                const M = ROAD_WALL_LEVELS[li2]!;
+                if (M > lo + 0.1 && M - ROAD_WALL_MODULE < hi - 0.1) {
+                  needed++;
+                  if (!roadsContour.groupLevels.has(g + li2)) return false;
+                }
+              }
+              return needed > 0;
+            };
             const cov0 = halfCovered(0);
             const cov1 = halfCovered(1);
+            const rcov0 = !cov0 && roadsCovered(0);
+            const rcov1 = !cov1 && roadsCovered(1);
             // CAP TRANSOM for suppressed halves: a corner-cut diagonal
             // turns the wall tile's corner wedge into render-air, and
             // the wedge's face against the solid ABOVE the air span
@@ -1478,6 +1513,9 @@ export class DungeonRenderer {
             if (!emitOctagonal) {
               if (cov0) {
                 emitCapTransom(0, 0.5);
+              } else if (rcov0) {
+                // roads contour band covers this half (plinth tops
+                // roof any cut wedge — no transom needed)
               } else if (chamferLc >= 0 && o0) {
                 emitChamfer(0);
                 emitTransom(0, 0.5);
@@ -1486,6 +1524,8 @@ export class DungeonRenderer {
               }
               if (cov1) {
                 emitCapTransom(0.5, 1);
+              } else if (rcov1) {
+                // roads contour band covers this half
               } else if (chamferLc >= 0 && o1) {
                 emitChamfer(1);
                 emitTransom(0.5, 1);
@@ -2190,6 +2230,101 @@ export class DungeonRenderer {
       if (j1.end) cap(p.x1, p.z1, j1, tdx, tdz);
     }
     if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor('tunnel').wall);
+  }
+
+  /** ROADS WALLS (One Wall v2, slice 2): extrude the per-module-level
+   * roads contour bands as plain vertical quads — flat 45° planes on
+   * every plinth cliff, street walls and stair risers alike, sharp
+   * brutalist edges with no trim profile. Collision consumes the same
+   * segments height-banded (GameEngine), so drawn = hit. */
+  private buildRoadsWalls(
+    world: WorldData,
+    roadsContour: RoadsContour,
+    target: THREE.Group,
+    bounds?: RenderBounds,
+  ): void {
+    if (roadsContour.segments.length === 0) return;
+    const x0b = bounds?.x0 ?? 0;
+    const z0b = bounds?.z0 ?? 0;
+    const x1b = bounds?.x1 ?? world.levels[0]!.width;
+    const z1b = bounds?.z1 ?? world.levels[0]!.height;
+    const buf = newBuffers();
+    for (const seg of roadsContour.segments) {
+      if (seg.gx < x0b || seg.gx >= x1b || seg.gz < z0b || seg.gz >= z1b) continue;
+      // Canonical direction for world-anchored UVs (continuous across
+      // colinear neighbors, arc-length true on diagonals)
+      let dx2 = seg.x1 - seg.x0;
+      let dz2 = seg.z1 - seg.z0;
+      const dl = Math.hypot(dx2, dz2) || 1;
+      dx2 /= dl;
+      dz2 /= dl;
+      if (dx2 < 0 || (dx2 === 0 && dz2 < 0)) {
+        dx2 = -dx2;
+        dz2 = -dz2;
+      }
+      const uAt = (px: number, pz: number): number => (px * dx2 + pz * dz2) / TILE_SIZE;
+      const vi = buf.verts.length / 3;
+      buf.verts.push(
+        seg.x0, seg.lo, seg.z0,
+        seg.x1, seg.lo, seg.z1,
+        seg.x1, seg.hi, seg.z1,
+        seg.x0, seg.hi, seg.z0,
+      );
+      for (let k = 0; k < 4; k++) buf.norms.push(seg.nx, 0, seg.nz);
+      buf.uvs.push(
+        uAt(seg.x0, seg.z0), seg.lo / TILE_SIZE,
+        uAt(seg.x1, seg.z1), seg.lo / TILE_SIZE,
+        uAt(seg.x1, seg.z1), seg.hi / TILE_SIZE,
+        uAt(seg.x0, seg.z0), seg.hi / TILE_SIZE,
+      );
+      addOrientedQuad(buf, vi, seg.nx, 0, seg.nz);
+      // SOFFIT: a diagonal band cuts a corner off the block; the top
+      // surface then OVERHANGS the wall plane, and through the cut you
+      // look up at the back of the up-facing plinth top. Roof the wedge
+      // with a proper down-facing triangle (nudged below the top plane
+      // so the two never z-fight). Straight segments lie on the tile
+      // boundary — no wedge, no soffit.
+      if (seg.x0 !== seg.x1 && seg.z0 !== seg.z1) {
+        const ccx = (seg.gx + 1) * TILE_SIZE;
+        const ccz = (seg.gz + 1) * TILE_SIZE;
+        const mx = (seg.x0 + seg.x1) / 2;
+        const mz = (seg.z0 + seg.z1) / 2;
+        // The corner triangle (m0, m1, cell-center) is the mismatch
+        // between the square data field and the smooth render line:
+        //  - cell-center on the LOW side (one HIGH tile, corner cut
+        //    OFF the block): render-air over data-solid — the plinth
+        //    top overhangs; roof the wedge with a DOWN-facing soffit,
+        //    nudged under the top plane so they never z-fight.
+        //  - cell-center on the HIGH side (one LOW tile, corner
+        //    FILLED): render-solid over data-air — an open-topped
+        //    triangular well between the band walls; lid it with an
+        //    UP-facing triangle flush at the band top.
+        // If the band ABOVE cuts this same group, the wedge/bulge
+        // continues upward and the upper band's triangle roofs or
+        // lids it — a mid-height triangle here would float inside
+        // the shared void (or lie buried in the shared mass).
+        const gKey = (seg.gz * world.levels[0]!.width + seg.gx) * ROAD_WALL_LEVELS.length;
+        if (seg.levelIdx + 1 < ROAD_WALL_LEVELS.length
+          && roadsContour.groupLevels.has(gKey + seg.levelIdx + 1)) continue;
+        const side = (ccx - mx) * seg.nx + (ccz - mz) * seg.nz;
+        const down = side > 0;
+        const sy = down ? seg.hi - 0.02 : seg.hi;
+        const ny = down ? -1 : 1;
+        const ti = buf.verts.length / 3;
+        buf.verts.push(seg.x0, sy, seg.z0, seg.x1, sy, seg.z1, ccx, sy, ccz);
+        for (let k = 0; k < 3; k++) buf.norms.push(0, ny, 0);
+        buf.uvs.push(
+          seg.x0 / TILE_SIZE, seg.z0 / TILE_SIZE,
+          seg.x1 / TILE_SIZE, seg.z1 / TILE_SIZE,
+          ccx / TILE_SIZE, ccz / TILE_SIZE,
+        );
+        // Wind so the geometric normal matches ny (cross.y sign)
+        const crossY = (seg.z1 - seg.z0) * (ccx - seg.x0) - (seg.x1 - seg.x0) * (ccz - seg.z0);
+        if (crossY * ny >= 0) buf.idxs.push(ti, ti + 1, ti + 2);
+        else buf.idxs.push(ti, ti + 2, ti + 1);
+      }
+    }
+    if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor('outside').wall);
   }
 
   private buildPipeChamfers(world: WorldData, target: THREE.Group, bounds?: RenderBounds): void {
