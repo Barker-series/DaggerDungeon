@@ -204,6 +204,31 @@ const img = new Uint8Array(W * H * 3);
 let missPixels = 0;
 let backPixels = 0;
 const backSpots = new Map<string, number>();
+// HOLE-ENTRY clustering: for each bad ray (miss or wrong-side), march
+// the COLUMN MODEL to where the ray first crosses from data-air into
+// data-solid — that boundary is where the missing face belongs. Hit
+// points name where rays LAND; entry points name where they LEAK.
+const entrySpots = new Map<string, number>();
+const dataAir = (x: number, y: number, z: number): boolean => {
+  const tx = Math.floor(x / TILE_SIZE);
+  const tz = Math.floor(z / TILE_SIZE);
+  if (tx < 0 || tz < 0 || tx >= L.width || tz >= L.height) return true;
+  return world.columns[tz * L.width + tx]!.some((s) => s.floor < y && y < s.ceil);
+};
+const recordEntry = (ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, maxD: number): void => {
+  let wasAir = dataAir(ox, oy, oz);
+  for (let t = 0.5; t < Math.min(maxD, 160); t += 0.5) {
+    const inAir = dataAir(ox + dx * t, oy + dy * t, oz + dz * t);
+    if (wasAir && !inAir) {
+      const tx = Math.floor((ox + dx * t) / TILE_SIZE);
+      const tz = Math.floor((oz + dz * t) / TILE_SIZE);
+      const k = `${tx},${tz}`;
+      entrySpots.set(k, (entrySpots.get(k) ?? 0) + 1);
+      return;
+    }
+    wasAir = inAir;
+  }
+};
 const BACKFACE_VIS = process.argv.includes('--backfaces');
 for (let py = 0; py < H; py++) {
   for (let px = 0; px < W; px++) {
@@ -218,6 +243,7 @@ for (let py = 0; py < H; py++) {
     const i = (py * W + px) * 3;
     if (!Number.isFinite(d)) {
       missPixels++;
+      recordEntry(eye.x, eye.y, eye.z, dx, dy, dz, 160);
       img[i] = 255; img[i + 1] = 0; img[i + 2] = 255; // MAGENTA = hole/sky
       continue;
     }
@@ -235,6 +261,7 @@ for (let py = 0; py < H; py++) {
       const btz = Math.floor((eye.z + dz * d) / TILE_SIZE);
       const bk = `${btx},${btz}`;
       backSpots.set(bk, (backSpots.get(bk) ?? 0) + 1);
+      recordEntry(eye.x, eye.y, eye.z, dx, dy, dz, d);
     }
     const light = 0.45 + 0.55 * Math.abs(n[0]! * 0.35 + n[1]! * 0.85 + n[2]! * 0.4);
     const fog = Math.max(0.25, 1 - d / 160);
@@ -264,6 +291,14 @@ writeFileSync(ppm, Buffer.concat([Buffer.from(`P6\n${W} ${H}\n255\n`), Buffer.fr
 try {
   execSync(`magick ${ppm} ${outPath} 2>/dev/null || convert ${ppm} ${outPath}`);
   console.log(`view rendered: ${outPath} (missPixels=${missPixels} magenta=nothing hit; backfacePixels=${backPixels}${BACKFACE_VIS ? ' shown CYAN' : ' — rerun with --backfaces to see them'})`);
+  if (entrySpots.size > 0) {
+    const top = [...entrySpots.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+    console.log('LEAK ENTRY tiles (where bad rays first crossed data-air → data-solid — the missing face lives here):');
+    for (const [k, count] of top) {
+      const [tx, tz] = k.split(',').map(Number);
+      console.log(`  tile(${tx},${tz}) ${count} rays  world(${(tx! * TILE_SIZE + 1.5).toFixed(1)}, ${(tz! * TILE_SIZE + 1.5).toFixed(1)})`);
+    }
+  }
 } catch {
   console.log(`view rendered: ${ppm} (PPM; install ImageMagick for PNG) missPixels=${missPixels}`);
 }

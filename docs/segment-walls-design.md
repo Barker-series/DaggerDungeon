@@ -85,6 +85,28 @@ it ALONG SEGMENTS.
 - All gates green on this state; visuals are center-model bevels until
   the extruder lands.
 
+## EMBER LEAK — instrumented state (continue here)
+
+debug-view now has LEAK-ENTRY clustering (bad rays report where they
+first cross data-air → data-solid) and --faces[=x,z] quad dumps.
+Findings for the ember repro (seed 1785798090972 @ 369.82,0.5,369.87):
+- The leak ENTERS at tile (124,126) [world 373.5,379.5], ~3 tiles from
+  the camera — NOT at the distant wrong-side hotspot tiles.
+- Pre-v2 (c9534d4) renders this snap CLEAN; v2 leaks 1318px.
+- Wall faces at the z=378 boundary are PRESENT and rise to ~15-16
+  (segment pieces x 369..373.5 + corner diagonal to 374.25,378.75).
+- Two experiments left the count invariant-or-worse and are REVERTED
+  (flat-max caps, rise-to-cap wall tops): the leak is NOT a wall-band
+  or cap-height issue on that boundary.
+- NEXT: dump the remaining faces of tile (124,126) — the x≈375 plane
+  n(±1,0,0), the continuation past the corner diagonal at
+  (374.25,378.75), and the tile's cap/ceiling quads — one of those is
+  missing/misplaced vs pre-v2 (diff against the c9534d4 worktree dump,
+  /tmp/faces-prev.txt technique). Suspect: the boundary continuation
+  where the corner diagonal hands off to the next boundary segment
+  (the diagonal ends mid-tile; what seals from (374.25,378.75)
+  onward?) — likely the true END-SEAL instance.
+
 ## Remaining feature: END-SEALS (open — all remaining defects are this)
 
 Wherever a segment chain terminates (against hard walls, sky-failing
