@@ -55,6 +55,47 @@ const L = world.levels[0]!;
 const scene = new THREE.Scene();
 new DungeonRenderer(scene).build(world);
 
+// ── FACE DUMP: --faces lists every triangle near the first mark (or
+// --faces=x,z for an explicit point) with its mesh, bounds, and
+// authored normal — read the actual geometry instead of guessing. ──
+const facesArg = process.argv.find((a) => a.startsWith('--faces'));
+if (facesArg) {
+  const coords = facesArg.includes('=')
+    ? facesArg.split('=')[1]!.split(',').map(Number)
+    : [marks[0]?.[0] ?? snap.x, marks[0]?.[2] ?? snap.z];
+  const [fx, fz] = [coords[0]!, coords[1] ?? coords[0]!];
+  const R = 2.0;
+  console.log(`\nFACE DUMP around (${fx.toFixed(1)}, ${fz.toFixed(1)}) r=${R}:`);
+  let meshIdx = 0;
+  scene.traverse((o) => {
+    const mesh = o as unknown as { isMesh?: boolean; geometry?: { getAttribute: (n: string) => { array: ArrayLike<number>; count: number } } };
+    if (!mesh.isMesh || !mesh.geometry) { return; }
+    const idx = meshIdx++;
+    const g = mesh.geometry as unknown as {
+      getAttribute: (n: string) => { array: ArrayLike<number>; count: number };
+      index: { array: ArrayLike<number>; count: number } | null;
+    };
+    const pos = g.getAttribute('position');
+    const nrm = g.getAttribute('normal');
+    const count = g.index ? g.index.count : pos.count;
+    const vAt = (k: number): number => (g.index ? (g.index.array[k]! as number) : k);
+    for (let i = 0; i + 2 < count; i += 3) {
+      const vs = [vAt(i), vAt(i + 1), vAt(i + 2)];
+      const xs = vs.map((v) => pos.array[v * 3]! as number);
+      const ys = vs.map((v) => pos.array[v * 3 + 1]! as number);
+      const zs = vs.map((v) => pos.array[v * 3 + 2]! as number);
+      if (Math.min(...xs) > fx + R || Math.max(...xs) < fx - R) continue;
+      if (Math.min(...zs) > fz + R || Math.max(...zs) < fz - R) continue;
+      const n = [nrm.array[vs[0]! * 3]!, nrm.array[vs[0]! * 3 + 1]!, nrm.array[vs[0]! * 3 + 2]!];
+      console.log(
+        `  m${idx} tri ${(i / 3) | 0}: `
+        + xs.map((x, k) => `(${x.toFixed(2)},${ys[k]!.toFixed(2)},${zs[k]!.toFixed(2)})`).join(' ')
+        + ` n(${(n as number[]).map((v) => v.toFixed(2)).join(',')})`,
+      );
+    }
+  });
+}
+
 /** 9 position floats + 3 authored-normal floats (the renderer sets
  *  explicit normals and uses DoubleSide, so WINDING is meaningless —
  *  the authored normal is the only truth about which way a face looks) */

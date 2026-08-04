@@ -770,10 +770,14 @@ export class DungeonRenderer {
                 // soft walls (transitions, demoted groups) KEEP the
                 // jitter and flaps: removing them there opened the very
                 // hairlines the flaps exist to hide (found via DDSNAP).
+                // Flush whenever ANY adjacent group emits segment walls:
+                // mixed tiles otherwise get 3.56-vs-3.50 cap steps at
+                // the junction (face-dump verified). The old-method
+                // chamfer halves' top margins bury into the flush plane.
                 const segCap = soft && ([[x - 1, y - 1], [x, y - 1], [x - 1, y], [x, y]] as const)
-                  .every(([gx2, gz2]) =>
-                    !contour.segmentGroups.has(gz2 * w + gx2)
-                    || this.segGroupEmits(dungeon, contour, gx2, gz2).emits);
+                  .some(([gx2, gz2]) =>
+                    contour.segmentGroups.has(gz2 * w + gx2)
+                    && this.segGroupEmits(dungeon, contour, gx2, gz2).emits);
                 const ac = sum / count + (segCap ? 0 : 0.06);
                 // Overlap flap per side, and ONLY toward a floor
                 // neighbor whose ceiling clearly differs from the cap:
@@ -1408,38 +1412,44 @@ export class DungeonRenderer {
             // Any group that declines (pit/sky sentinels, mixed-hard
             // walls) falls back to the original chamfer/flat emission —
             // suppression without replacement is a hole.
-            const segCovered = (() => {
+            // PER-HALF coverage: each half of a boundary belongs to one
+            // 2x2 contour group; a half is covered exactly when ITS
+            // group emitted segment walls. All-or-nothing per boundary
+            // either doubled geometry (z-fighting where one group
+            // emitted) or left holes (where suppression outran
+            // emission). Face-dump verified, Aug 2026.
+            const halfCovered = (k: 0 | 1): boolean => {
               if (chamferLc < 0) return false;
               const Lc = world.levels[chamferLc]!;
               const contourC = contours[chamferLc]!;
-              const gPairs: [number, number][] = dx !== 0
-                ? [[Math.min(airX, solidX), airZ - 1], [Math.min(airX, solidX), airZ]]
-                : [[airX - 1, Math.min(airZ, solidZ)], [airX, Math.min(airZ, solidZ)]];
-              let anySegments = false;
-              for (const [gx2, gz2] of gPairs) {
-                if (!contourC.segmentGroups.has(gz2 * w + gx2)) continue;
-                anySegments = true;
-                if (!this.segGroupEmits(Lc, contourC, gx2, gz2).emits) return false;
-              }
-              return anySegments;
-            })();
-            if (segCovered) {
-              // segment walls cover this sub-range
-            } else if (chamferLc >= 0 && (o0 || o1)) {
-              if (o0) {
+              const gx2 = dx !== 0
+                ? Math.min(airX, solidX)
+                : (k === 0 ? airX - 1 : airX);
+              const gz2 = dx !== 0
+                ? (k === 0 ? airZ - 1 : airZ)
+                : Math.min(airZ, solidZ);
+              if (!contourC.segmentGroups.has(gz2 * w + gx2)) return false;
+              return this.segGroupEmits(Lc, contourC, gx2, gz2).emits;
+            };
+            const cov0 = halfCovered(0);
+            const cov1 = halfCovered(1);
+            if (!emitOctagonal) {
+              if (cov0) {
+                // segment wall covers this half
+              } else if (chamferLc >= 0 && o0) {
                 emitChamfer(0);
                 emitTransom(0, 0.5);
               } else {
                 emitFlat(0, 0.5);
               }
-              if (o1) {
+              if (cov1) {
+                // segment wall covers this half
+              } else if (chamferLc >= 0 && o1) {
                 emitChamfer(1);
                 emitTransom(0.5, 1);
               } else {
                 emitFlat(0.5, 1);
               }
-            } else if (!emitOctagonal) {
-              emitFlat(0, 1);
             }
 
             // ── OCTAGONAL TUNNEL CORRIDORS — REAL wall geometry, not
