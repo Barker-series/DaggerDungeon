@@ -1887,9 +1887,29 @@ export class DungeonRenderer {
       nz /= nl;
       // Heights from the corridor tile the piece faces — SPAN heights,
       // the same source the boundary pieces use, so joints are exact.
-      const aTx = Math.floor((mx + nx * 0.75) / TILE_SIZE);
-      const aTz = Math.floor((mz + nz * 0.75) / TILE_SIZE);
-      if (!isCorridor(aTx, aTz)) continue; // cave/roads walls keep plain faces
+      // The air tile is chosen from the GROUP's walkable tiles (nearest
+      // to the segment on its air side) — a fixed-offset probe from a
+      // DIAGONAL segment's midpoint overshoots the corner's small air
+      // triangle into the wall tile and drops the piece (the stubbed
+      // trim of Aug 2026).
+      let aTx = -1;
+      let aTz = -1;
+      let bestD = Infinity;
+      for (const [tx, tz] of [
+        [seg.gx, seg.gz], [seg.gx + 1, seg.gz], [seg.gx, seg.gz + 1], [seg.gx + 1, seg.gz + 1],
+      ] as const) {
+        if (!isCorridor(tx, tz)) continue;
+        const cx2 = (tx + 0.5) * TILE_SIZE - mx;
+        const cz2 = (tz + 0.5) * TILE_SIZE - mz;
+        const side = cx2 * nx + cz2 * nz; // prefer the air side
+        const d = cx2 * cx2 + cz2 * cz2 + (side > 0 ? 0 : 1000);
+        if (d < bestD) {
+          bestD = d;
+          aTx = tx;
+          aTz = tz;
+        }
+      }
+      if (aTx < 0) continue; // cave/roads walls keep plain faces
       const span = spanOf(aTx, aTz);
       if (!span) continue;
       pieces.push({
