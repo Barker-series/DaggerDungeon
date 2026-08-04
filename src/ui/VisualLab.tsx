@@ -44,7 +44,11 @@ export function VisualLab({ settings, onChange, onClose }: VisualLabProps) {
   const patch = <K extends keyof VisualSettings>(key: K, value: VisualSettings[K]) =>
     onChange({ ...settings, [key]: value });
   const selectRenderMode = (renderMode: RenderDebugMode) => {
-    const inspectionMode = renderMode === 'solid' || renderMode === 'normals';
+    // ALL inspection modes bypass post: the GTAO prepass swaps
+    // scene.overrideMaterial internally and restores it to null,
+    // wiping the debug override after one frame (the "wireframe
+    // instantly turns off" bug).
+    const inspectionMode = renderMode !== 'lit';
     onChange({
       ...settings,
       renderMode,

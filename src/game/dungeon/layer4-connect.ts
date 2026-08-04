@@ -135,6 +135,25 @@ interface CellCtx {
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const;
 
+/** Routing moves: 4 orthogonal + 4 diagonal. Diagonal runs carve clean
+ *  1:1 staircase boundaries that the wall contour then renders as ONE
+ *  flat 45° plane (marching squares chains colinear corner cuts) — the
+ *  flat diagonal walls the machined look wants. Turns are priced by
+ *  ANGLE so gentle 45° bends beat sharp 90° corners. */
+const MOVES = [
+  [1, 0], [-1, 0], [0, 1], [0, -1],
+  [1, 1], [1, -1], [-1, 1], [-1, -1],
+] as const;
+const MOVE_COST = [1, 1, 1, 1, Math.SQRT2, Math.SQRT2, Math.SQRT2, Math.SQRT2];
+/** turnFactor[a][b] — penalty multiplier for switching move a → move b */
+const TURN_FACTOR: number[][] = MOVES.map(([ax, az]) => MOVES.map(([bx, bz]) => {
+  const dot = (ax * bx + az * bz) / (Math.hypot(ax, az) * Math.hypot(bx, bz));
+  if (dot > 0.99) return 0;       // straight
+  if (dot > 0.5) return 0.4;      // 45° bend
+  if (dot > -0.5) return 1.2;     // 90° turn
+  return 2.5;                     // reversal
+}));
+
 /**
  * Weighted A* over the cell: noise wander + turn penalty + transit-reuse
  * discount. State includes the entry direction so turning has a price.
@@ -144,11 +163,11 @@ function findWeightedRoute(ctx: CellCtx, from: GridPos, to: GridPos): GridPos[] 
   const { x0, z0, x1, z1, locked, wander } = ctx;
   const w = x1 - x0;
   const h = z1 - z0;
-  const states = w * h * 5;
+  const states = w * h * 9;
   const gScore = new Float64Array(states).fill(Infinity);
   const cameFrom = new Int32Array(states).fill(-1);
   const stateOf = (x: number, z: number, dir: number): number =>
-    ((z - z0) * w + (x - x0)) * 5 + dir;
+    ((z - z0) * w + (x - x0)) * 9 + dir;
   const minStep = REUSE_DISCOUNT;
 
   // Binary min-heap of [f, state]
@@ -189,43 +208,49 @@ function findWeightedRoute(ctx: CellCtx, from: GridPos, to: GridPos): GridPos[] 
     return top;
   };
 
-  const start = stateOf(from.x, from.y, 4);
+  // Chebyshev heuristic: with diagonal moves every step reduces
+  // chebyshev distance by at most 1, so h = chebyshev × cheapest step
+  // stays admissible.
+  const hDist = (x: number, z: number): number =>
+    Math.max(Math.abs(x - to.x), Math.abs(z - to.y)) * minStep;
+
+  const start = stateOf(from.x, from.y, 8);
   gScore[start] = 0;
-  push((Math.abs(from.x - to.x) + Math.abs(from.y - to.y)) * minStep, start);
+  push(hDist(from.x, from.y), start);
 
   let goalState = -1;
   for (;;) {
     const next = pop();
     if (!next) break;
     const [, s] = next;
-    const dir = s % 5;
-    const cell = (s - dir) / 5;
+    const dir = s % 9;
+    const cell = (s - dir) / 9;
     const x = x0 + (cell % w);
     const z = z0 + Math.floor(cell / w);
     if (x === to.x && z === to.y) { goalState = s; break; }
     const g = gScore[s]!;
-    for (let d = 0; d < 4; d++) {
-      const nx = x + DIRS[d]![0];
-      const nz = z + DIRS[d]![1];
+    for (let d = 0; d < 8; d++) {
+      const nx = x + MOVES[d]![0];
+      const nz = z + MOVES[d]![1];
       if (nx < x0 || nz < z0 || nx >= x1 || nz >= z1 || locked?.[nz]?.[nx]) continue;
       const onTransit = permanentTransitTiles.has(`${nx},${nz}`);
-      let step = (1 + NOISE_WEIGHT * wander[(nz - z0) * w + (nx - x0)]!)
+      let step = MOVE_COST[d]! * (1 + NOISE_WEIGHT * wander[(nz - z0) * w + (nx - x0)]!)
         * (onTransit ? REUSE_DISCOUNT : 1);
-      if (dir !== 4 && d !== dir) step += TURN_PENALTY;
+      if (dir !== 8) step += TURN_PENALTY * TURN_FACTOR[dir]![d]!;
       const ns = stateOf(nx, nz, d);
       const ng = g + step;
       if (ng >= gScore[ns]!) continue;
       gScore[ns] = ng;
       cameFrom[ns] = s;
-      push(ng + (Math.abs(nx - to.x) + Math.abs(nz - to.y)) * minStep, ns);
+      push(ng + hDist(nx, nz), ns);
     }
   }
   if (goalState < 0) return null;
 
   const route: GridPos[] = [];
   for (let s = goalState; s >= 0; s = cameFrom[s]!) {
-    const dir = s % 5;
-    const cell = (s - dir) / 5;
+    const dir = s % 9;
+    const cell = (s - dir) / 9;
     route.push({ x: x0 + (cell % w), y: z0 + Math.floor(cell / w) });
   }
   route.reverse();

@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { TileType, TILE_SIZE, SKY_CEIL, ABYSS_FLOOR } from '../game/types';
 import type { DungeonData, WorldData, ColumnSpan } from '../game/types';
 import { tileBiome, type BiomeType } from '../game/dungeon/cells';
-import { buildCornerField, PIT_LEVEL } from '../game/dungeon/heightfield';
-import { buildOrganicContour, isOrganicTileIn } from '../game/dungeon/organiccontour';
+import { buildCornerField, sampleCornerField, PIT_LEVEL } from '../game/dungeon/heightfield';
+import { buildOrganicContour, isOrganicTileIn, isTransitFloorIn } from '../game/dungeon/organiccontour';
 import { bridgeTiles, PIPE_BORE, CLEARANCE } from '../game/dungeon/pillar-bridges';
 import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
 
@@ -366,6 +366,7 @@ export class DungeonRenderer {
     }
     this.buildWalls(world, cornerFloors, contours, this.materialsFor, this.meshGroup);
     this.buildPipeChamfers(world, this.meshGroup);
+    this.buildSegmentWalls(world, contours[0]!, cornerFloors[0]!, this.meshGroup);
   }
 
   /** Adopt a window as the chunk data source. Windows are RIM-EXACT
@@ -527,6 +528,7 @@ export class DungeonRenderer {
     }
     this.buildWalls(w, ctx.cornerFloors, ctx.contours, this.materialsFor, chunk.group, bounds);
     this.buildPipeChamfers(w, chunk.group, bounds);
+    this.buildSegmentWalls(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
     chunk.buildMs += performance.now() - jobStart;
     if (chunk.jobs.length === 0) {
       chunk.complete = true;
@@ -746,7 +748,10 @@ export class DungeonRenderer {
               // face seals to cap height, and the mass above is solid —
               // no sightline can ever reach these quads (wireframe
               // audit: a buried strip ringing every tunnel).
-              if (!anyNonTunnel) count = 0;
+              // HARD tunnel-only walls: square face seals, no cap
+              // needed. SOFT bore walls: chamfers open corner pockets —
+              // the cap plate at corridor ceiling height seals them.
+              if (!anyNonTunnel && !soft) count = 0;
               // Columns with their own air spans (bridge passages carved
               // through walls) get span-derived rock ceilings — a cap on
               // top would coincide with them
@@ -759,7 +764,17 @@ export class DungeonRenderer {
                 // at the same height and same-plane overlaps z-fight.
                 // Deterministic per-tile jitter: no two caps are EVER
                 // coplanar (diagonal neighbors' corner overlaps included)
-                const ac = sum / count + 0.06;
+                // SEGMENT-COVERED walls: cap FLUSH with the neighbor
+                // ceilings — the +0.06 jitter opened a sliver band on
+                // the air side of diagonal segment walls. Old-method
+                // soft walls (transitions, demoted groups) KEEP the
+                // jitter and flaps: removing them there opened the very
+                // hairlines the flaps exist to hide (found via DDSNAP).
+                const segCap = soft && ([[x - 1, y - 1], [x, y - 1], [x - 1, y], [x, y]] as const)
+                  .every(([gx2, gz2]) =>
+                    !contour.segmentGroups.has(gz2 * w + gx2)
+                    || this.segGroupEmits(dungeon, contour, gx2, gz2).emits);
+                const ac = sum / count + (segCap ? 0 : 0.06);
                 // Overlap flap per side, and ONLY toward a floor
                 // neighbor whose ceiling clearly differs from the cap:
                 // near-equal heights would z-fight, and a hairline
@@ -785,8 +800,26 @@ export class DungeonRenderer {
                 // Center + side strips: strips never reach the corner
                 // squares, whose diagonal neighbors may hold a ceiling
                 // at yet another height
-                addCeilPatch(buf.ceil, wx, wz, wx + TILE_SIZE, wz + TILE_SIZE, ac);
-                const fw = flap(-1, 0), fe = flap(1, 0), fn = flap(0, -1), fs = flap(0, 1);
+                if (segCap) {
+                  // The ceiling ACCOUNTS FOR THE WALL SMOOTHING: cap
+                  // corners take the corner-ceiling field — the same
+                  // corners segment wall tops interpolate — so the cap
+                  // meets the smooth wall top edge-to-edge over the
+                  // pocket the wall cut out of this tile.
+                  const cc = (cx2: number, cz2: number): number => {
+                    const v = this.cornerCeil(dungeon, cx2, cz2);
+                    return Number.isFinite(v) ? v : ac;
+                  };
+                  addHorizontalQuad(
+                    buf.ceil, wx, wz,
+                    cc(x, y), cc(x + 1, y), cc(x, y + 1), cc(x + 1, y + 1),
+                    false,
+                  );
+                } else {
+                  addCeilPatch(buf.ceil, wx, wz, wx + TILE_SIZE, wz + TILE_SIZE, ac);
+                }
+                const fw = segCap ? 0 : flap(-1, 0), fe = segCap ? 0 : flap(1, 0),
+                  fn = segCap ? 0 : flap(0, -1), fs = segCap ? 0 : flap(0, 1);
                 if (fw > 0) addCeilPatch(buf.ceil, wx - fw, wz, wx, wz + TILE_SIZE, ac);
                 if (fe > 0) addCeilPatch(buf.ceil, wx + TILE_SIZE, wz, wx + TILE_SIZE + fe, wz + TILE_SIZE, ac);
                 if (fn > 0) addCeilPatch(buf.ceil, wx, wz - fn, wx + TILE_SIZE, wz, ac);
@@ -1211,8 +1244,10 @@ export class DungeonRenderer {
               const L = world.levels[chamferLc]!;
               const wallAt = (tx: number, tz: number): boolean =>
                 tx < 0 || tz < 0 || tx >= w || tz >= h || L.tiles[tz]![tx] === TileType.Wall;
+              // Must match the contour's participation predicate exactly
+              // (mutual agreement): organic biomes + carved transit floors
               const org = (tx: number, tz: number): boolean =>
-                isOrganicTileIn(L.cellBiomes, tx, tz);
+                isOrganicTileIn(L.cellBiomes, tx, tz) || isTransitFloorIn(L, tx, tz);
               // A chamfer half replaces the flat face with a DIAGONAL set
               // back inside the wall tile; the boundary plane itself is
               // then sealed only by the matching half from the
@@ -1357,7 +1392,7 @@ export class DungeonRenderer {
             // 'tunnel'-region corridor (null-biome cell, real floor).
             const TUNNEL_CH = 0.6;
             const emitOctagonal = (() => {
-              if (chamferLc >= 0 && (o0 || o1)) return false;
+              if (chamferLc >= 0) return false; // segment wall covers it
               if (airX < 0 || airZ < 0 || airX >= w || airZ >= h) return false;
               if (tileBiome(world.levels[0]!.cellBiomes, airX, airZ) !== null) return false;
               if (world.levels[0]!.tiles[airZ]![airX] === TileType.Wall) return false;
@@ -1366,7 +1401,31 @@ export class DungeonRenderer {
                 && spanAtFloor(airSpans, lo) !== undefined
                 && hi - lo >= 2.2;
             })();
-            if (chamferLc >= 0 && (o0 || o1)) {
+            // ONE WALL v2: when the segment-extruded pass draws this
+            // boundary's wall (BOTH 2x2 groups containing the pair
+            // either have no segments or emit them — the symmetry
+            // contract in segGroupEmits), suppress per-boundary faces.
+            // Any group that declines (pit/sky sentinels, mixed-hard
+            // walls) falls back to the original chamfer/flat emission —
+            // suppression without replacement is a hole.
+            const segCovered = (() => {
+              if (chamferLc < 0) return false;
+              const Lc = world.levels[chamferLc]!;
+              const contourC = contours[chamferLc]!;
+              const gPairs: [number, number][] = dx !== 0
+                ? [[Math.min(airX, solidX), airZ - 1], [Math.min(airX, solidX), airZ]]
+                : [[airX - 1, Math.min(airZ, solidZ)], [airX, Math.min(airZ, solidZ)]];
+              let anySegments = false;
+              for (const [gx2, gz2] of gPairs) {
+                if (!contourC.segmentGroups.has(gz2 * w + gx2)) continue;
+                anySegments = true;
+                if (!this.segGroupEmits(Lc, contourC, gx2, gz2).emits) return false;
+              }
+              return anySegments;
+            })();
+            if (segCovered) {
+              // segment walls cover this sub-range
+            } else if (chamferLc >= 0 && (o0 || o1)) {
               if (o0) {
                 emitChamfer(0);
                 emitTransom(0, 0.5);
@@ -1552,6 +1611,231 @@ export class DungeonRenderer {
    * no floating diagonals. Collision stays square: the wedges are within
    * body-radius reach of walls, so the clip is imperceptible.
    */
+  /** ONE WALL SYSTEM v2 — SEGMENT-EXTRUDED WALLS. For smooth-classified
+   * boundaries, the wall is drawn as quads extruded along the
+   * marching-squares contour segments instead of per-tile-boundary
+   * faces. Colinear segments (a 1:1 staircase) merge into ONE flat 45°
+   * plane — the flat diagonal wall, not per-corner bevels. Collision
+   * already IS these segments (soft walls), so drawn = hit by
+   * construction. Only segments whose group wall tiles are ALL soft
+   * emit (hard walls keep their square faces; a coplanar segment quad
+   * there would z-fight). The face pass skips the sub-ranges these
+   * cover. Design: docs/segment-walls-design.md */
+  /** THE symmetry contract: the face-pass suppression and the extruder
+   * both consult this — a contour group either emits its segment walls
+   * (then per-boundary faces are suppressed) or it doesn't (then square
+   * faces/chamfers stay). Any divergence between the two is a hole. */
+  /** CORNER-CEILING field — the ceiling counterpart of the corner-floor
+   * field: each grid corner takes the MAX ceiling of its adjacent
+   * walkable tiles (sky fillers excluded). Segment wall TOPS and the
+   * cap plates over segment-covered wall tiles BOTH derive from these
+   * corners, so wall top edges and cap edges are the same line — the
+   * ceiling "accounts for the wall smoothing" by construction.
+   * Returns -Infinity when no walkable neighbor qualifies. */
+  private cornerCeil(L: DungeonData, cx: number, cz: number): number {
+    const w = L.width;
+    const h = L.height;
+    let v = -Infinity;
+    for (const [tx, tz] of [[cx - 1, cz - 1], [cx, cz - 1], [cx - 1, cz], [cx, cz]] as const) {
+      if (tx < 0 || tz < 0 || tx >= w || tz >= h) continue;
+      if (L.tiles[tz]![tx] === TileType.Wall) continue;
+      const c = L.ceilingHeights[tz]![tx]!;
+      if (c < 100) v = Math.max(v, c);
+    }
+    return v;
+  }
+
+  /** Basic per-group test: walkable air present, every wall tile soft,
+   *  no pit/sky sentinels. */
+  private segGroupBasic(
+    L: DungeonData,
+    contour: ReturnType<typeof buildOrganicContour>,
+    gx: number,
+    gz: number,
+  ): { ok: boolean; lo: number; hi: number } {
+    const w = L.width;
+    const h = L.height;
+    let lo = Infinity;
+    let hi = -Infinity;
+    let allSoft = true;
+    let wn = 0;
+    for (const [tx, tz] of [[gx, gz], [gx + 1, gz], [gx, gz + 1], [gx + 1, gz + 1]] as const) {
+      if (tx < 0 || tz < 0 || tx >= w || tz >= h) continue;
+      if (L.tiles[tz]![tx] !== TileType.Wall) {
+        lo = Math.min(lo, L.floorHeights[tz]![tx]!);
+        hi = Math.max(hi, L.ceilingHeights[tz]![tx]!);
+        wn++;
+      } else if (!contour.softWalls.has(tz * w + tx)) {
+        allSoft = false;
+      }
+    }
+    const ok = wn > 0 && allSoft && lo > -100 && hi < 100 && hi - lo >= 0.5;
+    return { ok, lo, hi };
+  }
+
+  private segGroupEmits(
+    L: DungeonData,
+    contour: ReturnType<typeof buildOrganicContour>,
+    gx: number,
+    gz: number,
+  ): { emits: boolean; lo: number; hi: number } {
+    const w = L.width;
+    if (!contour.segmentGroups.has(gz * w + gx)) return { emits: false, lo: 0, hi: 0 };
+    const self = this.segGroupBasic(L, contour, gx, gz);
+    // (A neighbor-demotion "transition rule" was tried here and removed:
+    // it demoted whole cave regions to bevels — any pit rim, sky edge,
+    // or lone hard tile reverted its neighborhood — and did not fix the
+    // junction slit it targeted. Transition sealing belongs to explicit
+    // END-SEAL geometry, not blanket demotion.)
+    return { emits: self.ok, lo: self.lo, hi: self.hi };
+  }
+
+  private buildSegmentWalls(
+    world: WorldData,
+    contour: ReturnType<typeof buildOrganicContour>,
+    cornerFloor: number[][],
+    target: THREE.Group,
+    bounds?: RenderBounds,
+  ): void {
+    const L = world.levels[0]!;
+    const w = L.width;
+    const h = L.height;
+    const x0b = bounds?.x0 ?? 0;
+    const z0b = bounds?.z0 ?? 0;
+    const x1b = bounds?.x1 ?? w;
+    const z1b = bounds?.z1 ?? h;
+    const bufs = new Map<RegionKey, MeshBuffers>();
+    const bufFor = (key: RegionKey): MeshBuffers => {
+      let b = bufs.get(key);
+      if (!b) {
+        b = newBuffers();
+        bufs.set(key, b);
+      }
+      return b;
+    };
+    for (const seg of contour.segments) {
+      // Chunk ownership by group anchor — each segment emitted once
+      if (seg.gx < x0b || seg.gx >= x1b || seg.gz < z0b || seg.gz >= z1b) continue;
+      const verdict = this.segGroupEmits(L, contour, seg.gx, seg.gz);
+      if (!verdict.emits) continue;
+      // EXACT per-endpoint junctions — no overshoot margins, no band
+      // hacks (wireframe audit, Aug 2026: margins buried geo in rock
+      // and left sliver gaps where they weren't buried).
+      // BOTTOM: the corner-floor field is bilinear and exact along tile
+      // edges, and segment endpoints LIE on tile edges — sampling it
+      // gives the precise drawn floor height at each endpoint, so the
+      // wall meets the floor surface edge-to-edge.
+      // TOP: the max ceiling of the walkable tiles flanking each
+      // endpoint — the same plane the old per-boundary faces rose to.
+      // Adjacent segments share endpoints, therefore share heights:
+      // chains are watertight by construction.
+      // Heights sampled from the BILINEAR surfaces at any point along
+      // the segment — floors from the corner-floor field, tops from a
+      // bilinear over the corner-ceiling values (the same corners the
+      // caps use, so wall tops and caps share the surface). Diagonal
+      // segments cross tile INTERIORS where bilinear curves away from
+      // a straight edge, so the wall is emitted as two sub-quads with
+      // a midpoint sample — the edge follows the curve.
+      const heightsAt = (px: number, pz: number): { lo: number; hi: number } => {
+        const lo = sampleCornerField(cornerFloor, px, pz);
+        const cx0 = Math.floor(px / TILE_SIZE - 1e-6);
+        const cz0 = Math.floor(pz / TILE_SIZE - 1e-6);
+        const u = px / TILE_SIZE - cx0;
+        const v = pz / TILE_SIZE - cz0;
+        const c00 = this.cornerCeil(L, cx0, cz0);
+        const c10 = this.cornerCeil(L, cx0 + 1, cz0);
+        const c01 = this.cornerCeil(L, cx0, cz0 + 1);
+        const c11 = this.cornerCeil(L, cx0 + 1, cz0 + 1);
+        const vals = [c00, c10, c01, c11].filter(Number.isFinite) as number[];
+        let hi: number;
+        if (vals.length === 4) {
+          hi = (c00 * (1 - u) + c10 * u) * (1 - v) + (c01 * (1 - u) + c11 * u) * v;
+        } else if (vals.length > 0) {
+          hi = Math.max(...vals);
+        } else {
+          hi = verdict.hi;
+        }
+        return { lo, hi };
+      };
+      const mX = (seg.x0 + seg.x1) / 2;
+      const mZ = (seg.z0 + seg.z1) / 2;
+      const e0 = heightsAt(seg.x0, seg.z0);
+      const eM = heightsAt(mX, mZ);
+      const e1 = heightsAt(seg.x1, seg.z1);
+      const EPS = 0.05;
+      const lo0 = e0.lo - EPS;
+      const loM = eM.lo - EPS;
+      const lo1 = e1.lo - EPS;
+      const hi0 = e0.hi + EPS;
+      const hiM = eM.hi + EPS;
+      const hi1 = e1.hi + EPS;
+      if (Math.min(hi0, hiM, hi1) - Math.max(lo0, loM, lo1) < 0.5) continue;
+      let wcx = 0;
+      let wcz = 0;
+      let wn = 0;
+      let region: RegionKey | null = null;
+      for (const [tx, tz] of [
+        [seg.gx, seg.gz], [seg.gx + 1, seg.gz], [seg.gx, seg.gz + 1], [seg.gx + 1, seg.gz + 1],
+      ] as const) {
+        if (tx < 0 || tz < 0 || tx >= w || tz >= h) continue;
+        if (L.tiles[tz]![tx] !== TileType.Wall) {
+          wcx += (tx + 0.5) * TILE_SIZE;
+          wcz += (tz + 0.5) * TILE_SIZE;
+          wn++;
+          region ??= tileBiome(L.cellBiomes, tx, tz) ?? 'tunnel';
+        }
+      }
+      if (wn === 0) continue;
+      // Normal: perpendicular to the segment, toward the walkable side
+      let nx = -(seg.z1 - seg.z0);
+      let nz = seg.x1 - seg.x0;
+      const mx = (seg.x0 + seg.x1) / 2;
+      const mz = (seg.z0 + seg.z1) / 2;
+      if (nx * (wcx / wn - mx) + nz * (wcz / wn - mz) < 0) {
+        nx = -nx;
+        nz = -nz;
+      }
+      const nl = Math.hypot(nx, nz) || 1;
+      nx /= nl;
+      nz /= nl;
+      const buf = bufFor(region ?? 'tunnel');
+      // World-anchored UVs: project along the segment's CANONICAL
+      // direction (positive-leading), so u advances at true arc length
+      // (no stretch on diagonals) and flows continuously across
+      // colinear neighbors regardless of segment winding
+      let dx2 = seg.x1 - seg.x0;
+      let dz2 = seg.z1 - seg.z0;
+      const dl = Math.hypot(dx2, dz2) || 1;
+      dx2 /= dl;
+      dz2 /= dl;
+      if (dx2 < 0 || (dx2 === 0 && dz2 < 0)) {
+        dx2 = -dx2;
+        dz2 = -dz2;
+      }
+      const uAt = (px: number, pz: number): number => (px * dx2 + pz * dz2) / TILE_SIZE;
+      const emitHalf = (
+        ax: number, az: number, aLo: number, aHi: number,
+        bx: number, bz: number, bLo: number, bHi: number,
+      ): void => {
+        const vi = buf.verts.length / 3;
+        buf.verts.push(ax, aLo, az, bx, bLo, bz, bx, bHi, bz, ax, aHi, az);
+        for (let k = 0; k < 4; k++) buf.norms.push(nx, 0, nz);
+        buf.uvs.push(
+          uAt(ax, az), aLo / TILE_SIZE,
+          uAt(bx, bz), bLo / TILE_SIZE,
+          uAt(bx, bz), bHi / TILE_SIZE,
+          uAt(ax, az), aHi / TILE_SIZE,
+        );
+        addOrientedQuad(buf, vi, nx, 0, nz);
+      };
+      emitHalf(seg.x0, seg.z0, lo0, hi0, mX, mZ, loM, hiM);
+      emitHalf(mX, mZ, loM, hiM, seg.x1, seg.z1, lo1, hi1);
+    }
+    for (const [key, buf] of bufs) {
+      if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor(key).wall);
+    }
+  }
+
   private buildPipeChamfers(world: WorldData, target: THREE.Group, bounds?: RenderBounds): void {
     const C = 0.6; // chamfer leg — strong enough to read as an octagon
     const S = Math.SQRT1_2;

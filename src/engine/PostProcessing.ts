@@ -140,8 +140,15 @@ export class PostProcessing {
   }
 
   render(dt: number): void {
-    if (this.settings.postEnabled) this.composer.render(dt);
-    else this.renderer.render(this.scene, this.camera);
+    // Inspection modes (wireframe/solid/normals) must bypass the
+    // composer regardless of the post toggle: GTAOPass's prepass swaps
+    // scene.overrideMaterial and restores it to NULL, silently killing
+    // the debug override after one frame.
+    if (this.settings.postEnabled && this.settings.renderMode === 'lit') {
+      this.composer.render(dt);
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 
   dispose(): void {

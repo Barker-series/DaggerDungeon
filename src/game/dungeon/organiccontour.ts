@@ -31,6 +31,10 @@ export interface OrganicContour {
   /** Flat indices of wall tiles in organic cells: their box collision is
    *  replaced by the contour segments. */
   softWalls: Set<number>;
+  /** Flat GROUP indices (gz * width + gx) that produced segments — the
+   *  segment-wall extruder and the face-pass suppression must agree on
+   *  exactly these (see DungeonRenderer.segGroupEmits). */
+  segmentGroups: Set<number>;
 }
 
 /**
@@ -67,6 +71,22 @@ export function isOrganicTileIn(cellBiomes: (BiomeType | null)[][], tx: number, 
   return biome ? isOrganicBiome(biome) : false;
 }
 
+/** A WALKABLE tile carved through the null (transit) pseudo-biome — a
+ *  bore corridor between active cells. These join the contour so bore
+ *  walls get machined 45° corner chamfers; soft bore walls also KEEP
+ *  their ceiling caps (see the cap logic in DungeonRenderer), which is
+ *  what seals the chamfer pockets in an enclosed space. Wall mass in
+ *  null cells stays hard — only genuine corridor boundaries smooth. */
+export function isTransitFloorIn(
+  dungeon: Pick<DungeonData, 'tiles' | 'cellBiomes'>,
+  tx: number,
+  tz: number,
+): boolean {
+  const tile = dungeon.tiles[tz]?.[tx];
+  if (tile === undefined || tile === TileType.Wall) return false;
+  return tileBiome(dungeon.cellBiomes, tx, tz) === null;
+}
+
 export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
   const s = TILE_SIZE;
   const w = dungeon.width;
@@ -81,10 +101,16 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
     dungeon.roadsCells?.[Math.floor(tz / cellTiles)]?.[Math.floor(tx / cellTiles)] ?? false;
   const isOrganicTile = (tx: number, tz: number): boolean =>
     !isRoadsTile(tx, tz) && isOrganicTileIn(dungeon.cellBiomes, tx, tz);
+  // Smoothing participants: organic biome tiles OR carved transit
+  // floors (machined bores). Roads stay excluded (their own slice).
+  const isSmoothTile = (tx: number, tz: number): boolean =>
+    isOrganicTile(tx, tz)
+    || (!isRoadsTile(tx, tz) && isTransitFloorIn(dungeon, tx, tz));
 
   const segments: ContourSegment[] = [];
   const byTile = new Map<number, ContourSegment[]>();
   const softWalls = new Set<number>();
+  const segmentGroups = new Set<number>();
 
   const getTile = (tx: number, tz: number): number => {
     if (tx < 0 || tz < 0 || tx >= w || tz >= h) return 0;
@@ -133,7 +159,7 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
           const nz = gz! + oz!;
           if (nx < 0 || nz < 0 || nx >= w || nz >= h) continue;
           if (dungeon.tiles[nz]![nx] !== TileType.Wall) hasWalk = true;
-          if (isOrganicTile(nx, nz)) hasOrg = true;
+          if (isSmoothTile(nx, nz)) hasOrg = true;
           if (isPillar(nx, nz)) hasPillar = true;
         }
         if (hasWalk) {
@@ -152,7 +178,7 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
   for (let tz = 0; tz < h; tz++) {
     for (let tx = 0; tx < w; tx++) {
       // 2x2 group of tile centers: (tx,tz) .. (tx+1,tz+1)
-      if (!isOrganicTile(tx, tz) && !isOrganicTile(tx + 1, tz) && !isOrganicTile(tx, tz + 1) && !isOrganicTile(tx + 1, tz + 1)) continue;
+      if (!isSmoothTile(tx, tz) && !isSmoothTile(tx + 1, tz) && !isSmoothTile(tx, tz + 1) && !isSmoothTile(tx + 1, tz + 1)) continue;
       // Groups touching a pillar produce no contour — the pillar's edge
       // is span-derived geometry, and a fence here would seal its stairs
       if (isPillar(tx, tz) || isPillar(tx + 1, tz) || isPillar(tx, tz + 1) || isPillar(tx + 1, tz + 1)) continue;
@@ -182,6 +208,7 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
         const p1 = edgeMid[segDef[1]!]!;
         const seg: ContourSegment = { x0: p0[0], z0: p0[1], x1: p1[0], z1: p1[1], gx: tx, gz: tz };
         segments.push(seg);
+        segmentGroups.add(tz * w + tx);
         register(tx, tz, seg);
         register(tx + 1, tz, seg);
         register(tx, tz + 1, seg);
@@ -190,7 +217,7 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
     }
   }
 
-  return { segments, byTile, softWalls };
+  return { segments, byTile, softWalls, segmentGroups };
 }
 
 /** Squared distance from a point to a segment (2D, XZ plane) */
