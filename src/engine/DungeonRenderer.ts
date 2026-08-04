@@ -821,6 +821,52 @@ export class DungeonRenderer {
                     cc(x, y), cc(x + 1, y), cc(x, y + 1), cc(x + 1, y + 1),
                     false,
                   );
+                  // EDGE SEALS: where this cap's edge SLOPES (mixed
+                  // tall/low corner ceilings) and the tile across that
+                  // edge is LOW air, the volume beside the slope is
+                  // solid — the vertical triangle between the sloped
+                  // cap edge and the horizontal through its high corner
+                  // is otherwise open into the mass (the corridor-mouth
+                  // slit beside tall air|air ceiling steps, leak-entry
+                  // verified Aug 2026).
+                  const seal = (
+                    hxp: number, hzp: number, hv: number,
+                    lxp: number, lzp: number, lv: number,
+                    ox2: number, oz2: number,
+                  ): void => {
+                    if (hv - lv < 0.1) return;
+                    const nT = dungeon.tiles[y + oz2]?.[x + ox2];
+                    if (nT === undefined || nT === TileType.Wall) return;
+                    if (dungeon.ceilingHeights[y + oz2]![x + ox2]! >= hv - 0.1) return;
+                    const cb2 = buf.ceil;
+                    const vi2 = cb2.verts.length / 3;
+                    cb2.verts.push(hxp, hv, hzp, lxp, lv, lzp, lxp, hv, lzp);
+                    for (let k2 = 0; k2 < 3; k2++) cb2.norms.push(-ox2, 0, -oz2);
+                    cb2.uvs.push(0, 0, 1, 0, 1, 1);
+                    // Wind against the stored normal (toward this tile):
+                    // cross(v1-v0, v2-v0) = ((lv-hv)*dz, 0, -(lv-hv)*dx)
+                    const dxe = lxp - hxp;
+                    const dze = lzp - hzp;
+                    const gx2 = (lv - hv) * dze;
+                    const gz2 = -(lv - hv) * dxe;
+                    if (gx2 * -ox2 + gz2 * -oz2 >= 0) cb2.idxs.push(vi2, vi2 + 1, vi2 + 2);
+                    else cb2.idxs.push(vi2, vi2 + 2, vi2 + 1);
+                  };
+                  const c00b = cc(x, y);
+                  const c10b = cc(x + 1, y);
+                  const c01b = cc(x, y + 1);
+                  const c11b = cc(x + 1, y + 1);
+                  const edgeSeal = (
+                    ax2: number, az2: number, av: number,
+                    bx2: number, bz2: number, bv: number,
+                    ox2: number, oz2: number,
+                  ): void => (av >= bv
+                    ? seal(ax2, az2, av, bx2, bz2, bv, ox2, oz2)
+                    : seal(bx2, bz2, bv, ax2, az2, av, ox2, oz2));
+                  edgeSeal(wx, wz, c00b, wx, wz + TILE_SIZE, c01b, -1, 0);
+                  edgeSeal(wx + TILE_SIZE, wz, c10b, wx + TILE_SIZE, wz + TILE_SIZE, c11b, 1, 0);
+                  edgeSeal(wx, wz, c00b, wx + TILE_SIZE, wz, c10b, 0, -1);
+                  edgeSeal(wx, wz + TILE_SIZE, c01b, wx + TILE_SIZE, wz + TILE_SIZE, c11b, 0, 1);
                 } else {
                   addCeilPatch(buf.ceil, wx, wz, wx + TILE_SIZE, wz + TILE_SIZE, ac);
                 }
@@ -1435,9 +1481,47 @@ export class DungeonRenderer {
             };
             const cov0 = halfCovered(0);
             const cov1 = halfCovered(1);
+            // CAP TRANSOM for suppressed halves: a corner-cut diagonal
+            // turns the wall tile's corner wedge into render-air, and
+            // the wedge's face against the solid ABOVE the air span
+            // (never drawn pre-v2 — it was buried) opens a leak strip.
+            // Seal from the air-span top up to the cap's corner-field
+            // edge (linear along tile edges — the same line segment
+            // wall tops and segCaps interpolate, so all three knit).
+            const emitCapTransom = (s0: number, s1: number): void => {
+              if (chamferLc < 0) return;
+              const Lc = world.levels[chamferLc]!;
+              const cA = this.cornerCeil(Lc, Math.round(ex0 / TILE_SIZE), Math.round(ez0 / TILE_SIZE));
+              const cB = this.cornerCeil(Lc, Math.round(ex1 / TILE_SIZE), Math.round(ez1 / TILE_SIZE));
+              if (!Number.isFinite(cA) || !Number.isFinite(cB)) return;
+              const t0 = cA + (cB - cA) * s0;
+              const t1 = cA + (cB - cA) * s1;
+              if (Math.max(t0, t1) <= hi + 0.02) return;
+              const b0 = hi - 0.05;
+              const p0 = Math.max(b0, t0);
+              const p1 = Math.max(b0, t1);
+              // Faces the WEDGE (opposite the air side): the strip sits
+              // above the air span's roof, so the air side can never
+              // see it — its only viewers are inside the cut wedge.
+              const vi = buf.verts.length / 3;
+              buf.verts.push(
+                lerp(ex0, ex1, s0), b0, lerp(ez0, ez1, s0),
+                lerp(ex0, ex1, s1), b0, lerp(ez0, ez1, s1),
+                lerp(ex0, ex1, s1), p1, lerp(ez0, ez1, s1),
+                lerp(ex0, ex1, s0), p0, lerp(ez0, ez1, s0),
+              );
+              for (let k = 0; k < 4; k++) buf.norms.push(-nrmX, 0, -nrmZ);
+              buf.uvs.push(
+                s0, b0 / TILE_SIZE,
+                s1, b0 / TILE_SIZE,
+                s1, p1 / TILE_SIZE,
+                s0, p0 / TILE_SIZE,
+              );
+              addOrientedQuad(buf, vi, -nrmX, 0, -nrmZ);
+            };
             if (!emitOctagonal) {
               if (cov0) {
-                // segment wall covers this half
+                emitCapTransom(0, 0.5);
               } else if (chamferLc >= 0 && o0) {
                 emitChamfer(0);
                 emitTransom(0, 0.5);
@@ -1445,7 +1529,7 @@ export class DungeonRenderer {
                 emitFlat(0, 0.5);
               }
               if (cov1) {
-                // segment wall covers this half
+                emitCapTransom(0.5, 1);
               } else if (chamferLc >= 0 && o1) {
                 emitChamfer(1);
                 emitTransom(0.5, 1);
@@ -1646,12 +1730,30 @@ export class DungeonRenderer {
       // segments cross tile INTERIORS where bilinear curves away from
       // a straight edge, so the wall is emitted as two sub-quads with
       // a midpoint sample — the edge follows the curve.
+      // Interior samples interpolate the TRIANGULATED surface the
+      // floor/cap quads actually draw (addHorizontalQuad splits on the
+      // (0,0)->(1,1) diagonal), NOT bilinear: on a non-planar corner
+      // quad the two disagree by whole units mid-tile — a diagonal
+      // segment's midpoint sampled bilinear left a tall open triangle
+      // between the wall top and the cap above corridor mouths
+      // (face-dump verified, Aug 2026).
+      const triLerp = (
+        c00: number, c10: number, c01: number, c11: number, u: number, v: number,
+      ): number => (u <= v
+        ? c00 + u * (c11 - c01) + v * (c01 - c00)
+        : c00 + u * (c10 - c00) + v * (c11 - c10));
       const heightsAt = (px: number, pz: number): { lo: number; hi: number } => {
-        const lo = sampleCornerField(cornerFloor, px, pz);
         const cx0 = Math.floor(px / TILE_SIZE - 1e-6);
         const cz0 = Math.floor(pz / TILE_SIZE - 1e-6);
         const u = px / TILE_SIZE - cx0;
         const v = pz / TILE_SIZE - cz0;
+        const f00 = cornerFloor[cz0]?.[cx0];
+        const f10 = cornerFloor[cz0]?.[cx0 + 1];
+        const f01 = cornerFloor[cz0 + 1]?.[cx0];
+        const f11 = cornerFloor[cz0 + 1]?.[cx0 + 1];
+        const lo = f00 !== undefined && f10 !== undefined && f01 !== undefined && f11 !== undefined
+          ? triLerp(f00, f10, f01, f11, u, v)
+          : sampleCornerField(cornerFloor, px, pz);
         const c00 = this.cornerCeil(L, cx0, cz0);
         const c10 = this.cornerCeil(L, cx0 + 1, cz0);
         const c01 = this.cornerCeil(L, cx0, cz0 + 1);
@@ -1659,7 +1761,7 @@ export class DungeonRenderer {
         const vals = [c00, c10, c01, c11].filter(Number.isFinite) as number[];
         let hi: number;
         if (vals.length === 4) {
-          hi = (c00 * (1 - u) + c10 * u) * (1 - v) + (c01 * (1 - u) + c11 * u) * v;
+          hi = triLerp(c00, c10, c01, c11, u, v);
         } else if (vals.length > 0) {
           hi = Math.max(...vals);
         } else {

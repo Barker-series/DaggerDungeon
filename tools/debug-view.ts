@@ -230,6 +230,45 @@ const recordEntry = (ox: number, oy: number, oz: number, dx: number, dy: number,
   }
 };
 const BACKFACE_VIS = process.argv.includes('--backfaces');
+// --ray=px,py: print EVERY triangle intersection along that pixel's ray
+// (front/back, position, normal) — the single-ray microscope for
+// junction leaks where face dumps and clustering aren't enough.
+const rayArg = process.argv.find((a) => a.startsWith('--ray='));
+if (rayArg) {
+  const [rpx, rpy] = rayArg.slice(6).split(',').map(Number);
+  const u = ((rpx ?? 0) / W) * 2 - 1;
+  const v = 1 - ((rpy ?? 0) / H) * 2;
+  let dx = fwd[0]! + u * tanX * right[0]! + v * tanY * up[0]!;
+  let dy = fwd[1]! + u * tanX * right[1]! + v * tanY * up[1]!;
+  let dz = fwd[2]! + u * tanX * right[2]! + v * tanY * up[2]!;
+  const dl = Math.hypot(dx, dy, dz);
+  dx /= dl; dy /= dl; dz /= dl;
+  console.log(`RAY pixel(${rpx},${rpy}) origin(${eye.x.toFixed(2)},${eye.y.toFixed(2)},${eye.z.toFixed(2)}) dir(${dx.toFixed(3)},${dy.toFixed(3)},${dz.toFixed(3)})`);
+  const hits: { t: number; tri: Tri }[] = [];
+  const seenB = new Set<number>();
+  for (let d = 0; d <= 200; d += TILE_SIZE * 0.9) {
+    const x = eye.x + dx * d, z = eye.z + dz * d;
+    for (let bz = Math.floor(z / TILE_SIZE) - 1; bz <= Math.floor(z / TILE_SIZE) + 1; bz++) {
+      for (let bx = Math.floor(x / TILE_SIZE) - 1; bx <= Math.floor(x / TILE_SIZE) + 1; bx++) {
+        const k = bkey(bx, bz);
+        if (seenB.has(k)) continue;
+        seenB.add(k);
+        for (const t of buckets.get(k) ?? []) {
+          const tt = hitTri(eye.x, eye.y, eye.z, dx, dy, dz, t);
+          if (Number.isFinite(tt)) hits.push({ t: tt, tri: t });
+        }
+      }
+    }
+  }
+  hits.sort((a, b) => a.t - b.t);
+  for (const { t, tri } of hits.slice(0, 20)) {
+    const hx = eye.x + dx * t, hy = eye.y + dy * t, hz = eye.z + dz * t;
+    const n = [tri[9]!, tri[10]!, tri[11]!];
+    const nl2 = Math.hypot(n[0]!, n[1]!, n[2]!) || 1;
+    const back = (n[0]! * dx + n[1]! * dy + n[2]! * dz) / nl2 > 0.05;
+    console.log(`  t=${t.toFixed(2)} at(${hx.toFixed(2)},${hy.toFixed(2)},${hz.toFixed(2)}) n(${(n[0]! / nl2).toFixed(2)},${(n[1]! / nl2).toFixed(2)},${(n[2]! / nl2).toFixed(2)}) ${back ? 'BACK' : 'front'}`);
+  }
+}
 for (let py = 0; py < H; py++) {
   for (let px = 0; px < W; px++) {
     const u = (px / W) * 2 - 1;
