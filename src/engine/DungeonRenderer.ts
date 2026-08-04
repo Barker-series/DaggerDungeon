@@ -779,7 +779,7 @@ export class DungeonRenderer {
                 const segCap = soft && ([[x - 1, y - 1], [x, y - 1], [x - 1, y], [x, y]] as const)
                   .some(([gx2, gz2]) =>
                     contour.segmentGroups.has(gz2 * w + gx2)
-                    && this.segGroupEmits(dungeon, contour, gx2, gz2).emits);
+                    && this.segGroupEmits(world, dungeon, contour, gx2, gz2).emits);
                 const ac = sum / count + (segCap ? 0 : 0.06);
                 // Overlap flap per side, and ONLY toward a floor
                 // neighbor whose ceiling clearly differs from the cap:
@@ -806,67 +806,18 @@ export class DungeonRenderer {
                 // Center + side strips: strips never reach the corner
                 // squares, whose diagonal neighbors may hold a ceiling
                 // at yet another height
+                // ONE HEIGHT MODEL (the corner-ceiling field is gone):
+                // caps are FLAT per tile; a SEGMENT-COVERED wall's cap
+                // sits at the same cap-MAX its segment walls and cap
+                // transoms rise to, so the contour-cut wedge pocket is
+                // roofed exactly where its walls end — knit by shared
+                // number, no seal geometry. Old-method caps keep the
+                // neighbor average (their square faces seal per
+                // boundary regardless).
                 if (segCap) {
-                  // The ceiling ACCOUNTS FOR THE WALL SMOOTHING: cap
-                  // corners take the corner-ceiling field — the same
-                  // corners segment wall tops interpolate — so the cap
-                  // meets the smooth wall top edge-to-edge over the
-                  // pocket the wall cut out of this tile.
-                  const cc = (cx2: number, cz2: number): number => {
-                    const v = this.cornerCeil(dungeon, cx2, cz2);
-                    return Number.isFinite(v) ? v : ac;
-                  };
-                  addHorizontalQuad(
-                    buf.ceil, wx, wz,
-                    cc(x, y), cc(x + 1, y), cc(x, y + 1), cc(x + 1, y + 1),
-                    false,
-                  );
-                  // EDGE SEALS: where this cap's edge SLOPES (mixed
-                  // tall/low corner ceilings) and the tile across that
-                  // edge is LOW air, the volume beside the slope is
-                  // solid — the vertical triangle between the sloped
-                  // cap edge and the horizontal through its high corner
-                  // is otherwise open into the mass (the corridor-mouth
-                  // slit beside tall air|air ceiling steps, leak-entry
-                  // verified Aug 2026).
-                  const seal = (
-                    hxp: number, hzp: number, hv: number,
-                    lxp: number, lzp: number, lv: number,
-                    ox2: number, oz2: number,
-                  ): void => {
-                    if (hv - lv < 0.1) return;
-                    const nT = dungeon.tiles[y + oz2]?.[x + ox2];
-                    if (nT === undefined || nT === TileType.Wall) return;
-                    if (dungeon.ceilingHeights[y + oz2]![x + ox2]! >= hv - 0.1) return;
-                    const cb2 = buf.ceil;
-                    const vi2 = cb2.verts.length / 3;
-                    cb2.verts.push(hxp, hv, hzp, lxp, lv, lzp, lxp, hv, lzp);
-                    for (let k2 = 0; k2 < 3; k2++) cb2.norms.push(-ox2, 0, -oz2);
-                    cb2.uvs.push(0, 0, 1, 0, 1, 1);
-                    // Wind against the stored normal (toward this tile):
-                    // cross(v1-v0, v2-v0) = ((lv-hv)*dz, 0, -(lv-hv)*dx)
-                    const dxe = lxp - hxp;
-                    const dze = lzp - hzp;
-                    const gx2 = (lv - hv) * dze;
-                    const gz2 = -(lv - hv) * dxe;
-                    if (gx2 * -ox2 + gz2 * -oz2 >= 0) cb2.idxs.push(vi2, vi2 + 1, vi2 + 2);
-                    else cb2.idxs.push(vi2, vi2 + 2, vi2 + 1);
-                  };
-                  const c00b = cc(x, y);
-                  const c10b = cc(x + 1, y);
-                  const c01b = cc(x, y + 1);
-                  const c11b = cc(x + 1, y + 1);
-                  const edgeSeal = (
-                    ax2: number, az2: number, av: number,
-                    bx2: number, bz2: number, bv: number,
-                    ox2: number, oz2: number,
-                  ): void => (av >= bv
-                    ? seal(ax2, az2, av, bx2, bz2, bv, ox2, oz2)
-                    : seal(bx2, bz2, bv, ax2, az2, av, ox2, oz2));
-                  edgeSeal(wx, wz, c00b, wx, wz + TILE_SIZE, c01b, -1, 0);
-                  edgeSeal(wx + TILE_SIZE, wz, c10b, wx + TILE_SIZE, wz + TILE_SIZE, c11b, 1, 0);
-                  edgeSeal(wx, wz, c00b, wx + TILE_SIZE, wz, c10b, 0, -1);
-                  edgeSeal(wx, wz + TILE_SIZE, c01b, wx + TILE_SIZE, wz + TILE_SIZE, c11b, 0, 1);
+                  const cm = this.capMax(dungeon, x, y);
+                  addCeilPatch(buf.ceil, wx, wz, wx + TILE_SIZE, wz + TILE_SIZE,
+                    Number.isFinite(cm) ? cm : ac);
                 } else {
                   addCeilPatch(buf.ceil, wx, wz, wx + TILE_SIZE, wz + TILE_SIZE, ac);
                 }
@@ -1467,7 +1418,11 @@ export class DungeonRenderer {
             // emitted) or left holes (where suppression outran
             // emission). Face-dump verified, Aug 2026.
             const halfCovered = (k: 0 | 1): boolean => {
-              if (chamferLc < 0) return false;
+              // ONLY LEVEL 0 SUPPRESSES: buildSegmentWalls draws level
+              // 0's contour exclusively, so a level-1+ soft wall has no
+              // segment wall to defer to — suppressing for it is a hole
+              // (canyon terrace bands, single-ray verified Aug 2026).
+              if (chamferLc !== 0) return false;
               const Lc = world.levels[chamferLc]!;
               const contourC = contours[chamferLc]!;
               const gx2 = dx !== 0
@@ -1477,7 +1432,7 @@ export class DungeonRenderer {
                 ? (k === 0 ? airZ - 1 : airZ)
                 : Math.min(airZ, solidZ);
               if (!contourC.segmentGroups.has(gz2 * w + gx2)) return false;
-              return this.segGroupEmits(Lc, contourC, gx2, gz2).emits;
+              return this.segGroupEmits(world, Lc, contourC, gx2, gz2).emits;
             };
             const cov0 = halfCovered(0);
             const cov1 = halfCovered(1);
@@ -1485,21 +1440,17 @@ export class DungeonRenderer {
             // turns the wall tile's corner wedge into render-air, and
             // the wedge's face against the solid ABOVE the air span
             // (never drawn pre-v2 — it was buried) opens a leak strip.
-            // Seal from the air-span top up to the cap's corner-field
-            // edge (linear along tile edges — the same line segment
-            // wall tops and segCaps interpolate, so all three knit).
+            // Seal from the air-span top up to the wall tile's cap-max
+            // — the ONE ceiling rule shared with segment wall tops and
+            // the old square faces, flat, no interpolation.
             const emitCapTransom = (s0: number, s1: number): void => {
               if (chamferLc < 0) return;
               const Lc = world.levels[chamferLc]!;
-              const cA = this.cornerCeil(Lc, Math.round(ex0 / TILE_SIZE), Math.round(ez0 / TILE_SIZE));
-              const cB = this.cornerCeil(Lc, Math.round(ex1 / TILE_SIZE), Math.round(ez1 / TILE_SIZE));
-              if (!Number.isFinite(cA) || !Number.isFinite(cB)) return;
-              const t0 = cA + (cB - cA) * s0;
-              const t1 = cA + (cB - cA) * s1;
-              if (Math.max(t0, t1) <= hi + 0.02) return;
+              const cap = this.capMax(Lc, solidX, solidZ);
+              if (!Number.isFinite(cap) || cap <= hi + 0.02) return;
               const b0 = hi - 0.05;
-              const p0 = Math.max(b0, t0);
-              const p1 = Math.max(b0, t1);
+              const p0 = cap;
+              const p1 = cap;
               // Faces the WEDGE (opposite the air side): the strip sits
               // above the air span's roof, so the air side can never
               // see it — its only viewers are inside the cut wedge.
@@ -1548,6 +1499,13 @@ export class DungeonRenderer {
             // hidden structural sealing per the junction doctrine.
             // (This replaces emitFlat for these segments — see the
             // emission choice above, which skips flat when octagonal.)
+            // Suppressed halves need their cap transom REGARDLESS of
+            // which profile branch runs — the octagonal branch skipping
+            // them left the same wedge-top strips open in ramped bores.
+            if (emitOctagonal) {
+              if (cov0) emitCapTransom(0, 0.5);
+              if (cov1) emitCapTransom(0.5, 1);
+            }
             if (emitOctagonal) {
               const TCH = TUNNEL_CH;
               const pushQ = (
@@ -1567,10 +1525,14 @@ export class DungeonRenderer {
               // that complete the profile come from buildTunnelTrim —
               // ONE continuous mitered pass over ALL corridor wall
               // pieces (this boundary included), so trim never breaks
-              // at segment/boundary/corner handoffs.
+              // at segment/boundary/corner handoffs. The CEILING recess
+              // only where trim actually flares (bore-scale spans —
+              // same gate as buildTunnelTrim): tall shafts get plain
+              // full-height walls, no dangling 0.6 gap under the roof.
+              const ceilRecess = hi - lo <= 6 ? TCH : 0;
               pushQ(
                 ex0, lo0 + TCH, ez0, ex1, lo1 + TCH, ez1,
-                ex1, hi1 - TCH, ez1, ex0, hi0 - TCH, ez0,
+                ex1, hi1 - ceilRecess, ez1, ex0, hi0 - ceilRecess, ez0,
                 nrmX, 0, nrmZ,
               );
               // Cap band above the ceiling junction when the shared wall
@@ -1626,15 +1588,25 @@ export class DungeonRenderer {
    * corners, so wall top edges and cap edges are the same line — the
    * ceiling "accounts for the wall smoothing" by construction.
    * Returns -Infinity when no walkable neighbor qualifies. */
-  private cornerCeil(L: DungeonData, cx: number, cz: number): number {
-    const w = L.width;
-    const h = L.height;
+  /** THE shared ceiling rule (one height model, no corner field): a
+   * wall tile's faces and cap band all top out at the MAX ceiling of
+   * its 3x3 walkable, non-outside neighbors — the topOverride formula
+   * the square system has always used. Segment walls, cap transoms,
+   * and the old faces sample the same number, so junctions knit by
+   * construction. -Infinity when no neighbor qualifies. */
+  private capMax(L: DungeonData, tx: number, tz: number): number {
     let v = -Infinity;
-    for (const [tx, tz] of [[cx - 1, cz - 1], [cx, cz - 1], [cx - 1, cz], [cx, cz]] as const) {
-      if (tx < 0 || tz < 0 || tx >= w || tz >= h) continue;
-      if (L.tiles[tz]![tx] === TileType.Wall) continue;
-      const c = L.ceilingHeights[tz]![tx]!;
-      if (c < 100) v = Math.max(v, c);
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const t = L.tiles[tz + dz]?.[tx + dx];
+        if (t === undefined || t === TileType.Wall) continue;
+        // Outside neighbors COUNT when their ceiling is real terrain
+        // (<100): canyon rims carry ceilings like 76 that the walls
+        // must rise to — excluding the biome sheared every rim wall
+        // (canyon regression). True sky fillers are >=100 and stay out.
+        const c = L.ceilingHeights[tz + dz]![tx + dx]!;
+        if (c < 100) v = Math.max(v, c);
+      }
     }
     return v;
   }
@@ -1642,6 +1614,7 @@ export class DungeonRenderer {
   /** Basic per-group test: walkable air present, every wall tile soft,
    *  no pit/sky sentinels. */
   private segGroupBasic(
+    world: WorldData,
     L: DungeonData,
     contour: ReturnType<typeof buildOrganicContour>,
     gx: number,
@@ -1659,7 +1632,12 @@ export class DungeonRenderer {
         lo = Math.min(lo, L.floorHeights[tz]![tx]!);
         hi = Math.max(hi, L.ceilingHeights[tz]![tx]!);
         wn++;
-      } else if (!contour.softWalls.has(tz * w + tx)) {
+      } else if (!contour.softWalls.has(tz * w + tx)
+        || world.columns[tz * world.levels[0]!.width + tx]!.length > 0) {
+        // A wall tile CARRYING column spans gets no cap plate (the cap
+        // pass defers to span-derived rock ceilings), so a contour cut
+        // through it would open a ROOFLESS wedge — suppression without
+        // a sealed replacement. Such groups decline; square faces seal.
         allSoft = false;
       }
     }
@@ -1668,6 +1646,7 @@ export class DungeonRenderer {
   }
 
   private segGroupEmits(
+    world: WorldData,
     L: DungeonData,
     contour: ReturnType<typeof buildOrganicContour>,
     gx: number,
@@ -1675,7 +1654,7 @@ export class DungeonRenderer {
   ): { emits: boolean; lo: number; hi: number } {
     const w = L.width;
     if (!contour.segmentGroups.has(gz * w + gx)) return { emits: false, lo: 0, hi: 0 };
-    const self = this.segGroupBasic(L, contour, gx, gz);
+    const self = this.segGroupBasic(world, L, contour, gx, gz);
     // (A neighbor-demotion "transition rule" was tried here and removed:
     // it demoted whole cave regions to bevels — any pit rim, sky edge,
     // or lone hard tile reverted its neighborhood — and did not fix the
@@ -1710,7 +1689,7 @@ export class DungeonRenderer {
     for (const seg of contour.segments) {
       // Chunk ownership by group anchor — each segment emitted once
       if (seg.gx < x0b || seg.gx >= x1b || seg.gz < z0b || seg.gz >= z1b) continue;
-      const verdict = this.segGroupEmits(L, contour, seg.gx, seg.gz);
+      const verdict = this.segGroupEmits(world, L, contour, seg.gx, seg.gz);
       if (!verdict.emits) continue;
       // EXACT per-endpoint junctions — no overshoot margins, no band
       // hacks (wireframe audit, Aug 2026: margins buried geo in rock
@@ -1742,7 +1721,7 @@ export class DungeonRenderer {
       ): number => (u <= v
         ? c00 + u * (c11 - c01) + v * (c01 - c00)
         : c00 + u * (c10 - c00) + v * (c11 - c10));
-      const heightsAt = (px: number, pz: number): { lo: number; hi: number } => {
+      const floorAt = (px: number, pz: number): number => {
         const cx0 = Math.floor(px / TILE_SIZE - 1e-6);
         const cz0 = Math.floor(pz / TILE_SIZE - 1e-6);
         const u = px / TILE_SIZE - cx0;
@@ -1751,37 +1730,16 @@ export class DungeonRenderer {
         const f10 = cornerFloor[cz0]?.[cx0 + 1];
         const f01 = cornerFloor[cz0 + 1]?.[cx0];
         const f11 = cornerFloor[cz0 + 1]?.[cx0 + 1];
-        const lo = f00 !== undefined && f10 !== undefined && f01 !== undefined && f11 !== undefined
+        return f00 !== undefined && f10 !== undefined && f01 !== undefined && f11 !== undefined
           ? triLerp(f00, f10, f01, f11, u, v)
           : sampleCornerField(cornerFloor, px, pz);
-        const c00 = this.cornerCeil(L, cx0, cz0);
-        const c10 = this.cornerCeil(L, cx0 + 1, cz0);
-        const c01 = this.cornerCeil(L, cx0, cz0 + 1);
-        const c11 = this.cornerCeil(L, cx0 + 1, cz0 + 1);
-        const vals = [c00, c10, c01, c11].filter(Number.isFinite) as number[];
-        let hi: number;
-        if (vals.length === 4) {
-          hi = triLerp(c00, c10, c01, c11, u, v);
-        } else if (vals.length > 0) {
-          hi = Math.max(...vals);
-        } else {
-          hi = verdict.hi;
-        }
-        return { lo, hi };
       };
       const mX = (seg.x0 + seg.x1) / 2;
       const mZ = (seg.z0 + seg.z1) / 2;
-      const e0 = heightsAt(seg.x0, seg.z0);
-      const eM = heightsAt(mX, mZ);
-      const e1 = heightsAt(seg.x1, seg.z1);
       const EPS = 0.05;
-      const lo0 = e0.lo - EPS;
-      const loM = eM.lo - EPS;
-      const lo1 = e1.lo - EPS;
-      const hi0 = e0.hi + EPS;
-      const hiM = eM.hi + EPS;
-      const hi1 = e1.hi + EPS;
-      if (Math.min(hi0, hiM, hi1) - Math.max(lo0, loM, lo1) < 0.5) continue;
+      const lo0 = floorAt(seg.x0, seg.z0) - EPS;
+      const loM = floorAt(mX, mZ) - EPS;
+      const lo1 = floorAt(seg.x1, seg.z1) - EPS;
       let wcx = 0;
       let wcz = 0;
       let wn = 0;
@@ -1810,6 +1768,37 @@ export class DungeonRenderer {
       const nl = Math.hypot(nx, nz) || 1;
       nx /= nl;
       nz /= nl;
+      // ONE HEIGHT MODEL: each half's wall top is the CAP-MAX of the
+      // wall tile behind it — flat, exactly what the old square faces
+      // rose to (topOverride) and what cap transoms seal to. Ceilings
+      // are per-tile flat everywhere in this game; interpolating them
+      // (the deleted corner-ceiling field) sloped caps between height
+      // steps and shredded tall shafts into facet salad.
+      const hiFor = (px: number, pz: number): number => {
+        // Wall tile chosen from the GROUP's tiles (nearest to the
+        // solid-side probe point) — a raw position probe lands on AIR
+        // beside diagonal pieces and fell back low, shearing wall tops
+        // (canyon regression, Aug 2026).
+        const qx = px - nx * 0.75;
+        const qz = pz - nz * 0.75;
+        let best = Infinity;
+        let v = NaN;
+        for (const [tx, tz] of [
+          [seg.gx, seg.gz], [seg.gx + 1, seg.gz], [seg.gx, seg.gz + 1], [seg.gx + 1, seg.gz + 1],
+        ] as const) {
+          if (tx < 0 || tz < 0 || tx >= w || tz >= h) continue;
+          if (L.tiles[tz]![tx] !== TileType.Wall) continue;
+          const d = ((tx + 0.5) * TILE_SIZE - qx) ** 2 + ((tz + 0.5) * TILE_SIZE - qz) ** 2;
+          if (d < best) {
+            const c = this.capMax(L, tx, tz);
+            if (Number.isFinite(c)) {
+              best = d;
+              v = c;
+            }
+          }
+        }
+        return Number.isFinite(v) ? v : verdict.hi;
+      };
       const buf = bufFor(region ?? 'tunnel');
       // World-anchored UVs: project along the segment's CANONICAL
       // direction (positive-leading), so u advances at true arc length
@@ -1843,8 +1832,10 @@ export class DungeonRenderer {
         );
         addOrientedQuad(buf, vi, nx, 0, nz);
       };
-      emitHalf(seg.x0, seg.z0, lo0, hi0, mX, mZ, loM, hiM);
-      emitHalf(mX, mZ, loM, hiM, seg.x1, seg.z1, lo1, hi1);
+      const hiA = hiFor((seg.x0 + mX) / 2, (seg.z0 + mZ) / 2);
+      const hiB = hiFor((mX + seg.x1) / 2, (mZ + seg.z1) / 2);
+      if (hiA - Math.max(lo0, loM) >= 0.5) emitHalf(seg.x0, seg.z0, lo0, hiA, mX, mZ, loM, hiA);
+      if (hiB - Math.max(loM, lo1) >= 0.5) emitHalf(mX, mZ, loM, hiB, seg.x1, seg.z1, lo1, hiB);
     }
     for (const [key, buf] of bufs) {
       if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor(key).wall);
@@ -1920,7 +1911,7 @@ export class DungeonRenderer {
       const gx2 = dxb !== 0 ? Math.min(airX, solidX) : (k === 0 ? airX - 1 : airX);
       const gz2 = dxb !== 0 ? (k === 0 ? airZ - 1 : airZ) : Math.min(airZ, solidZ);
       if (!contour.segmentGroups.has(gz2 * w + gx2)) return false;
-      return this.segGroupEmits(L, contour, gx2, gz2).emits;
+      return this.segGroupEmits(world, L, contour, gx2, gz2).emits;
     };
     // ── Boundary pieces: corridor air beside a wall, in face-pass
     // halves (k=0 = lower-coordinate half) so endpoints land on the
@@ -1961,7 +1952,7 @@ export class DungeonRenderer {
     }
     // ── Segment pieces: emitting contour segments facing a corridor
     for (const seg of contour.segments) {
-      if (!this.segGroupEmits(L, contour, seg.gx, seg.gz).emits) continue;
+      if (!this.segGroupEmits(world, L, contour, seg.gx, seg.gz).emits) continue;
       let nx = -(seg.z1 - seg.z0);
       let nz = seg.x1 - seg.x0;
       let wcx = 0;
@@ -2040,6 +2031,16 @@ export class DungeonRenderer {
       ox: number; oz: number; lo: number; hi: number; end: boolean;
     } => {
       const list = joints.get(jkey(px, pz))!;
+      // Continuity requires AGREEING spans: mitering/averaging across a
+      // ceiling or floor STEP drapes diagonal facets between the two
+      // heights (the tall-shaft facet salad). A step is a chain END —
+      // cap it square, exactly like the old per-boundary end caps.
+      if (list.length === 2) {
+        const other = list[0] === self ? list[1]! : list[0]!;
+        if (Math.abs(other.lo - self.lo) > 0.1 || Math.abs(other.hi - self.hi) > 0.1) {
+          return { ox: self.nx * CH, oz: self.nz * CH, lo: self.lo, hi: self.hi, end: true };
+        }
+      }
       let lo = 0;
       let hi = 0;
       for (const p of list) {
@@ -2121,6 +2122,12 @@ export class DungeonRenderer {
         ux = -ux;
         uz = -uz;
       }
+      // The octagonal profile is HUMAN-SCALE bore trim: in tall shafts
+      // (spans way past bore height) ceiling flares at every step pile
+      // into facet clutter — tall walls stay plain and the flat stepped
+      // ceilings read clean. Floor trim stays everywhere (floors are
+      // continuous where ceilings step).
+      const ceilTrim = Math.max(j0.hi, j1.hi) - Math.min(j0.lo, j1.lo) <= 6;
       // Floor flare: wall edge at lo+CH flaring out/down to the floor
       quad(
         p.x0, j0.lo + CH, p.z0, p.x1, j1.lo + CH, p.z1,
@@ -2128,15 +2135,17 @@ export class DungeonRenderer {
         p.nx * S2, S2, p.nz * S2, ux, uz,
       );
       // Ceiling flare: wall edge at hi-CH flaring out/up to the ceiling
-      quad(
-        p.x0, j0.hi - CH, p.z0, p.x1, j1.hi - CH, p.z1,
-        p.x1 + j1.ox, j1.hi, p.z1 + j1.oz, p.x0 + j0.ox, j0.hi, p.z0 + j0.oz,
-        p.nx * S2, -S2, p.nz * S2, ux, uz,
-      );
+      if (ceilTrim) {
+        quad(
+          p.x0, j0.hi - CH, p.z0, p.x1, j1.hi - CH, p.z1,
+          p.x1 + j1.ox, j1.hi, p.z1 + j1.oz, p.x0 + j0.ox, j0.hi, p.z0 + j0.oz,
+          p.nx * S2, -S2, p.nz * S2, ux, uz,
+        );
+      }
       // End caps at true chain ends only (doorways, region edges)
       const cap = (px: number, pz: number, j: typeof j0, tx3: number, tz3: number): void => {
         tri(px, j.lo, pz, px, j.lo + CH, pz, px + j.ox, j.lo, pz + j.oz, tx3, 0, tz3);
-        tri(px, j.hi, pz, px, j.hi - CH, pz, px + j.ox, j.hi, pz + j.oz, tx3, 0, tz3);
+        if (ceilTrim) tri(px, j.hi, pz, px, j.hi - CH, pz, px + j.ox, j.hi, pz + j.oz, tx3, 0, tz3);
       };
       const dl2 = Math.hypot(p.x1 - p.x0, p.z1 - p.z0) || 1;
       const tdx = (p.x1 - p.x0) / dl2;
