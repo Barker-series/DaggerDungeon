@@ -800,7 +800,12 @@ export class DungeonRenderer {
                   // seals that step already, and the flap becomes a
                   // shelf sticking out of the wall in mid-air.
                   const nc = dungeon.ceilingHeights[y + dz2]![x + dx2]!;
-                  const gap = Math.abs(nc - ac);
+                  // Only when the cap sits ABOVE the neighbor ceiling:
+                  // that is the tuck-over case the flap exists for. A
+                  // flap toward a TALLER room hangs below its ceiling,
+                  // hides nothing (the boundary face seals that side),
+                  // and pokes into the room as a shelf tab.
+                  const gap = ac - nc;
                   return gap > 0.15 && gap < 1.0 ? 0.45 : 0;
                 };
                 // Center + side strips: strips never reach the corner
