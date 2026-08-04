@@ -268,6 +268,40 @@ export function computeHeightFields(
     }
   }
 
+  // ── CHAMBER CROSSINGS OPEN UP: a transit corridor cutting through
+  // pre-existing open space must not keep its bore lid — the 3.5 roof
+  // renders as a floating slab hanging inside the room. Any null-biome
+  // corridor tile beside same-level walkable air clearly taller than
+  // the bore adopts that ceiling; three relaxation passes carry the
+  // opening across the corridor's width, and the bore re-roofs itself
+  // where rock actually surrounds it. Outside rims are excluded — the
+  // mouth sweep owns those transitions. Purely local (4-neighbor reads
+  // on this window's own grids), so seams stay exact by construction.
+  {
+    const OPEN_MARGIN = 1.0;
+    for (let pass = 0; pass < 3; pass++) {
+      const snap = ceiling.map((row) => [...row]);
+      for (let tz = 0; tz < gridTiles; tz++) {
+        for (let tx = 0; tx < gridTiles; tx++) {
+          if (!isFloor(tx, tz)) continue;
+          if (biomeAt(tx, tz)) continue; // null-biome corridors only
+          const f = Math.max(floor[tz]![tx]!, 0);
+          let adopt = ceiling[tz]![tx]!;
+          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+            const nx = tx + dx;
+            const nz = tz + dz;
+            if (!isFloor(nx, nz)) continue;
+            if (biomeAt(nx, nz) === 'outside') continue;
+            if (Math.abs(Math.max(floor[nz]![nx]!, 0) - f) > 1.5) continue;
+            const nc = snap[nz]![nx]!;
+            if (nc > f + TUNNEL_CLEARANCE + OPEN_MARGIN) adopt = Math.max(adopt, nc);
+          }
+          ceiling[tz]![tx] = adopt;
+        }
+      }
+    }
+  }
+
   // ── Cave-mouth sweep: ceilings rise toward outside regions ──
   applyMouthSweep(floor, ceiling, gridTiles, isFloor, biomeAt);
 

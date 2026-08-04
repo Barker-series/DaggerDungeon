@@ -1927,6 +1927,12 @@ export class DungeonRenderer {
           const sz = tz + dzb;
           if (sx < 0 || sz < 0 || sx >= w || sz >= h) continue;
           if (L.tiles[sz]![sx] !== TileType.Wall) continue;
+          // The wall must be SOLID across the bore span: Wall tiles
+          // whose columns carry air overlapping it (retaining walls
+          // below plaza edges, carved passages) have no face there —
+          // trim against them floats in the open (ledge-skirt bug).
+          if (world.columns[sz * w + sx]!.some((s2) =>
+            s2.floor < span.hi - 0.05 && s2.ceil > span.lo + 0.05)) continue;
           for (const k of [0, 1] as const) {
             if (halfCov(tx, tz, sx, sz, k)) continue; // segment piece covers it
             const tX = dxb !== 0 ? 0 : (k === 0 ? -1 : 1);
@@ -2031,6 +2037,19 @@ export class DungeonRenderer {
       ox: number; oz: number; lo: number; hi: number; end: boolean;
     } => {
       const list = joints.get(jkey(px, pz))!;
+      // LIP GATE: a joint whose outward side hangs over a floor DROP
+      // (wall corner at a ledge/court edge) must not miter around the
+      // lip — the wrapped skirt reads as a soft bevel on what should
+      // be a hard brutalist curb. Cap square at the lip instead.
+      {
+        const qtx = Math.floor((px + self.nx * 1.0) / TILE_SIZE);
+        const qtz = Math.floor((pz + self.nz * 1.0) / TILE_SIZE);
+        if (qtx >= 0 && qtz >= 0 && qtx < w && qtz < h
+          && L.tiles[qtz]![qtx] !== TileType.Wall
+          && L.floorHeights[qtz]![qtx]! < self.lo - 0.5) {
+          return { ox: self.nx * CH, oz: self.nz * CH, lo: self.lo, hi: self.hi, end: true };
+        }
+      }
       // Continuity requires AGREEING spans: mitering/averaging across a
       // ceiling or floor STEP drapes diagonal facets between the two
       // heights (the tall-shaft facet salad). A step is a chain END —
