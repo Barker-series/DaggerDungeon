@@ -1987,35 +1987,47 @@ export class DungeonRenderer {
       // Heights from the corridor tile the piece faces — SPAN heights,
       // the same source the boundary pieces use, so joints are exact.
       // The air tile is chosen from the GROUP's walkable tiles (nearest
-      // to the segment on its air side) — a fixed-offset probe from a
+      // to the SUB-PIECE on its air side) — a fixed-offset probe from a
       // DIAGONAL segment's midpoint overshoots the corner's small air
       // triangle into the wall tile and drops the piece (the stubbed
-      // trim of Aug 2026).
-      let aTx = -1;
-      let aTz = -1;
-      let bestD = Infinity;
-      for (const [tx, tz] of [
-        [seg.gx, seg.gz], [seg.gx + 1, seg.gz], [seg.gx, seg.gz + 1], [seg.gx + 1, seg.gz + 1],
+      // trim of Aug 2026). Segments split at their midpoint into two
+      // pieces, each with its own air tile: a straight segment spans
+      // TWO air tiles, and taking one tile's span for both halves drags
+      // its profile across the neighbor (the doorway awning poking into
+      // opened chambers — heights must be per-half like boundary
+      // pieces).
+      const own = seg.gx >= x0b && seg.gx < x1b && seg.gz >= z0b && seg.gz < z1b;
+      for (const [hx0, hz0, hx1, hz1] of [
+        [seg.x0, seg.z0, mx, mz],
+        [mx, mz, seg.x1, seg.z1],
       ] as const) {
-        if (!isCorridor(tx, tz)) continue;
-        const cx2 = (tx + 0.5) * TILE_SIZE - mx;
-        const cz2 = (tz + 0.5) * TILE_SIZE - mz;
-        const side = cx2 * nx + cz2 * nz; // prefer the air side
-        const d = cx2 * cx2 + cz2 * cz2 + (side > 0 ? 0 : 1000);
-        if (d < bestD) {
-          bestD = d;
-          aTx = tx;
-          aTz = tz;
+        const smx = (hx0 + hx1) / 2;
+        const smz = (hz0 + hz1) / 2;
+        let aTx = -1;
+        let aTz = -1;
+        let bestD = Infinity;
+        for (const [tx, tz] of [
+          [seg.gx, seg.gz], [seg.gx + 1, seg.gz], [seg.gx, seg.gz + 1], [seg.gx + 1, seg.gz + 1],
+        ] as const) {
+          if (!isCorridor(tx, tz)) continue;
+          const cx2 = (tx + 0.5) * TILE_SIZE - smx;
+          const cz2 = (tz + 0.5) * TILE_SIZE - smz;
+          const side = cx2 * nx + cz2 * nz; // prefer the air side
+          const d = cx2 * cx2 + cz2 * cz2 + (side > 0 ? 0 : 1000);
+          if (d < bestD) {
+            bestD = d;
+            aTx = tx;
+            aTz = tz;
+          }
         }
+        if (aTx < 0) continue; // cave/roads walls keep plain faces
+        const span = spanOf(aTx, aTz);
+        if (!span) continue;
+        pieces.push({
+          x0: hx0, z0: hz0, x1: hx1, z1: hz1,
+          nx, nz, lo: span.lo, hi: span.hi, own,
+        });
       }
-      if (aTx < 0) continue; // cave/roads walls keep plain faces
-      const span = spanOf(aTx, aTz);
-      if (!span) continue;
-      pieces.push({
-        x0: seg.x0, z0: seg.z0, x1: seg.x1, z1: seg.z1,
-        nx, nz, lo: span.lo, hi: span.hi,
-        own: seg.gx >= x0b && seg.gx < x1b && seg.gz >= z0b && seg.gz < z1b,
-      });
     }
     // ── Joints: endpoint-shared piece lists. Heights averaged over all
     // incident pieces (both sides compute the same average → trim edges
