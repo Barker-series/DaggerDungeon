@@ -46,6 +46,19 @@ export interface RoadsSegment {
   nz: number;
   /** Index into ROAD_WALL_LEVELS */
   levelIdx: number;
+  /** The SAME cut repeats one module up/down: the corner wedge or
+   *  bulge continues vertically, so no horizontal patch is needed at
+   *  this band's top/bottom. */
+  contUp: boolean;
+  contDown: boolean;
+  /** Resting height for a cut wedge's floor patch: the low side's own
+   *  surface (street grade for the bottom band, the terrace module
+   *  below otherwise). */
+  floorY: number;
+  /** This band ends exactly at the cut block's own top: the top
+   *  surface is CLIPPED to the smooth outline there (no overhang, no
+   *  soffit) and its diagonal edge is this segment's line. */
+  atTop: boolean;
 }
 
 export interface RoadsContour {
@@ -55,6 +68,10 @@ export interface RoadsContour {
   /** (group flat index * levels.length + levelIndex) that emitted —
    *  the face-pass suppression consults exactly this. */
   groupLevels: Set<number>;
+  /** (tile flat index * 4 + corner) of plinth-TOP corners cut by the
+   *  smooth outline — the rock-top emitter clips these corners off the
+   *  tile's top polygon (corner order: 0=NW, 1=NE, 2=SW, 3=SE). */
+  cutTileCorners: Set<number>;
   /** Plinth tiles whose EVERY corner group fully participates: their
    *  square tile-box collision is replaced by the banded segments
    *  (the organic softWalls rule, roads edition). Border plinths with
@@ -96,7 +113,8 @@ export function buildRoadsContour(world: WorldData): RoadsContour {
   const byTile = new Map<number, RoadsSegment[]>();
   const groupLevels = new Set<number>();
   const softPlinths = new Set<number>();
-  const out: RoadsContour = { segments, byTile, groupLevels, softPlinths };
+  const cutTileCorners = new Set<number>();
+  const out: RoadsContour = { segments, byTile, groupLevels, cutTileCorners, softPlinths };
   if (!L.roadsCells) return out;
   const cellTiles = Math.floor(w / L.cellBiomes.length) || w;
   const isRoads = (tx: number, tz: number): boolean =>
@@ -176,6 +194,23 @@ export function buildRoadsContour(world: WorldData): RoadsContour {
         const bl3 = t01 < Lv - 0.05 ? 1 : 0;
         const caseIdx = (bl0 << 3) | (bl1 << 2) | (bl2 << 1) | bl3;
         if (caseIdx === 0 || caseIdx === 15) continue;
+        const caseAt = (level: number): number => {
+          const c0 = t00 < level - 0.05 ? 1 : 0;
+          const c1 = t10 < level - 0.05 ? 1 : 0;
+          const c2 = t11 < level - 0.05 ? 1 : 0;
+          const c3 = t01 < level - 0.05 ? 1 : 0;
+          return (c0 << 3) | (c1 << 2) | (c2 << 1) | c3;
+        };
+        const contUp = li + 1 < ROAD_WALL_LEVELS.length
+          && caseAt(ROAD_WALL_LEVELS[li + 1]!) === caseIdx;
+        const contDown = li > 0 && caseAt(ROAD_WALL_LEVELS[li - 1]!) === caseIdx;
+        let maxLowTop = -Infinity;
+        for (const [t, low] of [[t00, bl0], [t10, bl1], [t11, bl2], [t01, bl3]] as const) {
+          if (low) maxLowTop = Math.max(maxLowTop, t);
+        }
+        const floorY = li === 0
+          ? (Number.isFinite(maxLowTop) ? maxLowTop : 0)
+          : Lv - ROAD_WALL_MODULE;
         // Edge midpoints between tile centers
         const cx0 = (gx + 0.5) * s;
         const cz0 = (gz + 0.5) * s;
@@ -210,13 +245,53 @@ export function buildRoadsContour(world: WorldData): RoadsContour {
             nz = -nz;
           }
           const nl = Math.hypot(nx, nz) || 1;
+          // A CUT segment (cell center on the low side) whose band ends
+          // at the cut block's own top: the block's top polygon clips
+          // this corner. Find the HIGH tile nearest the segment (the
+          // minority whose corner is cut — works for saddles too).
+          const ccx = (gx + 1) * s;
+          const ccz = (gz + 1) * s;
+          const nxu = nx / nl;
+          const nzu = nz / nl;
+          const isCut = (ccx - mx) * nxu + (ccz - mz) * nzu > 0;
+          let atTop = false;
+          if (isCut) {
+            let bestD = Infinity;
+            let hTx = -1;
+            let hTz = -1;
+            let hTop = Infinity;
+            for (const [tx, tz, low] of tiles4) {
+              if (low) continue;
+              const d = ((tx + 0.5) * s - mx) ** 2 + ((tz + 0.5) * s - mz) ** 2;
+              if (d < bestD) {
+                bestD = d;
+                hTx = tx;
+                hTz = tz;
+                hTop = top[tz * w + tx]!;
+              }
+            }
+            if (hTx >= 0 && hTop <= Lv + 0.05) {
+              atTop = true;
+              // Which corner of the high tile sits at the cell center:
+              // TL tile of the group -> its SE corner, TR -> SW,
+              // BL -> NE, BR -> NW. (0=NW, 1=NE, 2=SW, 3=SE)
+              const corner = hTx === gx
+                ? (hTz === gz ? 3 : 1)
+                : (hTz === gz ? 2 : 0);
+              cutTileCorners.add((hTz * w + hTx) * 4 + corner);
+            }
+          }
           const seg: RoadsSegment = {
             x0, z0, x1, z1, gx, gz,
             lo: Lv - ROAD_WALL_MODULE - 0.1,
             hi: Lv,
-            nx: nx / nl,
-            nz: nz / nl,
+            nx: nxu,
+            nz: nzu,
             levelIdx: li,
+            contUp,
+            contDown,
+            floorY,
+            atTop,
           };
           segments.push(seg);
           for (const [tx, tz] of tiles4) register(tx, tz, seg);

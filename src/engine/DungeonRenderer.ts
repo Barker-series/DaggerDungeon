@@ -996,6 +996,54 @@ export class DungeonRenderer {
       }
       runs.clear();
     };
+    // ROADS TOP CLIP: a plinth whose corner is cut by the smooth
+    // outline gets its top polygon clipped to that outline — the top's
+    // diagonal edge IS the wall band's top edge, so silhouettes are
+    // smooth and there is no overhang to soffit.
+    const emitClippedTop = (x: number, z: number, y: number): void => {
+      const wx = x * TILE_SIZE;
+      const wz = z * TILE_SIZE;
+      const half = TILE_SIZE / 2;
+      const base = (z * w + x) * 4;
+      const ring: [number, number][] = [];
+      const pushPt = (px: number, pz: number): void => {
+        const last = ring[ring.length - 1];
+        if (last && Math.abs(last[0] - px) < 1e-6 && Math.abs(last[1] - pz) < 1e-6) return;
+        ring.push([px, pz]);
+      };
+      // Ring: NW -> NE -> SE -> SW (corner indices 0,1,3,2)
+      if (roadsContour.cutTileCorners.has(base + 0)) {
+        pushPt(wx, wz + half);
+        pushPt(wx + half, wz);
+      } else pushPt(wx, wz);
+      if (roadsContour.cutTileCorners.has(base + 1)) {
+        pushPt(wx + TILE_SIZE - half, wz);
+        pushPt(wx + TILE_SIZE, wz + half);
+      } else pushPt(wx + TILE_SIZE, wz);
+      if (roadsContour.cutTileCorners.has(base + 3)) {
+        pushPt(wx + TILE_SIZE, wz + TILE_SIZE - half);
+        pushPt(wx + TILE_SIZE - half, wz + TILE_SIZE);
+      } else pushPt(wx + TILE_SIZE, wz + TILE_SIZE);
+      if (roadsContour.cutTileCorners.has(base + 2)) {
+        pushPt(wx + half, wz + TILE_SIZE);
+        pushPt(wx, wz + TILE_SIZE - half);
+      } else pushPt(wx, wz + TILE_SIZE);
+      const vi = rockFloors.verts.length / 3;
+      for (const [px, pz] of ring) {
+        rockFloors.verts.push(px, y, pz);
+        rockFloors.norms.push(0, 1, 0);
+        rockFloors.uvs.push(px / TILE_SIZE, pz / TILE_SIZE);
+      }
+      for (let i = 1; i + 1 < ring.length; i++) {
+        // Wind so the geometric normal points up
+        const ax = ring[i]![0] - ring[0]![0];
+        const az = ring[i]![1] - ring[0]![1];
+        const bx = ring[i + 1]![0] - ring[0]![0];
+        const bz = ring[i + 1]![1] - ring[0]![1];
+        if (az * bx - ax * bz >= 0) rockFloors.idxs.push(vi, vi + i, vi + i + 1);
+        else rockFloors.idxs.push(vi, vi + i + 1, vi + i);
+      }
+    };
     for (let z = bounds?.z0 ?? 0; z < (bounds?.z1 ?? h); z++) {
       const open = new Map<string, Run>();
       for (let x = bounds?.x0 ?? 0; x < (bounds?.x1 ?? w); x++) {
@@ -1011,8 +1059,16 @@ export class DungeonRenderer {
             open.set(k, { x0: x, x1: x, y, up });
           }
         };
+        const cutBase = (z * w + x) * 4;
+        const topCut = roadsContour.cutTileCorners.has(cutBase)
+          || roadsContour.cutTileCorners.has(cutBase + 1)
+          || roadsContour.cutTileCorners.has(cutBase + 2)
+          || roadsContour.cutTileCorners.has(cutBase + 3);
         for (const s of a) {
-          if (s.owner === -1 && s.floor > ABYSS_FLOOR) want(s.floor, true);
+          if (s.owner === -1 && s.floor > ABYSS_FLOOR) {
+            if (topCut) emitClippedTop(x, z, s.floor);
+            else want(s.floor, true);
+          }
           if (s.ceilOwner === -1 && s.ceil < SKY_CEIL) want(s.ceil, false);
         }
         // The world's top plane is WATERTIGHT where it can be seen:
@@ -2299,29 +2355,39 @@ export class DungeonRenderer {
         //    FILLED): render-solid over data-air — an open-topped
         //    triangular well between the band walls; lid it with an
         //    UP-facing triangle flush at the band top.
-        // If the band ABOVE cuts this same group, the wedge/bulge
-        // continues upward and the upper band's triangle roofs or
-        // lids it — a mid-height triangle here would float inside
-        // the shared void (or lie buried in the shared mass).
-        const gKey = (seg.gz * world.levels[0]!.width + seg.gx) * ROAD_WALL_LEVELS.length;
-        if (seg.levelIdx + 1 < ROAD_WALL_LEVELS.length
-          && roadsContour.groupLevels.has(gKey + seg.levelIdx + 1)) continue;
         const side = (ccx - mx) * seg.nx + (ccz - mz) * seg.nz;
-        const down = side > 0;
-        const sy = down ? seg.hi - 0.02 : seg.hi;
-        const ny = down ? -1 : 1;
-        const ti = buf.verts.length / 3;
-        buf.verts.push(seg.x0, sy, seg.z0, seg.x1, sy, seg.z1, ccx, sy, ccz);
-        for (let k = 0; k < 3; k++) buf.norms.push(0, ny, 0);
-        buf.uvs.push(
-          seg.x0 / TILE_SIZE, seg.z0 / TILE_SIZE,
-          seg.x1 / TILE_SIZE, seg.z1 / TILE_SIZE,
-          ccx / TILE_SIZE, ccz / TILE_SIZE,
-        );
-        // Wind so the geometric normal matches ny (cross.y sign)
-        const crossY = (seg.z1 - seg.z0) * (ccx - seg.x0) - (seg.x1 - seg.x0) * (ccz - seg.z0);
-        if (crossY * ny >= 0) buf.idxs.push(ti, ti + 1, ti + 2);
-        else buf.idxs.push(ti, ti + 2, ti + 1);
+        const down = side > 0; // cc on the LOW side: corner CUT (overhang wedge)
+        const tri = (sy: number, ny: number): void => {
+          const ti = buf.verts.length / 3;
+          buf.verts.push(seg.x0, sy, seg.z0, seg.x1, sy, seg.z1, ccx, sy, ccz);
+          for (let k = 0; k < 3; k++) buf.norms.push(0, ny, 0);
+          buf.uvs.push(
+            seg.x0 / TILE_SIZE, seg.z0 / TILE_SIZE,
+            seg.x1 / TILE_SIZE, seg.z1 / TILE_SIZE,
+            ccx / TILE_SIZE, ccz / TILE_SIZE,
+          );
+          // Wind so the geometric normal matches ny (cross.y sign)
+          const crossY = (seg.z1 - seg.z0) * (ccx - seg.x0) - (seg.x1 - seg.x0) * (ccz - seg.z0);
+          if (crossY * ny >= 0) buf.idxs.push(ti, ti + 1, ti + 2);
+          else buf.idxs.push(ti, ti + 2, ti + 1);
+        };
+        // Horizontal patches, only where the SAME cut does not continue
+        // into the adjacent band (seg.contUp/contDown are per-case, not
+        // per-group — an upper band cutting a DIFFERENT corner of the
+        // same group must not suppress this wedge's roof):
+        //  - corner CUT: down-facing soffit at the band top (the plinth
+        //    top overhangs), and an up-facing FLOOR at the low side's
+        //    own surface (street grade / terrace module) — without it
+        //    the wedge is a hole in the street.
+        //  - corner FILLED (bulge): up-facing lid flush at the band top.
+        if (down) {
+          // atTop: the block's clipped top polygon ends exactly on
+          // this segment's line — no overhang, no soffit.
+          if (!seg.contUp && !seg.atTop) tri(seg.hi - 0.02, -1);
+          if (!seg.contDown) tri(seg.floorY, 1);
+        } else if (!seg.contUp) {
+          tri(seg.hi, 1);
+        }
       }
     }
     if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor('outside').wall);
