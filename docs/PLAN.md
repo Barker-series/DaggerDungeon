@@ -344,6 +344,15 @@ explicitly a guess until the day it's real work.
   context. The rest is mined out.
 
 ## Known Rough Edges (fix on encounter)
+- Corner-wedge sealing (d5cf516) is PATCHWORK by the user's verdict ("this
+  is a silly fix, we will need to fix this later"): cap transoms + segCap
+  edge seals + triangulated sampling each paper over the same root tension —
+  the smooth system (corner-field caps, contour-cut wedges) and the square
+  system (span-XOR faces, flat air|air ceiling steps) meet without a shared
+  surface definition. The real fix is one boundary-surface model both
+  emitters derive from, so junction faces knit by construction instead of
+  per-class seal geometry. Revisit when smoothing slice 2 (roads) forces
+  the same junction logic again.
 - Short subway bores are REMOVED from generation (July 30 2026): they were
   unreachable scaffolding visible only in wireframe and pit walls. The
   planOwnedSubways machinery stays in pillar-bridges, unwired, until real rail
