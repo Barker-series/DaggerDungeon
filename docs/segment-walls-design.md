@@ -158,3 +158,31 @@ emitted faces around tile (140,152) before coding.
   them); use a git worktree for A/B.
 - Additive-only and reclassification approaches both dead-end at the
   center model; only segment extrusion reaches the right model.
+
+## SLICE 2 (roads) — attempted Aug 4 2026, REVERTED; findings
+
+Flipping roads into `isSmoothTile` + height-banded collision is NOT the
+slice. Three structural mismatches surfaced (A/B-verified against
+baseline, which has only 23 backface px in the test district;
+the naive slice produced ~43k):
+
+1. RISERS: plinth-to-plinth steps are wall|wall in the tile grid —
+   marching squares draws no line there, so any suppression around them
+   is suppress-without-emit. Stairs of blocks are the roads look;
+   they need a wall-line source over COLUMN TOPS, not tile walkability.
+2. RIDGES: a 1-tile plinth wall between two streets needs BOTH side
+   walls to agree on the tile's top exactly; per-group nearest-tile
+   band selection lets the two sides disagree and exposes backfaces.
+3. BORDERS: groups mixing roads tiles with outside terrain have
+   walkable space on both sides at wildly different heights — segment
+   orientation is ambiguous. (Border exclusion alone fixed almost
+   nothing; the damage is interior, items 1-2.)
+
+The real design (matches the original doc note "path-offset splines /
+future wall-line sources"): a roads-specific wall-line pass extruding
+per-BLOCK outlines from the road-vein field (blocks are Voronoi cells
+of `roadVeinsAt` — their outlines are already smooth curves in field
+space), banded per block top, with collision height-banding
+(GameEngine plinth skip — that part of the attempt was sound and can
+be reused). Renderer-side only over span tops; the tile-grid contour
+is the wrong substrate for this district.
