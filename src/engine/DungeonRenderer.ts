@@ -1040,7 +1040,9 @@ export class DungeonRenderer {
         const az = ring[i]![1] - ring[0]![1];
         const bx = ring[i + 1]![0] - ring[0]![0];
         const bz = ring[i + 1]![1] - ring[0]![1];
-        if (az * bx - ax * bz >= 0) rockFloors.idxs.push(vi, vi + i, vi + i + 1);
+        const fanArea = az * bx - ax * bz;
+        if (Math.abs(fanArea) < 1e-9) continue; // collinear ring points
+        if (fanArea >= 0) rockFloors.idxs.push(vi, vi + i, vi + i + 1);
         else rockFloors.idxs.push(vi, vi + i + 1, vi + i);
       }
     };
@@ -2242,6 +2244,7 @@ export class DungeonRenderer {
       const gx = aby * acz - abz * acy;
       const gy = abz * acx - abx * acz;
       const gz = abx * acy - aby * acx;
+      if (gx * gx + gy * gy + gz * gz < 1e-10) return; // zero-area cap
       if (gx * gnx + gy * gny + gz * gnz >= 0) buf.idxs.push(vi, vi + 1, vi + 2);
       else buf.idxs.push(vi, vi + 2, vi + 1);
     };
@@ -2377,6 +2380,7 @@ export class DungeonRenderer {
           );
           // Wind so the geometric normal matches ny (cross.y sign)
           const crossY = (seg.z1 - seg.z0) * (ccx - seg.x0) - (seg.x1 - seg.x0) * (ccz - seg.z0);
+          if (Math.abs(crossY) < 1e-9) return; // degenerate wedge
           if (crossY * ny >= 0) hbuf.idxs.push(ti, ti + 1, ti + 2);
           else hbuf.idxs.push(ti, ti + 2, ti + 1);
         };
@@ -2419,7 +2423,9 @@ export class DungeonRenderer {
               const b0 = ti * 3;
               const crossY2 = (p[b0 + 5]! - p[b0 + 2]!) * (p[b0 + 6]! - p[b0]!)
                 - (p[b0 + 3]! - p[b0]!) * (p[b0 + 8]! - p[b0 + 2]!);
-              if (crossY2 >= 0) hbuf.idxs.push(ti, ti + 1, ti + 2);
+              if (Math.abs(crossY2) < 1e-9) {
+                // degenerate wedge floor: drop the pushed verts' tris
+              } else if (crossY2 >= 0) hbuf.idxs.push(ti, ti + 1, ti + 2);
               else hbuf.idxs.push(ti, ti + 2, ti + 1);
             } else {
               tri(seg.floorY, 1);
@@ -2609,13 +2615,10 @@ export class DungeonRenderer {
         const nz = buf.norms[ia + 2]! + buf.norms[ib + 2]! + buf.norms[ic + 2]!;
         if (gx * nx + gy * ny + gz * nz <= 0) reversed++;
       }
-      // Reversed triangles are ALWAYS a defect. A few zero-area
-      // triangles are by-construction: triangular pieces (transoms,
-      // wedge covers) go through the quad helper with one edge
-      // collapsed — one real triangle plus one zero-area one the GPU
-      // discards. Only a PILE of degenerates suggests a real emitter
-      // bug worth a look.
-      if (reversed > 0 || degenerate > 8) {
+      // Reversed triangles are ALWAYS a defect; with every emitter
+      // now guarding zero-area triangles at the source, ANY degenerate
+      // reaching a buffer is a defect too.
+      if (reversed > 0 || degenerate > 0) {
         console.error(
           `[geometry] invalid triangles: reversed=${reversed} `
           + `degenerate=${degenerate} total=${buf.idxs.length / 3}`,
