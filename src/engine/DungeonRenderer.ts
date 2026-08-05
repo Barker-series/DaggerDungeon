@@ -370,7 +370,7 @@ export class DungeonRenderer {
     this.buildPipeChamfers(world, this.meshGroup);
     this.buildSegmentWalls(world, contours[0]!, cornerFloors[0]!, this.meshGroup);
     this.buildTunnelTrim(world, contours[0]!, this.meshGroup);
-    this.buildRoadsWalls(world, roadsContour, this.meshGroup);
+    this.buildRoadsWalls(world, roadsContour, cornerFloors[0]!, this.meshGroup);
   }
 
   /** Adopt a window as the chunk data source. Windows are RIM-EXACT
@@ -535,7 +535,7 @@ export class DungeonRenderer {
     this.buildPipeChamfers(w, chunk.group, bounds);
     this.buildSegmentWalls(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
     this.buildTunnelTrim(w, ctx.contours[0]!, chunk.group, bounds);
-    this.buildRoadsWalls(w, ctx.roadsContour, chunk.group, bounds);
+    this.buildRoadsWalls(w, ctx.roadsContour, ctx.cornerFloors[0]!, chunk.group, bounds);
     chunk.buildMs += performance.now() - jobStart;
     if (chunk.jobs.length === 0) {
       chunk.complete = true;
@@ -2296,6 +2296,7 @@ export class DungeonRenderer {
   private buildRoadsWalls(
     world: WorldData,
     roadsContour: RoadsContour,
+    cornerFloor: number[][],
     target: THREE.Group,
     bounds?: RenderBounds,
   ): void {
@@ -2384,7 +2385,28 @@ export class DungeonRenderer {
           // atTop: the block's clipped top polygon ends exactly on
           // this segment's line — no overhang, no soffit.
           if (!seg.contUp && !seg.atTop) tri(seg.hi - 0.02, -1);
-          if (!seg.contDown) tri(seg.floorY, 1);
+          if (!seg.contDown) {
+            if (seg.levelIdx === 0) {
+              // Bottom-band wedge floors follow the DRAWN street
+              // surface (rolling outside terrain in roads cells):
+              // per-vertex corner-field samples, exact at the segment
+              // endpoints and the shared tile corner.
+              const ti = buf.verts.length / 3;
+              for (const [px, pz] of [[seg.x0, seg.z0], [seg.x1, seg.z1], [ccx, ccz]] as const) {
+                buf.verts.push(px, sampleCornerField(cornerFloor, px, pz), pz);
+                buf.norms.push(0, 1, 0);
+                buf.uvs.push(px / TILE_SIZE, pz / TILE_SIZE);
+              }
+              const p = buf.verts;
+              const b0 = ti * 3;
+              const crossY2 = (p[b0 + 5]! - p[b0 + 2]!) * (p[b0 + 6]! - p[b0]!)
+                - (p[b0 + 3]! - p[b0]!) * (p[b0 + 8]! - p[b0 + 2]!);
+              if (crossY2 >= 0) buf.idxs.push(ti, ti + 1, ti + 2);
+              else buf.idxs.push(ti, ti + 2, ti + 1);
+            } else {
+              tri(seg.floorY, 1);
+            }
+          }
         } else if (!seg.contUp) {
           tri(seg.hi, 1);
         }

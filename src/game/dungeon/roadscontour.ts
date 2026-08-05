@@ -205,12 +205,22 @@ export function buildRoadsContour(world: WorldData): RoadsContour {
           && caseAt(ROAD_WALL_LEVELS[li + 1]!) === caseIdx;
         const contDown = li > 0 && caseAt(ROAD_WALL_LEVELS[li - 1]!) === caseIdx;
         let maxLowTop = -Infinity;
+        let minLowTop = Infinity;
         for (const [t, low] of [[t00, bl0], [t10, bl1], [t11, bl2], [t01, bl3]] as const) {
-          if (low) maxLowTop = Math.max(maxLowTop, t);
+          if (low) {
+            maxLowTop = Math.max(maxLowTop, t);
+            minLowTop = Math.min(minLowTop, t);
+          }
         }
         const floorY = li === 0
           ? (Number.isFinite(maxLowTop) ? maxLowTop : 0)
           : Lv - ROAD_WALL_MODULE;
+        // Bottom band follows the terrain down: roads streets can be
+        // ROLLING outside ground, not flat 0.5 — a fixed -0.1 bottom
+        // leaves a gap under the wall wherever the street dips.
+        const bandLo = li === 0 && Number.isFinite(minLowTop)
+          ? Math.min(Lv - ROAD_WALL_MODULE - 0.1, minLowTop - 0.3)
+          : Lv - ROAD_WALL_MODULE - 0.1;
         // Edge midpoints between tile centers
         const cx0 = (gx + 0.5) * s;
         const cz0 = (gz + 0.5) * s;
@@ -283,7 +293,7 @@ export function buildRoadsContour(world: WorldData): RoadsContour {
           }
           const seg: RoadsSegment = {
             x0, z0, x1, z1, gx, gz,
-            lo: Lv - ROAD_WALL_MODULE - 0.1,
+            lo: bandLo,
             hi: Lv,
             nx: nxu,
             nz: nzu,

@@ -186,3 +186,23 @@ space), banded per block top, with collision height-banding
 (GameEngine plinth skip — that part of the attempt was sound and can
 be reused). Renderer-side only over span tops; the tile-grid contour
 is the wrong substrate for this district.
+
+## OPEN BUG (pre-existing, NOT slice 2): border face bottoms use the
+## wrong level's corner field
+
+Repro: seed 1785957788208 @ (292.84,0.38,195.22) yaw 5.524 pitch
+-0.236 — magenta floor-level triangle at a court/street corner,
+1909 miss px. Byte-identical at 66a71a4 (pre-slice-2), so this
+predates roads smoothing entirely.
+
+Diagnosis (single-ray + face dump, Aug 5 2026): the face at z=192,
+x 294..297 (air (98,64) span 0..14 | solid sp0 (98,63)) IS emitted
+(m12) but its bottom edge sits at 1.2/0.6 while the DRAWN level-0
+floor corners there are 0.6/0.0 — the strip 0..1.2 is open. `refine`
+(DungeonRenderer ~line 940) resolves face bottoms via
+`cornerFloors[span.owner]`; the span's owner level here is not the
+level whose corner field drew the visible floor, so the face floats
+above it. Fix direction: refine must clamp/fall back to the corner
+field of the level that actually renders the floor at that corner
+(or take min across candidate owners). Instrument first: print
+span.owner and both fields' corner values at (98,64).
