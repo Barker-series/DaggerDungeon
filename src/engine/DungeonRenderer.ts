@@ -899,15 +899,23 @@ export class DungeonRenderer {
   ): void {
     const w = world.levels[0]!.width;
     const h = world.levels[0]!.height;
-    // Clips derive from what was BUILT: the sky plane sits above the
-    // tallest crown in this window, the abyss below the deepest well
+    // The sky clip must be SEAM-STABLE: deriving it from "tallest
+    // pillar in this window" gave adjacent chunks different clip
+    // heights whenever a tall pillar was in one build window but not
+    // the other — sky-facing walls and roof plates stepped at chunk
+    // borders (ragged crown lines). One constant for every window;
+    // the abyss keeps its window derivation (depth never crosses
+    // window borders the way crowns do).
     let tallest = 0;
     let deepest = 0;
     for (const spec of world.pillars.values()) {
       tallest = Math.max(tallest, spec.totalHeight);
       deepest = Math.min(deepest, spec.baseDepth);
     }
-    const skyTop = Math.max(RENDER_SKY_TOP_MIN, tallest + 4 + RENDER_SKY_MARGIN);
+    const skyTop = RENDER_SKY_TOP_MIN + RENDER_SKY_MARGIN;
+    if (import.meta.env?.DEV && tallest + 4 + RENDER_SKY_MARGIN > skyTop) {
+      console.warn(`[render] pillar crown ${tallest} exceeds the fixed sky clip ${skyTop}`);
+    }
     const worldBottom = Math.min(
       world.levels[world.levels.length - 1]!.baseY - RENDER_ABYSS_DROP,
       deepest - RENDER_ABYSS_DROP,
