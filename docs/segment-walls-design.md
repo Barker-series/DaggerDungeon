@@ -217,3 +217,20 @@ travel up the slot and cross into wall mass high up with no face.
 Predates the outside-crest quantization (unchanged by it). Next
 session: single-ray a magenta pixel from the (232,1,165) view and
 face-dump the entry tiles at their crest heights.
+
+## OPEN: solid-to-sky wall crowns step raggedly (the "height issue")
+
+Repro: seed 1785957788208 opx 4 opz 3 @ (347.59,0.6,180.59) yaw 9.338
+pitch 1.09, marks at (341.71,82.43,214.21) / (339.43,80.03,214.07) /
+(339.98,76.12,213.52) — three crown heights on one tower corner.
+The towers are SOLID-TO-SKY columns (empty span lists, pillarWall=0,
+neighbors air 1..sky). Their wall crowns do NOT come from the layer6
+outside ceiling field (quantizing it — e033325 + the absolute-crest
+follow-up — left this render byte-identical). The tops come from the
+sky-clip / capMax-fallback path for walls whose neighbors are all
+sky-open (cornerCeil/capMax exclude >=100 → fallback heights vary
+per piece). Fix direction: give solid-to-sky wall crowns the same
+structural treatment — a per-cell quantized crest module — inside
+whatever emits their top band (likely the segment-wall hiFor fallback
++ face-pass topOverride for sky-adjacent boundaries). Instrument
+first: face-dump the crown at (341,80,214) and identify the emitters.

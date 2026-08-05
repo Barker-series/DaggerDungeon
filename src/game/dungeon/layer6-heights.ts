@@ -254,16 +254,19 @@ export function computeHeightFields(
       let clearance: number;
       if (biome === 'outside') {
         // OUTSIDE crests are STRUCTURE, not cave rock: one flat crest
-        // per cell, quantized to a 6-unit module. Per-tile swell here
-        // never draws as ceiling (outside is open sky) — it only fed
-        // wall crowns, which turned the roll into a stepped-fin
-        // sawtooth against the sky and left every biome's rim climbing
-        // to a different ragged line ("height differences up there").
+        // per cell, quantized to a 6-unit module — and ABSOLUTE, not
+        // floor-relative: the rolling grade otherwise passes straight
+        // through `floor + clearance` into the crest line, stepping
+        // tower crowns 76/80/82 at a single corner ("height issue"
+        // repro). Per-tile swell never draws as ceiling here (open
+        // sky); it only fed wall crowns.
         const cell = getCell(Math.floor(tx / cellTileSize), Math.floor(tz / cellTileSize))!;
         const cellNoise = sampleNoise(windowOrigin().ocx + cell.cx, windowOrigin().ocz + cell.cz, heightSeed + 7, 2);
         const raw = p.clearMin + cellNoise * (p.clearMax - p.clearMin);
-        clearance = Math.round(raw / 6) * 6;
-      } else if (isOrganicBiome(biome)) {
+        ceiling[tz]![tx] = Math.max(f + TUNNEL_CLEARANCE, Math.round(raw / 6) * 6);
+        continue;
+      }
+      if (isOrganicBiome(biome)) {
         const swell = sampleNoise(windowOrigin().ocx * 14 + tx, windowOrigin().ocz * 14 + tz, heightSeed, CEIL_SWELL_SCALE);
         const detail = sampleNoise(windowOrigin().ocx * 14 + tx, windowOrigin().ocz * 14 + tz, heightSeed + 99, CEIL_DETAIL_SCALE);
         clearance = p.clearMin + swell * (p.clearMax - p.clearMin) + (detail - 0.5) * 1.5;
