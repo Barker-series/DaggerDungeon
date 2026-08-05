@@ -758,7 +758,14 @@ export class GameEngine {
   private pocketGround(li: number, tx: number, tz: number, x: number, z: number): number | null {
     const level = this.world!.levels[li]!;
     if (level.tiles[tz]?.[tx] !== TileType.Wall) return null;
-    if (!this.contours[li]?.softWalls.has(tz * level.width + tx)) return null;
+    // Roads soft plinths: the cut wedge at a smoothed block corner is
+    // standable street continuing into the tile footprint — its drawn
+    // floor is the corner field, same as organic pockets. Without this,
+    // ground inside a wedge is -Infinity (the plinth span floor is the
+    // block TOP) and a body that walks in gets stuck falling in place.
+    const soft = this.contours[li]?.softWalls.has(tz * level.width + tx)
+      || (li === 0 && this.roadsContour?.softPlinths.has(tz * level.width + tx));
+    if (!soft) return null;
     return level.baseY + sampleCornerField(this.cornerFloors[li]!, x, z);
   }
 

@@ -2310,6 +2310,10 @@ export class DungeonRenderer {
     const x1b = bounds?.x1 ?? world.levels[0]!.width;
     const z1b = bounds?.z1 ?? world.levels[0]!.height;
     const buf = newBuffers();
+    // Horizontal patches (wedge floors, lids, soffits) read as GROUND
+    // and plinth-top surface — floor material, not wall (a wall-shaded
+    // triangle in the middle of the street looks like a hole).
+    const hbuf = newBuffers();
     for (const seg of roadsContour.segments) {
       if (seg.gx < x0b || seg.gx >= x1b || seg.gz < z0b || seg.gz >= z1b) continue;
       // Canonical direction for world-anchored UVs (continuous across
@@ -2363,18 +2367,18 @@ export class DungeonRenderer {
         const side = (ccx - mx) * seg.nx + (ccz - mz) * seg.nz;
         const down = side > 0; // cc on the LOW side: corner CUT (overhang wedge)
         const tri = (sy: number, ny: number): void => {
-          const ti = buf.verts.length / 3;
-          buf.verts.push(seg.x0, sy, seg.z0, seg.x1, sy, seg.z1, ccx, sy, ccz);
-          for (let k = 0; k < 3; k++) buf.norms.push(0, ny, 0);
-          buf.uvs.push(
+          const ti = hbuf.verts.length / 3;
+          hbuf.verts.push(seg.x0, sy, seg.z0, seg.x1, sy, seg.z1, ccx, sy, ccz);
+          for (let k = 0; k < 3; k++) hbuf.norms.push(0, ny, 0);
+          hbuf.uvs.push(
             seg.x0 / TILE_SIZE, seg.z0 / TILE_SIZE,
             seg.x1 / TILE_SIZE, seg.z1 / TILE_SIZE,
             ccx / TILE_SIZE, ccz / TILE_SIZE,
           );
           // Wind so the geometric normal matches ny (cross.y sign)
           const crossY = (seg.z1 - seg.z0) * (ccx - seg.x0) - (seg.x1 - seg.x0) * (ccz - seg.z0);
-          if (crossY * ny >= 0) buf.idxs.push(ti, ti + 1, ti + 2);
-          else buf.idxs.push(ti, ti + 2, ti + 1);
+          if (crossY * ny >= 0) hbuf.idxs.push(ti, ti + 1, ti + 2);
+          else hbuf.idxs.push(ti, ti + 2, ti + 1);
         };
         // Horizontal patches, only where the SAME cut does not continue
         // into the adjacent band (seg.contUp/contDown are per-case, not
@@ -2395,18 +2399,18 @@ export class DungeonRenderer {
               // surface (rolling outside terrain in roads cells):
               // per-vertex corner-field samples, exact at the segment
               // endpoints and the shared tile corner.
-              const ti = buf.verts.length / 3;
+              const ti = hbuf.verts.length / 3;
               for (const [px, pz] of [[seg.x0, seg.z0], [seg.x1, seg.z1], [ccx, ccz]] as const) {
-                buf.verts.push(px, sampleCornerField(cornerFloor, px, pz), pz);
-                buf.norms.push(0, 1, 0);
-                buf.uvs.push(px / TILE_SIZE, pz / TILE_SIZE);
+                hbuf.verts.push(px, sampleCornerField(cornerFloor, px, pz), pz);
+                hbuf.norms.push(0, 1, 0);
+                hbuf.uvs.push(px / TILE_SIZE, pz / TILE_SIZE);
               }
-              const p = buf.verts;
+              const p = hbuf.verts;
               const b0 = ti * 3;
               const crossY2 = (p[b0 + 5]! - p[b0 + 2]!) * (p[b0 + 6]! - p[b0]!)
                 - (p[b0 + 3]! - p[b0]!) * (p[b0 + 8]! - p[b0 + 2]!);
-              if (crossY2 >= 0) buf.idxs.push(ti, ti + 1, ti + 2);
-              else buf.idxs.push(ti, ti + 2, ti + 1);
+              if (crossY2 >= 0) hbuf.idxs.push(ti, ti + 1, ti + 2);
+              else hbuf.idxs.push(ti, ti + 2, ti + 1);
             } else {
               tri(seg.floorY, 1);
             }
@@ -2417,6 +2421,7 @@ export class DungeonRenderer {
       }
     }
     if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor('outside').wall);
+    if (hbuf.verts.length > 0) this.addMesh(target, hbuf, this.materialsFor('outside').floor);
   }
 
   private buildPipeChamfers(world: WorldData, target: THREE.Group, bounds?: RenderBounds): void {
