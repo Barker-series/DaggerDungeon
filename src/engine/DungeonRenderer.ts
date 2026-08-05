@@ -369,7 +369,7 @@ export class DungeonRenderer {
     this.buildWalls(world, cornerFloors, contours, roadsContour, this.materialsFor, this.meshGroup);
     this.buildPipeChamfers(world, this.meshGroup);
     this.buildSegmentWalls(world, contours[0]!, cornerFloors[0]!, this.meshGroup);
-    this.buildTunnelTrim(world, contours[0]!, this.meshGroup);
+    this.buildTunnelTrim(world, contours[0]!, cornerFloors[0]!, this.meshGroup);
     this.buildRoadsWalls(world, roadsContour, cornerFloors[0]!, this.meshGroup);
   }
 
@@ -534,7 +534,7 @@ export class DungeonRenderer {
     this.buildWalls(w, ctx.cornerFloors, ctx.contours, ctx.roadsContour, this.materialsFor, chunk.group, bounds);
     this.buildPipeChamfers(w, chunk.group, bounds);
     this.buildSegmentWalls(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
-    this.buildTunnelTrim(w, ctx.contours[0]!, chunk.group, bounds);
+    this.buildTunnelTrim(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
     this.buildRoadsWalls(w, ctx.roadsContour, ctx.cornerFloors[0]!, chunk.group, bounds);
     chunk.buildMs += performance.now() - jobStart;
     if (chunk.jobs.length === 0) {
@@ -1957,6 +1957,7 @@ export class DungeonRenderer {
   private buildTunnelTrim(
     world: WorldData,
     contour: ReturnType<typeof buildOrganicContour>,
+    cornerFloor: number[][],
     target: THREE.Group,
     bounds?: RenderBounds,
   ): void {
@@ -2150,6 +2151,7 @@ export class DungeonRenderer {
       ox: number; oz: number; lo: number; hi: number; end: boolean;
     } => {
       const list = joints.get(jkey(px, pz))!;
+      const fieldLo = sampleCornerField(cornerFloor, px, pz);
       // LIP GATE: a joint whose outward side hangs over a floor DROP
       // (wall corner at a ledge/court edge) must not miter around the
       // lip — the wrapped skirt reads as a soft bevel on what should
@@ -2160,7 +2162,7 @@ export class DungeonRenderer {
         if (qtx >= 0 && qtz >= 0 && qtx < w && qtz < h
           && L.tiles[qtz]![qtx] !== TileType.Wall
           && L.floorHeights[qtz]![qtx]! < self.lo - 0.5) {
-          return { ox: self.nx * CH, oz: self.nz * CH, lo: self.lo, hi: self.hi, end: true };
+          return { ox: self.nx * CH, oz: self.nz * CH, lo: fieldLo, hi: self.hi, end: true };
         }
       }
       // Continuity requires AGREEING spans: mitering/averaging across a
@@ -2170,16 +2172,18 @@ export class DungeonRenderer {
       if (list.length === 2) {
         const other = list[0] === self ? list[1]! : list[0]!;
         if (Math.abs(other.lo - self.lo) > 0.75 || Math.abs(other.hi - self.hi) > 0.75) {
-          return { ox: self.nx * CH, oz: self.nz * CH, lo: self.lo, hi: self.hi, end: true };
+          return { ox: self.nx * CH, oz: self.nz * CH, lo: fieldLo, hi: self.hi, end: true };
         }
       }
-      let lo = 0;
+      // FLOOR heights come from the DRAWN corner-floor field at the
+      // joint point — span floors are flat, but drawn floors corner-
+      // blend (court dominance, rolling streets, ramps), and the
+      // octagonal band bottoms are refined to the same field: flares
+      // that don't follow it leave wedge gaps at blended corners
+      // (covered-street court corner, single-ray verified Aug 2026).
+      const lo = fieldLo;
       let hi = 0;
-      for (const p of list) {
-        lo += p.lo;
-        hi += p.hi;
-      }
-      lo /= list.length;
+      for (const p of list) hi += p.hi;
       hi /= list.length;
       if (list.length === 2) {
         let mx2 = 0;
