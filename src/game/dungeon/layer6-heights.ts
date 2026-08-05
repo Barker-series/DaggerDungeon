@@ -263,7 +263,23 @@ export function computeHeightFields(
         const cell = getCell(Math.floor(tx / cellTileSize), Math.floor(tz / cellTileSize))!;
         const cellNoise = sampleNoise(windowOrigin().ocx + cell.cx, windowOrigin().ocz + cell.cz, heightSeed + 7, 2);
         const raw = p.clearMin + cellNoise * (p.clearMax - p.clearMin);
-        ceiling[tz]![tx] = Math.max(f + TUNNEL_CLEARANCE, Math.round(raw / 6) * 6);
+        // Crest referenced to the CELL's ground (the floor swell field
+        // sampled once at the cell center, same noise the floors use):
+        // purely absolute crests lost the ground height and read
+        // SHORTER wherever outside terrain sits high. Flat per cell,
+        // tracks terrain at cell scale, quantized to the module.
+        const ccx2 = windowOrigin().ocx * 14 + (cell.cx + 0.5) * cellTileSize;
+        const ccz2 = windowOrigin().ocz * 14 + (cell.cz + 0.5) * cellTileSize;
+        const cellGround = sampleNoise(ccx2, ccz2, heightSeed + 55, FLOOR_SWELL_SCALE) * p.rollAmp;
+        // Ceil-quantize plus one module: the old per-tile swell let
+        // crowns ride local noise PEAKS (cap-max reads the 3x3 max);
+        // a mean-valued cell noise alone reads ~10 shorter ("these
+        // seem to be shorter"). Capped safely below the sky-filler
+        // threshold (100) so crests never classify as sky.
+        ceiling[tz]![tx] = Math.max(
+          f + TUNNEL_CLEARANCE,
+          Math.min(96, Math.ceil((cellGround + raw) / 6) * 6 + 6),
+        );
         continue;
       }
       if (isOrganicBiome(biome)) {
