@@ -206,3 +206,14 @@ above it. Fix direction: refine must clamp/fall back to the corner
 field of the level that actually renders the floor at that corner
 (or take min across candidate owners). Instrument first: print
 span.owner and both fields' corner values at (98,64).
+
+## OPEN: high-altitude leak in the border slot canyon
+
+Seed 1785958682363 opx -1 opz -2, camera (210.15,1,170) yaw 3.312
+pitch 0.55 (or (232,1,165) yaw 2.7 pitch 0.35): magenta slit at the
+crown gap between staggered parallel slabs, ~170-460 miss px. Leak
+entries cluster at tiles (55-56,66-69) [world ~(166.5,199-208)] — rays
+travel up the slot and cross into wall mass high up with no face.
+Predates the outside-crest quantization (unchanged by it). Next
+session: single-ray a magenta pixel from the (232,1,165) view and
+face-dump the entry tiles at their crest heights.
