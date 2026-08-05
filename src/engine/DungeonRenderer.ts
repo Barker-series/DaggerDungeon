@@ -2400,8 +2400,18 @@ export class DungeonRenderer {
               // per-vertex corner-field samples, exact at the segment
               // endpoints and the shared tile corner.
               const ti = hbuf.verts.length / 3;
-              for (const [px, pz] of [[seg.x0, seg.z0], [seg.x1, seg.z1], [ccx, ccz]] as const) {
-                hbuf.verts.push(px, sampleCornerField(cornerFloor, px, pz), pz);
+              const y0 = sampleCornerField(cornerFloor, seg.x0, seg.z0);
+              const y1 = sampleCornerField(cornerFloor, seg.x1, seg.z1);
+              // Interior corner: never BELOW the wedge's outer edge —
+              // the rolling outside field dips under old block corners
+              // and honest sampling there notches the street ("the
+              // dips"). Where dominance pulls the corner UP (courts),
+              // keep the sample: the wall band bottoms refine to it.
+              const yc = Math.max(sampleCornerField(cornerFloor, ccx, ccz), (y0 + y1) / 2);
+              for (const [px, py, pz] of [
+                [seg.x0, y0, seg.z0], [seg.x1, y1, seg.z1], [ccx, yc, ccz],
+              ] as const) {
+                hbuf.verts.push(px, py, pz);
                 hbuf.norms.push(0, 1, 0);
                 hbuf.uvs.push(px / TILE_SIZE, pz / TILE_SIZE);
               }
@@ -2599,7 +2609,13 @@ export class DungeonRenderer {
         const nz = buf.norms[ia + 2]! + buf.norms[ib + 2]! + buf.norms[ic + 2]!;
         if (gx * nx + gy * ny + gz * nz <= 0) reversed++;
       }
-      if (reversed > 0 || degenerate > 0) {
+      // Reversed triangles are ALWAYS a defect. A few zero-area
+      // triangles are by-construction: triangular pieces (transoms,
+      // wedge covers) go through the quad helper with one edge
+      // collapsed — one real triangle plus one zero-area one the GPU
+      // discards. Only a PILE of degenerates suggests a real emitter
+      // bug worth a look.
+      if (reversed > 0 || degenerate > 8) {
         console.error(
           `[geometry] invalid triangles: reversed=${reversed} `
           + `degenerate=${degenerate} total=${buf.idxs.length / 3}`,
