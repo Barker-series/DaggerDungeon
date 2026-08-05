@@ -493,6 +493,27 @@ export class GameEngine {
     while (pos.z - shiftZ * PCELL < PCELL) shiftZ--;
     while (pos.z - shiftZ * PCELL >= 3 * PCELL) shiftZ++;
     if (shiftX === 0 && shiftZ === 0) return;
+    // NEVER generate a window on the main thread mid-travel: the
+    // synchronous fallback froze the frame ~1.5s (the travel lag
+    // spikes). If the target window isn't prepared yet, keep playing
+    // on the current one — a full pillar cell of generated world
+    // remains ahead (~10s at sprint), the worker prep takes ~1.5s,
+    // and this runs every frame so adoption happens the moment the
+    // world arrives. Desperation clamp: a player who somehow outruns
+    // even that margin eats the hitch rather than walking off the
+    // edge of the world.
+    {
+      const stack = useGameStore.getState().currentFloor;
+      const key = this.worldKey(stack, this.originPcx + shiftX, this.originPcz + shiftZ);
+      if (!this.worldCache.has(key)) {
+        const desperate = pos.x < PCELL * 0.35 || pos.x >= 3.65 * PCELL
+          || pos.z < PCELL * 0.35 || pos.z >= 3.65 * PCELL;
+        if (!desperate) {
+          this.requestUrgentWorld(stack, this.originPcx + shiftX, this.originPcz + shiftZ);
+          return;
+        }
+      }
+    }
     const wasGrounded = this.isGrounded;
     const previousFeetY = pos.y;
     this.originPcx += shiftX;
