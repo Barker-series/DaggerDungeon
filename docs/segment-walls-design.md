@@ -187,8 +187,11 @@ space), banded per block top, with collision height-banding
 be reused). Renderer-side only over span tops; the tile-grid contour
 is the wrong substrate for this district.
 
-## OPEN BUG (pre-existing, NOT slice 2): border face bottoms use the
-## wrong level's corner field
+## RESOLVED (004eedf): border face bottoms — the actual cause was the
+## octagonal band bottoms (corner-refined) vs flat trim floors; fixed
+## by corner-field trim floors. The refine-owner theory below was a
+## red herring (single level, owner 0, refine returned correct values
+## when instrumented). Kept for history.
 
 Repro: seed 1785957788208 @ (292.84,0.38,195.22) yaw 5.524 pitch
 -0.236 — magenta floor-level triangle at a court/street corner,
@@ -207,7 +210,12 @@ field of the level that actually renders the floor at that corner
 (or take min across candidate owners). Instrument first: print
 span.owner and both fields' corner values at (98,64).
 
-## OPEN: high-altitude leak in the border slot canyon
+## RESOLVED/EXPLAINED: slot-canyon 'leak' — rays passing over drawn
+## crests through solid-to-sky columns' undrawn upper mass to sky.
+## Visually correct (sky between crowns); the tool records entries
+## because those columns are data-solid to infinity. The genuinely
+## ragged crowns were the per-window skyTop instability, fixed in
+## 2e0756c (constant sky clip). Original notes:
 
 Seed 1785958682363 opx -1 opz -2, camera (210.15,1,170) yaw 3.312
 pitch 0.55 (or (232,1,165) yaw 2.7 pitch 0.35): magenta slit at the
@@ -218,7 +226,11 @@ Predates the outside-crest quantization (unchanged by it). Next
 session: single-ray a magenta pixel from the (232,1,165) view and
 face-dump the entry tiles at their crest heights.
 
-## OPEN: solid-to-sky wall crowns step raggedly (the "height issue")
+## RESOLVED (2e0756c + absolute outside crests): solid-to-sky crowns
+## stepped because skyTop was per-window (tallest pillar present) —
+## adjacent chunks clipped sky-facing geometry at different heights.
+## Constant sky clip + per-cell quantized absolute outside crests.
+## Original notes:
 
 Repro: seed 1785957788208 opx 4 opz 3 @ (347.59,0.6,180.59) yaw 9.338
 pitch 1.09, marks at (341.71,82.43,214.21) / (339.43,80.03,214.07) /
