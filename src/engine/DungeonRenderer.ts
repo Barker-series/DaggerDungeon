@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { TileType, TILE_SIZE, SKY_CEIL, ABYSS_FLOOR } from '../game/types';
 import type { DungeonData, WorldData, ColumnSpan } from '../game/types';
-import { tileBiome, type BiomeType } from '../game/dungeon/cells';
+import { tileBiome, tileCrest, type BiomeType } from '../game/dungeon/cells';
 import { buildCornerField, sampleCornerField, PIT_LEVEL } from '../game/dungeon/heightfield';
 import { buildOrganicContour, isOrganicTileIn, isTransitFloorIn } from '../game/dungeon/organiccontour';
 import { buildRoadsContour, ROAD_WALL_LEVELS, ROAD_WALL_MODULE, type RoadsContour } from '../game/dungeon/roadscontour';
@@ -759,10 +759,13 @@ export class DungeonRenderer {
               // needed. SOFT bore walls: chamfers open corner pockets —
               // the cap plate at corridor ceiling height seals them.
               if (!anyNonTunnel && !soft) count = 0;
-              // Columns with their own air spans (bridge passages carved
-              // through walls) get span-derived rock ceilings — a cap on
-              // top would coincide with them
-              if (count > 0 && world.columns[y * w + x]!.length === 0) {
+              // Columns with their own air spans AT cap height (bridge
+              // passages carved through walls) get span-derived rock
+              // ceilings — a cap on top would coincide with them. Spans
+              // far ABOVE the cap (a flying pipe over the wall) leave
+              // the cap needed and intact.
+              if (count > 0 && !world.columns[y * w + x]!.some(
+                (s2) => s2.floor <= sum / count + 1.0)) {
                 // Overlap toward FLOOR neighbors only: the cap tucks
                 // over their ceiling quads (nudged up, never coplanar —
                 // the true ceiling occludes the ring from below), so the
@@ -938,6 +941,48 @@ export class DungeonRenderer {
     const clipY = (y: number): number =>
       y >= SKY_CEIL ? skyTop : (y <= ABYSS_FLOOR ? worldBottom : y);
 
+    // ── THE CREST AUTHORITY, render side: every solid-topped column
+    // crowns at ONE definite height — its cell's crest (cellCrests),
+    // lifted where real structure rises above it (interior span
+    // ceilings, a wall's cap-max, a pillar's crown). Everything above
+    // the crown is treated as AIR by the XOR sweep below, so wall
+    // faces stop exactly at the crest, closure faces between adjacent
+    // differing crests fall out of the same sweep for free, and the
+    // roof pass seals each column at its crown instead of at a sky
+    // plane hundreds of units up. Columns that open to sky have no
+    // crown (null) — their skyline is their span geometry. ──
+    const L0 = world.levels[0]!;
+    const crestTops = new Float64Array(w * h).fill(NaN);
+    const crestTopOf = (x: number, z: number): number | null => {
+      // Off-window neighbors stay solid-to-sky: the streaming rim keeps
+      // its tall occluding faces and the fog hides it, exactly as before
+      if (x < 0 || z < 0 || x >= w || z >= h) return null;
+      const k = z * w + x;
+      const cached = crestTops[k]!;
+      if (!Number.isNaN(cached)) return cached === Infinity ? null : cached;
+      const col = world.columns[k]!;
+      if (col.length > 0 && col[col.length - 1]!.ceil >= SKY_CEIL) {
+        crestTops[k] = Infinity;
+        return null;
+      }
+      let v = tileCrest(L0.cellCrests, x, z);
+      for (const s of col) if (s.ceil < SKY_CEIL) v = Math.max(v, clipY(s.ceil));
+      if (L0.tiles[z]![x] === TileType.Wall) {
+        // A wall's crown may sit above the skyline crest (an interior
+        // room ceiling taller than the cell crest); the mass must reach
+        // the cap plate or the band under the taller roof reads open
+        const cm = this.capMax(L0, x, z);
+        if (Number.isFinite(cm)) v = Math.max(v, cm);
+      }
+      if (L0.pillarWall[z]![x]) {
+        const spec = world.pillars.get(
+          `${Math.floor(x / PILLAR_CELL_TILES)},${Math.floor(z / PILLAR_CELL_TILES)}`);
+        if (spec) v = Math.max(v, spec.totalHeight);
+      }
+      crestTops[k] = v;
+      return v;
+    };
+
     /** World-space height of a face bound at a grid corner. A bound that
      *  EQUALS a span's clipped floor/ceiling IS that surface — the cut
      *  list is built from these exact values — so it takes the surface's
@@ -963,19 +1008,28 @@ export class DungeonRenderer {
       return y;
     };
 
-    /** Region (material) for a face: the biome of the air side's owner */
+    /** Region (material) for a face: the biome of the air side's owner.
+     *  Crest closure faces (virtual air above a crown) match no span and
+     *  take the air tile's cell biome — crowns wear their cell's face. */
     const faceRegion = (spans: ColumnSpan[], lo: number, hi: number, x: number, z: number): RegionKey => {
       for (const s of spans) {
         if (s.owner >= 0 && s.floor <= hi + 0.1 && s.ceil >= lo - 0.1) {
           return tileBiome(world.levels[s.owner]!.cellBiomes, x, z) ?? 'tunnel';
         }
       }
-      return 'tunnel';
+      return tileBiome(world.levels[0]!.cellBiomes, x, z) ?? 'tunnel';
     };
 
-    // Merge a column's spans into clipped [lo, hi] air ranges
-    const airRanges = (spans: ColumnSpan[]): [number, number][] =>
-      spans.map((s) => [clipY(s.floor), clipY(s.ceil)] as [number, number]);
+    // Merge a column's spans into clipped [lo, hi] air ranges — plus the
+    // virtual air above the column's crown (the crest authority), which
+    // is what makes the XOR sweep stop wall faces at the crest and emit
+    // closure faces between adjacent crests of different heights
+    const airRanges = (spans: ColumnSpan[], x: number, z: number): [number, number][] => {
+      const r = spans.map((s) => [clipY(s.floor), clipY(s.ceil)] as [number, number]);
+      const ct = crestTopOf(x, z);
+      if (ct !== null && ct < skyTop) r.push([ct, skyTop]);
+      return r;
+    };
 
     // ── Rock floors/ceilings and the roof plane, MERGED: flat quads at
     // identical heights along a row collapse into one strip each, and
@@ -983,19 +1037,6 @@ export class DungeonRenderer {
     // a quad buried in solid rock with rock in every direction can
     // never be seen. (Wireframe audit: the per-tile version was ~130k
     // hidden or redundant triangles per window.) ──
-    const reachesSkyAt = (x: number, z: number): boolean => {
-      if (x < 0 || z < 0 || x >= w || z >= h) return true;
-      const col = world.columns[z * w + x]!;
-      return col.length > 0 && col[col.length - 1]!.ceil >= SKY_CEIL;
-    };
-    const nearSky = (x: number, z: number): boolean => {
-      for (let dz2 = -2; dz2 <= 2; dz2++) {
-        for (let dx2 = -2; dx2 <= 2; dx2++) {
-          if (reachesSkyAt(x + dx2, z + dz2)) return true;
-        }
-      }
-      return false;
-    };
     // Per row: runs of (height, up/down) keyed by exact height
     type Run = { x0: number; x1: number; y: number; up: boolean };
     const flushRuns = (runs: Map<string, Run>, z: number): void => {
@@ -1081,10 +1122,18 @@ export class DungeonRenderer {
           }
           if (s.ceilOwner === -1 && s.ceil < SKY_CEIL) want(s.ceil, false);
         }
-        // The world's top plane is WATERTIGHT where it can be seen:
-        // every column within sight of sky either opens to it or carries
-        // a roof slab at the clip height.
-        if (!reachesSkyAt(x, z) && nearSky(x, z)) want(skyTop, true);
+        // The world's top plane is WATERTIGHT: every column either opens
+        // to sky or carries a roof slab at its crown (the crest
+        // authority). The skyline IS this surface. Skipped only when the
+        // crown coincides with the column's own top ceiling — zero mass
+        // above, and a coplanar up-face would z-fight the ceiling.
+        {
+          const ct = crestTopOf(x, z);
+          if (ct !== null) {
+            const topCeil = a.length > 0 ? clipY(a[a.length - 1]!.ceil) : -Infinity;
+            if (ct > topCeil + 0.01) want(ct, true);
+          }
+        }
         // Runs whose height vanished at this column flush now
         for (const [k, r] of open) {
           if (!here.has(k) && r.x1 < x) {
@@ -1103,8 +1152,8 @@ export class DungeonRenderer {
           const nz = z + dz;
           const b = nx >= 0 && nz >= 0 && nx < w && nz < h ? world.columns[nz * w + nx]! : [];
 
-          const ra = airRanges(a);
-          const rb = airRanges(b);
+          const ra = airRanges(a, x, z);
+          const rb = airRanges(b, nx, nz);
           // XOR sweep over breakpoints
           const cuts = [...ra.flat(), ...rb.flat()].sort((p, q) => p - q);
           for (let i = 0; i + 1 < cuts.length; i++) {
@@ -1299,8 +1348,16 @@ export class DungeonRenderer {
             // and no cap (span-derived rock ceilings instead), so the
             // extension has nothing to meet and pokes out beside the
             // bridge deck as a floating plate.
+            // "Carries spans" means spans AT OR BELOW the cap junction
+            // (a bridge bore in the wall at this height): those walls
+            // have span-derived rock ceilings instead of a cap. A span
+            // far ABOVE (a flying pipe crossing over the wall) leaves
+            // the cap intact — treating it as span-carrying skipped the
+            // override AND the transom, opening the wedge band above
+            // the mouth chamfer (bore-mouth crown gap, Aug 2026).
             if (solidIsWall && !pillarInternal && airTopKnown && !airIsSky
-              && world.columns[solidZ * w + solidX]!.length === 0
+              && !world.columns[solidZ * w + solidX]!.some(
+                (s2) => clipY(s2.floor) <= hi + 1.0)
               && Math.abs(hi - airSpanTop) < 0.03) {
               const L = world.levels[0]!;
               let pc = -Infinity;
@@ -1707,18 +1764,26 @@ export class DungeonRenderer {
    * construction. -Infinity when no neighbor qualifies. */
   private capMax(L: DungeonData, tx: number, tz: number): number {
     let v = -Infinity;
+    let facesSky = false;
     for (let dz = -1; dz <= 1; dz++) {
       for (let dx = -1; dx <= 1; dx++) {
         const t = L.tiles[tz + dz]?.[tx + dx];
         if (t === undefined || t === TileType.Wall) continue;
-        // Outside neighbors COUNT when their ceiling is real terrain
-        // (<100): canyon rims carry ceilings like 76 that the walls
-        // must rise to — excluding the biome sheared every rim wall
-        // (canyon regression). True sky fillers are >=100 and stay out.
+        // Outside neighbors mean this wall's top is a CROWN: it crests
+        // at its OWN cell's crest (the crest authority), not at
+        // whatever mix of neighbor cells' crest ceilings the 3x3
+        // happens to touch — that mix is what staggered adjacent
+        // crowns. Crest steps between neighboring wall tiles are
+        // sealed by the XOR closure faces.
+        if (tileBiome(L.cellBiomes, tx + dx, tz + dz) === 'outside') {
+          facesSky = true;
+          continue;
+        }
         const c = L.ceilingHeights[tz + dz]![tx + dx]!;
         if (c < 100) v = Math.max(v, c);
       }
     }
+    if (facesSky) v = Math.max(v, tileCrest(L.cellCrests, tx, tz));
     return v;
   }
 
@@ -1737,22 +1802,29 @@ export class DungeonRenderer {
     let hi = -Infinity;
     let allSoft = true;
     let wn = 0;
+    let wallSpanMin = Infinity;
     for (const [tx, tz] of [[gx, gz], [gx + 1, gz], [gx, gz + 1], [gx + 1, gz + 1]] as const) {
       if (tx < 0 || tz < 0 || tx >= w || tz >= h) continue;
       if (L.tiles[tz]![tx] !== TileType.Wall) {
         lo = Math.min(lo, L.floorHeights[tz]![tx]!);
         hi = Math.max(hi, L.ceilingHeights[tz]![tx]!);
         wn++;
-      } else if (!contour.softWalls.has(tz * w + tx)
-        || world.columns[tz * world.levels[0]!.width + tx]!.length > 0) {
-        // A wall tile CARRYING column spans gets no cap plate (the cap
-        // pass defers to span-derived rock ceilings), so a contour cut
-        // through it would open a ROOFLESS wedge — suppression without
-        // a sealed replacement. Such groups decline; square faces seal.
+      } else if (!contour.softWalls.has(tz * w + tx)) {
         allSoft = false;
+      } else {
+        for (const s of world.columns[tz * world.levels[0]!.width + tx]!) {
+          wallSpanMin = Math.min(wallSpanMin, s.floor);
+        }
       }
     }
-    const ok = wn > 0 && allSoft && lo > -100 && hi < 100 && hi - lo >= 0.5;
+    // A wall tile CARRYING column spans AT OR BELOW the cap height gets
+    // no cap plate (the cap pass defers to span-derived rock ceilings),
+    // so a contour cut through it would open a ROOFLESS wedge —
+    // suppression without a sealed replacement. Such groups decline;
+    // square faces seal. Spans far ABOVE the cap (flying pipes crossing
+    // the wall) don't disturb the cap and don't demote the group.
+    const ok = wn > 0 && allSoft && wallSpanMin > hi + 1.0
+      && lo > -100 && hi < 100 && hi - lo >= 0.5;
     return { ok, lo, hi };
   }
 

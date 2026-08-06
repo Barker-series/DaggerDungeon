@@ -209,21 +209,74 @@ const backSpots = new Map<string, number>();
 // data-solid — that boundary is where the missing face belongs. Hit
 // points name where rays LAND; entry points name where they LEAK.
 const entrySpots = new Map<string, number>();
+const entryExamples = new Map<string, string>();
+let curPx = 0; let curPy = 0; let curKind = '';
+// Render crown of a column (the crest authority): the renderer clips
+// solid mass at this height, so anything above it is render-air even
+// where the data columns are solid to sky. Mirrors crestTopOf in
+// DungeonRenderer (cell crest, lifted by real ceilings / wall cap-max /
+// pillar crowns).
+const crownOf = (tx: number, tz: number): number => {
+  const col = world.columns[tz * L.width + tx]!;
+  if (col.length > 0 && col[col.length - 1]!.ceil >= SKY_CEIL) return Infinity;
+  let v = L.cellCrests[Math.floor(tz / 14)]?.[Math.floor(tx / 14)] ?? 0;
+  for (const s of col) if (s.ceil < SKY_CEIL) v = Math.max(v, s.ceil);
+  if (L.tiles[tz]![tx] === 0) {
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const t = L.tiles[tz + dz]?.[tx + dx];
+        if (t === undefined || t === 0) continue;
+        if (tileBiome(L.cellBiomes, tx + dx, tz + dz) === 'outside') {
+          // capMax crown rule: sky-facing walls crest at their OWN cell
+          v = Math.max(v, L.cellCrests[Math.floor(tz / 14)]?.[Math.floor(tx / 14)] ?? 0);
+          continue;
+        }
+        const c = L.ceilingHeights[tz + dz]![tx + dx]!;
+        if (c < 100) v = Math.max(v, c);
+      }
+    }
+  }
+  if (L.pillarWall[tz]![tx]) {
+    const spec = world.pillars.get(`${Math.floor(tx / 56)},${Math.floor(tz / 56)}`);
+    if (spec) v = Math.max(v, spec.totalHeight);
+  }
+  return v;
+};
 const dataAir = (x: number, y: number, z: number): boolean => {
   const tx = Math.floor(x / TILE_SIZE);
   const tz = Math.floor(z / TILE_SIZE);
   if (tx < 0 || tz < 0 || tx >= L.width || tz >= L.height) return true;
+  if (y > crownOf(tx, tz)) return true; // above the rendered crown = sky
   return world.columns[tz * L.width + tx]!.some((s) => s.floor < y && y < s.ceil);
+};
+// Contour (soft-wall) chamfers narrow wall tiles: the wedge between the
+// tile edge and the marching-squares diagonal is DATA-solid but
+// render-air by design (collision follows the contour too). A ray
+// grazing through such a wedge is not a leak — require the solid to
+// persist longer than any wedge is wide before recording an entry.
+const WEDGE_SKIN = 3.0;
+const staysSolid = (ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, t0: number): boolean => {
+  for (let s = 0.5; s <= WEDGE_SKIN; s += 0.5) {
+    if (dataAir(ox + dx * (t0 + s), oy + dy * (t0 + s), oz + dz * (t0 + s))) return false;
+  }
+  return true;
 };
 const recordEntry = (ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, maxD: number): void => {
   let wasAir = dataAir(ox, oy, oz);
   for (let t = 0.5; t < Math.min(maxD, 160); t += 0.5) {
     const inAir = dataAir(ox + dx * t, oy + dy * t, oz + dz * t);
+    if (wasAir && !inAir && !staysSolid(ox, oy, oz, dx, dy, dz, t)) {
+      wasAir = true; // wedge graze — keep marching
+      continue;
+    }
     if (wasAir && !inAir) {
       const tx = Math.floor((ox + dx * t) / TILE_SIZE);
       const tz = Math.floor((oz + dz * t) / TILE_SIZE);
       const k = `${tx},${tz}`;
       entrySpots.set(k, (entrySpots.get(k) ?? 0) + 1);
+      if (process.env.ENTRY_DEBUG && !entryExamples.has(k)) {
+        entryExamples.set(k, `y=${(oy + dy * t).toFixed(2)} d=${t.toFixed(1)} dir=(${dx.toFixed(2)},${dy.toFixed(2)},${dz.toFixed(2)}) px=${curPx},${curPy} ${curKind}`);
+      }
       return;
     }
     wasAir = inAir;
@@ -282,6 +335,7 @@ for (let py = 0; py < H; py++) {
     const i = (py * W + px) * 3;
     if (!Number.isFinite(d)) {
       missPixels++;
+      curPx = px; curPy = py; curKind = 'miss';
       recordEntry(eye.x, eye.y, eye.z, dx, dy, dz, 160);
       img[i] = 255; img[i + 1] = 0; img[i + 2] = 255; // MAGENTA = hole/sky
       continue;
@@ -300,6 +354,7 @@ for (let py = 0; py < H; py++) {
       const btz = Math.floor((eye.z + dz * d) / TILE_SIZE);
       const bk = `${btx},${btz}`;
       backSpots.set(bk, (backSpots.get(bk) ?? 0) + 1);
+      curPx = px; curPy = py; curKind = 'back';
       recordEntry(eye.x, eye.y, eye.z, dx, dy, dz, d);
     }
     const light = 0.45 + 0.55 * Math.abs(n[0]! * 0.35 + n[1]! * 0.85 + n[2]! * 0.4);
@@ -335,7 +390,7 @@ try {
     console.log('LEAK ENTRY tiles (where bad rays first crossed data-air → data-solid — the missing face lives here):');
     for (const [k, count] of top) {
       const [tx, tz] = k.split(',').map(Number);
-      console.log(`  tile(${tx},${tz}) ${count} rays  world(${(tx! * TILE_SIZE + 1.5).toFixed(1)}, ${(tz! * TILE_SIZE + 1.5).toFixed(1)})`);
+      console.log(`  tile(${tx},${tz}) ${count} rays  world(${(tx! * TILE_SIZE + 1.5).toFixed(1)}, ${(tz! * TILE_SIZE + 1.5).toFixed(1)})${entryExamples.has(k) ? '  e.g. ' + entryExamples.get(k) : ''}`);
     }
   }
 } catch {
@@ -367,7 +422,10 @@ if (missPixels > 0) {
         const spans = world.columns[tz * L.width + tx]!;
         const top = spans[spans.length - 1];
         if (top && top.ceil >= SKY_CEIL && wy > top.floor - 0.2) { skyExits++; break; }
-        const inAir = spans.some((s2) => wy >= s2.floor - 0.01 && wy <= s2.ceil + 0.01);
+        if (wy > crownOf(tx, tz)) { skyExits++; break; } // above the rendered crown
+        let inAir = spans.some((s2) => wy >= s2.floor - 0.01 && wy <= s2.ceil + 0.01);
+        // Chamfer-wedge grazes (data-solid, render-air) are not leaks
+        if (!inAir && !staysSolid(eye.x, eye.y, eye.z, dx, dy, dz, d)) inAir = true;
         const key = `${tx},${tz}`;
         if (!inAir) {
           if (prev) holeAt.set(`${prev} -> ${key} @y=${wy.toFixed(1)}`, (holeAt.get(`${prev} -> ${key} @y=${wy.toFixed(1)}`) ?? 0) + 1);

@@ -23,7 +23,7 @@
 
 import { TileType, type GridPos } from '../types';
 import { PIT_LEVEL } from './heightfield';
-import { getCell, isOrganicBiome, type BiomeType } from './cells';
+import { getCell, isOrganicBiome, CELL_TILE_SIZE, type BiomeType } from './cells';
 import { sampleNoise, sampleNoise3D } from './noise';
 import { windowOrigin } from './cells';
 
@@ -38,7 +38,7 @@ export const PIT_FLOOR = -1000; // hole sentinel: no floor slab at this tile
 const CEIL_SWELL_SCALE = 14;
 // Outside crest quantum: one flat crest per cell on this vertical
 // module (2x the 3-unit structural module) — crowns are structure.
-const CREST_MODULE = 6;
+export const CREST_MODULE = 6;
 const CEIL_DETAIL_SCALE = 4;
 
 // Cave-mouth sweep: interior ceilings within this many tiles of an
@@ -75,6 +75,27 @@ const PROFILES: Record<BiomeType, BiomeHeightProfile> = {
 export interface HeightFields {
   floor: number[][];
   ceiling: number[][];
+}
+
+/**
+ * THE CREST AUTHORITY — the one per-cell crown height every crown
+ * emitter reads (outside ceilings, wall tops, roof clips, closure
+ * faces). Pure function of absolute cell coordinates: flat per cell,
+ * referenced to the cell's ground (the same swell field the floors
+ * use, sampled once at the cell center), quantized to CREST_MODULE.
+ * Biome-independent by design: the skyline is one coherent field, so
+ * a cliff crown in an interior cell meets its outside neighbor on the
+ * same module grid instead of inventing its own height.
+ */
+export function cellCrest(acx: number, acz: number, worldSeed: number): number {
+  const heightSeed = worldSeed + 4242;
+  const p = PROFILES.outside;
+  const cellNoise = sampleNoise(acx, acz, heightSeed + 7, 2);
+  const raw = p.clearMin + cellNoise * (p.clearMax - p.clearMin);
+  const ccx = (acx + 0.5) * CELL_TILE_SIZE;
+  const ccz = (acz + 0.5) * CELL_TILE_SIZE;
+  const cellGround = sampleNoise(ccx, ccz, heightSeed + 55, FLOOR_SWELL_SCALE) * p.rollAmp;
+  return Math.ceil((cellGround + raw) / CREST_MODULE) * CREST_MODULE;
 }
 
 /**
@@ -268,24 +289,14 @@ export function computeHeightFields(
         // repro). Per-tile swell never draws as ceiling here (open
         // sky); it only fed wall crowns.
         const cell = getCell(Math.floor(tx / cellTileSize), Math.floor(tz / cellTileSize))!;
-        const cellNoise = sampleNoise(windowOrigin().ocx + cell.cx, windowOrigin().ocz + cell.cz, heightSeed + 7, 2);
-        const raw = p.clearMin + cellNoise * (p.clearMax - p.clearMin);
-        // Crest referenced to the CELL's ground (the floor swell field
-        // sampled once at the cell center, same noise the floors use):
-        // purely absolute crests lost the ground height and read
-        // SHORTER wherever outside terrain sits high. Flat per cell,
-        // tracks terrain at cell scale, quantized to the module.
-        const ccx2 = windowOrigin().ocx * 14 + (cell.cx + 0.5) * cellTileSize;
-        const ccz2 = windowOrigin().ocz * 14 + (cell.cz + 0.5) * cellTileSize;
-        const cellGround = sampleNoise(ccx2, ccz2, heightSeed + 55, FLOOR_SWELL_SCALE) * p.rollAmp;
-        // Ceil-quantized to the crest module — nothing else. Height
-        // lives in the PROFILE (clearMin raised one module over the
-        // old swell mean, restoring the peak-riding crowns cap-max
-        // used to read); the sub-100 sky-sentinel bound holds by
-        // arithmetic on the profile values, not by a clamp.
+        // The crest authority: same value the renderer's crown emitters
+        // read via DungeonData.cellCrests. Height lives in the PROFILE
+        // (clearMin raised one module over the old swell mean); the
+        // sub-100 sky-sentinel bound holds by arithmetic on the profile
+        // values, not by a clamp.
         ceiling[tz]![tx] = Math.max(
           f + TUNNEL_CLEARANCE,
-          Math.ceil((cellGround + raw) / CREST_MODULE) * CREST_MODULE,
+          cellCrest(windowOrigin().ocx + cell.cx, windowOrigin().ocz + cell.cz, worldSeed),
         );
         continue;
       }

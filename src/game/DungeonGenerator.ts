@@ -32,7 +32,7 @@ import { applyFineNoise } from './dungeon/layer1-finenoise';
 import { carveRoadsRegion, cutRoadBlockTops, flattenRoadStreets, suppressRoadPits } from './dungeon/roads-region';
 import { regionAtCell } from './dungeon/region-layer';
 import { connectPermanentTransit, permanentTransitTiles, hallwayCells } from './dungeon/layer4-connect';
-import { computeHeightFields, computePitMask, carvePitArches, levelPitDecks, PIT_FLOOR } from './dungeon/layer6-heights';
+import { computeHeightFields, computePitMask, carvePitArches, levelPitDecks, cellCrest, PIT_FLOOR } from './dungeon/layer6-heights';
 import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
 import { pillarFootprint, pillarAirSpans } from './dungeon/pillar-geometry';
@@ -416,6 +416,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     pillarWall: crop2D(level.pillarWall),
     pillarGround: crop2D(level.pillarGround),
     cellBiomes: cropCells(level.cellBiomes),
+    cellCrests: cropCells(level.cellCrests),
     roadsCells: level.roadsCells ? cropCells(level.roadsCells) : undefined,
     cellDebug: level.cellDebug
       .map((c) => ({ ...c, cx: c.cx - padCells, cz: c.cz - padCells }))
@@ -594,6 +595,15 @@ function generateLevel(
     level: 0,
     baseY: 0,
     cellBiomes: snapshotCellBiomes(cellGrid),
+    // The crest authority, snapshotted per cell: pure absolute function,
+    // so the same cell crests identically in every window that sees it
+    cellCrests: Array.from({ length: cellGrid }, (_, cz) =>
+      Array.from({ length: cellGrid }, (_, cx) =>
+        cellCrest(
+          originPcx * PILLAR_FACTOR + cx,
+          originPcz * PILLAR_FACTOR + cz,
+          levelSeed,
+        ))),
     cellDebug: getAllCells().map((c) => (
       { cx: c.cx, cz: c.cz, noise: c.noise, active: c.active, biome: c.biome })),
     transitCells: [...hallwayCells],

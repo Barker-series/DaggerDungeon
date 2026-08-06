@@ -74,6 +74,11 @@ export interface DungeonData {
   /** Per-cell biome snapshot (the global cell map only holds the last
    *  generated level, so each level carries its own) — null = inactive */
   cellBiomes: (BiomeType | null)[][];
+  /** THE CREST AUTHORITY snapshot — one structural crown height per
+   *  cell (layer6 cellCrest). Every crown emitter (outside ceilings,
+   *  wall tops, roof clips, crest closure faces) reads this one field;
+   *  no crown height may come from anywhere else. */
+  cellCrests: number[][];
   /** Debug-map snapshot of the generation-time cell map. Generation runs
    *  in workers with their own module instances, so main-thread reads of
    *  the cell-map singleton would show a stale window. */

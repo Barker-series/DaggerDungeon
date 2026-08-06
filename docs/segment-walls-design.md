@@ -210,29 +210,38 @@ field of the level that actually renders the floor at that corner
 (or take min across candidate owners). Instrument first: print
 span.owner and both fields' corner values at (98,64).
 
-## REOPENED (user overruled the 'sky between crowns' explanation):
-## CROWN UNIFICATION IS NOT DONE. In the tower views (seed
-## 1785973922535 opx -1 opz -2 and the slot canyon below), adjacent
-## slabs crest at visibly DIFFERENT heights and the magenta regions
-## sit where wall tops fail to meet — real top gaps, not sky. The
-## constant sky clip (2e0756c) and per-cell quantized outside crests
-## fixed pieces, but crown height still comes from MULTIPLE emitters
-## that don't share a rule: outside ceiling crests (layer6), wall
-## tops over solid-to-sky columns (capMax/fallback), and whatever
-## crowns the tall slabs themselves. THE fix is one crest authority:
-## a pure per-cell crest function every crown emitter reads — walls,
-## tops, and clips alike — and closure faces between adjacent crests
-## of different heights. Do not re-explain the magenta as sky until
-## the crest lines actually align.
+## RESOLVED — THE CREST AUTHORITY (crown unification, Aug 2026):
+## One pure per-cell crest function (`cellCrest` in layer6-heights,
+## snapshotted as DungeonData.cellCrests) is now the single source of
+## every crown height. Render side, `crestTopOf` in buildWalls gives
+## every solid-topped column ONE crown: its cell crest, lifted only by
+## real structure (interior span ceilings, a wall's capMax, a pillar's
+## totalHeight). Mechanism: the XOR face pass treats everything above
+## a column's crown as VIRTUAL AIR — wall faces stop exactly at the
+## crest, CLOSURE FACES between adjacent differing crests fall out of
+## the same sweep for free, and the roof pass seals every solid column
+## at its crown (the old constant sky-clip roof plane at 600 is gone;
+## the skyline IS the watertight top surface now). capMax's crown
+## rule: a wall facing outside crests at its OWN cell's crest — never
+## at the 3x3 mix of neighbor-cell crest ceilings (that mix was the
+## staggered-crown bug). Segment wall tops (hiFor -> capMax), cap
+## plates, cap transoms, flat faces, and roofs all read the same
+## number. Verified: tower repro (1785973922535 opx -1 opz -2) 0 leak
+## entries, backfaces 1px; slot canyon (1785958682363) backfaces
+## 3008 -> 90 (residual = pre-existing ground-level apron hairlines,
+## different family); three-crown corner (1785957788208 opx 4 opz 3)
+## crowns aligned. verify-world 16 seeds ALL PASS, window seams 100%
+## identical, scan-holes escape count byte-identical to pre-change.
+## debug-view's leak classifier now knows the crown rule and skips
+## chamfer-wedge grazes (data-solid, render-air by design).
 
-Seed 1785958682363 opx -1 opz -2, camera (210.15,1,170) yaw 3.312
-pitch 0.55 (or (232,1,165) yaw 2.7 pitch 0.35): magenta slit at the
-crown gap between staggered parallel slabs, ~170-460 miss px. Leak
-entries cluster at tiles (55-56,66-69) [world ~(166.5,199-208)] — rays
-travel up the slot and cross into wall mass high up with no face.
-Predates the outside-crest quantization (unchanged by it). Next
-session: single-ray a magenta pixel from the (232,1,165) view and
-face-dump the entry tiles at their crest heights.
+(Resolved repro, kept for regression checks) Seed 1785958682363
+opx -1 opz -2, camera (210.15,1,170) yaw 3.312 pitch 0.55 (or
+(232,1,165) yaw 2.7 pitch 0.35): magenta slit at the crown gap
+between staggered parallel slabs. Cause: segment walls topped at
+capMax while suppressing the XOR faces, leaving the band from crest
+to the 600 sky clip undrawn; adjacent wall tiles mixed neighbor-cell
+crests. Both killed by the crest authority above.
 
 ## RESOLVED (2e0756c + absolute outside crests): solid-to-sky crowns
 ## stepped because skyTop was per-window (tallest pillar present) —
@@ -255,7 +264,18 @@ whatever emits their top band (likely the segment-wall hiFor fallback
 + face-pass topOverride for sky-adjacent boundaries). Instrument
 first: face-dump the crown at (341,80,214) and identify the emitters.
 
-## OPEN: bore-mouth crown gap under open sky
+## RESOLVED (with the crest authority work): bore-mouth crown gap.
+## Root cause was NOT the !airIsSky guard: the mouth wall column
+## carries a FLYING PIPE span (33.2..36) far above the corridor cap,
+## and all three "column carries spans -> no cap" guards (topOverride,
+## cap plates, segGroupBasic) read ANY span as "bridge-carved wall,
+## no cap" — skipping the override AND the transom, opening the wedge
+## band above the mouth chamfer. The guards now test spans AT OR
+## BELOW the cap junction (floor <= cap + 1.0); spans overhead leave
+## the cap intact. Repro (seed 1785977436059 opx 0 opz -2) renders
+## 0 miss / 0 backface pixels. Original notes:
+
+## OLD NOTES: bore-mouth crown gap under open sky
 
 Repro: seed 1785977436059 opx 0 opz -2 @ (421.61,0,465.92) yaw 10.086
 pitch 0.05 — cyan triangle above the mouth frame (1950 backface px,

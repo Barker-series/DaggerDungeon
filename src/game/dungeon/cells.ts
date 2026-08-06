@@ -136,3 +136,8 @@ export function snapshotCellBiomes(cellGridSize: number): (BiomeType | null)[][]
 export function tileBiome(cellBiomes: (BiomeType | null)[][], tx: number, tz: number): BiomeType | null {
   return cellBiomes[Math.floor(tz / CELL_TILE_SIZE)]?.[Math.floor(tx / CELL_TILE_SIZE)] ?? null;
 }
+
+/** Crest-authority height of the cell containing a tile (DungeonData.cellCrests). */
+export function tileCrest(cellCrests: number[][], tx: number, tz: number): number {
+  return cellCrests[Math.floor(tz / CELL_TILE_SIZE)]?.[Math.floor(tx / CELL_TILE_SIZE)] ?? 0;
+}
