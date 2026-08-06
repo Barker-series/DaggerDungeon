@@ -246,3 +246,19 @@ structural treatment — a per-cell quantized crest module — inside
 whatever emits their top band (likely the segment-wall hiFor fallback
 + face-pass topOverride for sky-adjacent boundaries). Instrument
 first: face-dump the crown at (341,80,214) and identify the emitters.
+
+## OPEN: bore-mouth crown gap under open sky
+
+Repro: seed 1785977436059 opx 0 opz -2 @ (421.61,0,465.92) yaw 10.086
+pitch 0.05 — cyan triangle above the mouth frame (1950 backface px,
+entry tile (141,156)): through it you see the BACK of the corridor's
+3.5 interior ceiling. The exterior band above the mouth opening
+(3.5..frame crest) is unsealed when the mouth exits toward SKY-OPEN
+air: topOverride has an `!airIsSky` guard (the band was the sky
+clip's job pre-smoothing), and the cap-transom path only covers
+suppressed halves. Fix direction: sky-open boundaries whose SOLID
+side is a real wall should still seal hi -> the wall's own crest
+(capMax already excludes >=100 fillers; wire the transom or the
+override to fire for airIsSky when capMax is finite). Single-ray:
+pixel (240,25) from the repro camera lands on the ceiling back at
+(423.2,3.5,468.0).

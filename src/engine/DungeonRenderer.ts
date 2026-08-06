@@ -2421,8 +2421,10 @@ export class DungeonRenderer {
               const hbAt = (px: number, pz: number): number => {
                 let v = -Infinity;
                 for (const [hx, hz, ht] of seg.hardLows) {
-                  if (Math.abs(px - hx) <= TILE_SIZE / 2 + 0.1
-                    && Math.abs(pz - hz) <= TILE_SIZE / 2 + 0.1) v = Math.max(v, ht);
+                  // Touching = within the tile's half-extent; epsilon
+                  // is float slop only, not a geometric fudge.
+                  if (Math.abs(px - hx) <= TILE_SIZE / 2 + 1e-6
+                    && Math.abs(pz - hz) <= TILE_SIZE / 2 + 1e-6) v = Math.max(v, ht);
                 }
                 return v;
               };

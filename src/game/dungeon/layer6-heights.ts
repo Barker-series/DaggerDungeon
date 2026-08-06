@@ -36,6 +36,9 @@ const PIT_SCALE = 14; // tiles per hole feature
 export const PIT_FLOOR = -1000; // hole sentinel: no floor slab at this tile
 
 const CEIL_SWELL_SCALE = 14;
+// Outside crest quantum: one flat crest per cell on this vertical
+// module (2x the 3-unit structural module) — crowns are structure.
+const CREST_MODULE = 6;
 const CEIL_DETAIL_SCALE = 4;
 
 // Cave-mouth sweep: interior ceilings within this many tiles of an
@@ -62,7 +65,11 @@ const PROFILES: Record<BiomeType, BiomeHeightProfile> = {
   cave: { rollAmp: 1.2, pitThreshold: 0.36, clearMin: 10, clearMax: 28 },
   // Ember is hole country
   ember: { rollAmp: 1.2, pitThreshold: 0.48, clearMin: 24, clearMax: 44 },
-  outside: { rollAmp: 1.6, pitThreshold: 0.38, clearMin: 60, clearMax: 90 },
+  // Crest ceiling bound: outside values ceil-quantize to CREST_MODULE
+  // (see the outside branch), so the tallest possible crest is
+  // ceil((clearMax + rollAmp) / CREST_MODULE) * CREST_MODULE = 96 —
+  // strictly under the 100 sky-filler sentinel by construction.
+  outside: { rollAmp: 1.6, pitThreshold: 0.38, clearMin: 66, clearMax: 90 },
 };
 
 export interface HeightFields {
@@ -271,14 +278,14 @@ export function computeHeightFields(
         const ccx2 = windowOrigin().ocx * 14 + (cell.cx + 0.5) * cellTileSize;
         const ccz2 = windowOrigin().ocz * 14 + (cell.cz + 0.5) * cellTileSize;
         const cellGround = sampleNoise(ccx2, ccz2, heightSeed + 55, FLOOR_SWELL_SCALE) * p.rollAmp;
-        // Ceil-quantize plus one module: the old per-tile swell let
-        // crowns ride local noise PEAKS (cap-max reads the 3x3 max);
-        // a mean-valued cell noise alone reads ~10 shorter ("these
-        // seem to be shorter"). Capped safely below the sky-filler
-        // threshold (100) so crests never classify as sky.
+        // Ceil-quantized to the crest module — nothing else. Height
+        // lives in the PROFILE (clearMin raised one module over the
+        // old swell mean, restoring the peak-riding crowns cap-max
+        // used to read); the sub-100 sky-sentinel bound holds by
+        // arithmetic on the profile values, not by a clamp.
         ceiling[tz]![tx] = Math.max(
           f + TUNNEL_CLEARANCE,
-          Math.min(96, Math.ceil((cellGround + raw) / 6) * 6 + 6),
+          Math.ceil((cellGround + raw) / CREST_MODULE) * CREST_MODULE,
         );
         continue;
       }
