@@ -210,12 +210,20 @@ field of the level that actually renders the floor at that corner
 (or take min across candidate owners). Instrument first: print
 span.owner and both fields' corner values at (98,64).
 
-## RESOLVED/EXPLAINED: slot-canyon 'leak' — rays passing over drawn
-## crests through solid-to-sky columns' undrawn upper mass to sky.
-## Visually correct (sky between crowns); the tool records entries
-## because those columns are data-solid to infinity. The genuinely
-## ragged crowns were the per-window skyTop instability, fixed in
-## 2e0756c (constant sky clip). Original notes:
+## REOPENED (user overruled the 'sky between crowns' explanation):
+## CROWN UNIFICATION IS NOT DONE. In the tower views (seed
+## 1785973922535 opx -1 opz -2 and the slot canyon below), adjacent
+## slabs crest at visibly DIFFERENT heights and the magenta regions
+## sit where wall tops fail to meet — real top gaps, not sky. The
+## constant sky clip (2e0756c) and per-cell quantized outside crests
+## fixed pieces, but crown height still comes from MULTIPLE emitters
+## that don't share a rule: outside ceiling crests (layer6), wall
+## tops over solid-to-sky columns (capMax/fallback), and whatever
+## crowns the tall slabs themselves. THE fix is one crest authority:
+## a pure per-cell crest function every crown emitter reads — walls,
+## tops, and clips alike — and closure faces between adjacent crests
+## of different heights. Do not re-explain the magenta as sky until
+## the crest lines actually align.
 
 Seed 1785958682363 opx -1 opz -2, camera (210.15,1,170) yaw 3.312
 pitch 0.55 (or (232,1,165) yaw 2.7 pitch 0.35): magenta slit at the
