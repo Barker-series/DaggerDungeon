@@ -119,13 +119,15 @@ The project is LayerProcGen-**style**, not yet LayerProcGen-**correct**:
   DungeonGenerator.ts) and only the core ships, so rim special-casing
   lands in discarded padding. tools/verify-world.ts enforces 100%
   overlap agreement on X/Z/diagonal shifts as a hard gate.
-- ❌ Layers still run as sequential passes over one (padded) window, not
-  as independent chunk grids with per-chunk `Create` (rules 1, 2) —
-  correctness is now right, the compute shape isn't: each window pays
-  ~2.25× generation for the guard ring, and context is still
-  "whole window in memory" rather than declared per-pass dependencies
-  (rule 4).
+- ✅ (Aug 2026, milestone B) **Generation runs as chunked layers**
+  (rules 1, 2, 4, 5): src/game/gen/ — TileBase → Transit → Height →
+  Column, one pillar cell per chunk, dependencies declared with
+  per-pass effect-distance padding, loud missing-provider errors,
+  chunk lifetimes with release, persistent grids across worker
+  requests. The engine window is a transitional assembly facade over
+  the chunks, proven bit-identical to the legacy path
+  (tools/verify-migration.ts).
 
-Remaining migration (Phase 2 milestone B): restructure passes into
-per-chunk `Create` with per-pass effect-distance padding. The 100% seam
-gate makes that refactor mechanically safe — any drift fails the gate.
+Remaining (milestone C, later): retire the window facade so the engine
+consumes chunks directly — then the top dependency is truly the player
+focus (rule 7 end-to-end) rather than a window request.

@@ -83,11 +83,16 @@ hard 100% gate on X, Z, and diagonal shifts (was 90%/core-only) — and
 render chunks survive recenters unconditionally: each chunk is built
 once, ever. Cost: ~2.25× generation time (320–560 ms, worker-side).
 
-**Phase 2, milestone B (later): true per-cell generation.** Restructure
-the passes into per-chunk `Create` with per-pass effect-distance padding
-instead of the whole-window guard ring — wins back the 2.25× and retires
-windows, recenter, and the grounded-handoff repair entirely. The 100%
-seam gate makes this refactor safe: any behavioral drift fails the gate.
+**Phase 2, milestone B — SHIPPED (Aug 2026): true per-chunk generation.**
+Generation now runs as chunked layers (src/game/gen/: TileBase → Transit
+→ Height → Column, one pillar cell per chunk) with declared per-pass
+effect-distance padding, chunk lifetimes, and persistent grids in the
+worker. The window is now a thin assembly facade over cached chunks:
+bit-identical to the legacy path (tools/verify-migration.ts, 20/20
+windows), recenters ~3-4× faster, revisited windows nearly free.
+Design + padding table: docs/streaming-milestoneB-design.md.
+Milestone C (later): retire the window facade — engine reads chunks
+directly, killing recenter and the window-local coordinate shell.
 
 ## Ideas
 

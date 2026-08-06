@@ -22,8 +22,8 @@
  *   Columns:  the column model, then pillar air spans, then bridges
  */
 
-import { TileType, SKY_CEIL, type ColumnSpan, type DungeonData, type WorldData, type RoomData, type GridPos } from './types';
-import { getOrCreateCell, getCell, getAllCells, resetCells, snapshotCellBiomes, setWindowOrigin, tileBiome } from './dungeon/cells';
+import { TileType, type ColumnSpan, type DungeonData, type WorldData, type RoomData, type GridPos } from './types';
+import { getOrCreateCell, getCell, getAllCells, resetCells, snapshotCellBiomes, setWindowOrigin } from './dungeon/cells';
 import { buildColumns, validateColumns } from './dungeon/columns';
 import { generateLayer0 } from './dungeon/layer0-noise';
 import { generateLayer1TileGrid } from './dungeon/layer1-tilegrid';
@@ -32,13 +32,14 @@ import { applyFineNoise } from './dungeon/layer1-finenoise';
 import { carveRoadsRegion, cutRoadBlockTops, flattenRoadStreets, suppressRoadPits } from './dungeon/roads-region';
 import { regionAtCell } from './dungeon/region-layer';
 import { connectPermanentTransit, permanentTransitTiles, hallwayCells } from './dungeon/layer4-connect';
-import { computeHeightFields, computePitMask, carvePitArches, levelPitDecks, cellCrest, PIT_FLOOR } from './dungeon/layer6-heights';
+import { computeHeightFields, computePitMask, carvePitArches, levelPitDecks, cellCrest } from './dungeon/layer6-heights';
 import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
-import { pillarFootprint, pillarAirSpans } from './dungeon/pillar-geometry';
+import { applyPillarSpans } from './dungeon/pillar-marry';
+import { pillarFootprint } from './dungeon/pillar-geometry';
 import {
-  planOwnedBridges, planOwnedArches, GAP_TILES,
-  bridgeTiles, carveBridgeIntoColumn, carveArchIntoColumn, addBridgeEndSupport,
+  planOwnedBridges, planOwnedArches,
+  bridgeTiles, carveStructures,
   type BridgeSpec,
 } from './dungeon/pillar-bridges';
 
@@ -138,158 +139,19 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   // Marry decisions read the ORIGINAL terrain field — married tiles
   // overwrite topFloors as they go, and neighbors must not see that
   const origFloors = topFloors.map((row) => [...row]);
-  const pillarFootprints = new Map<PillarSpec, Set<string>>();
   for (const spec of pillars.values()) {
-    // ── BOUNDED ROOFLINE DEPENDENCY ──
-    // A pillar may only read room ceilings immediately bordering its own
-    // footprint. Those boundary samples propagate through this footprint,
-    // never through the whole moving window. This is the LayerProcGen
-    // effect-distance contract for roof culling: the pillar is the owned
-    // output bounds; its one-tile perimeter is the complete dependency
-    // padding. Equal-distance contests choose the lower roof.
-    const footprint = new Set(pillarFootprint(spec).map(([lx, lz]) => `${lx},${lz}`));
-    pillarFootprints.set(spec, footprint);
-    const capDistance = new Map<string, number>();
-    const localCaps = new Map<string, number>();
-    let capFrontier: [number, number][] = [];
-    for (const key of footprint) {
-      const [lx, lz] = key.split(',').map(Number);
-      const gx = spec.cx * PILLAR_CELL_TILES + lx!;
-      const gz = spec.cz * PILLAR_CELL_TILES + lz!;
-      let boundaryCap = Infinity;
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-        const nx = gx + dx;
-        const nz = gz + dz;
-        if (nx < 0 || nz < 0 || nx >= genTiles || nz >= genTiles) continue;
-        if (pillarWall[nz]![nx] || level.tiles[nz]![nx] === TileType.Wall) continue;
-        if (tileBiome(topBiomes, nx, nz) === 'outside') continue;
-        boundaryCap = Math.min(boundaryCap, topCeils[nz]![nx]!);
-      }
-      if (Number.isFinite(boundaryCap)) {
-        capDistance.set(key, 0);
-        localCaps.set(key, boundaryCap);
-        capFrontier.push([lx!, lz!]);
-      }
-    }
-    for (let head = 0; head < capFrontier.length; head++) {
-      const [lx, lz] = capFrontier[head]!;
-      const key = `${lx},${lz}`;
-      const distance = capDistance.get(key)!;
-      const cap = localCaps.get(key)!;
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-        const nx = lx + dx;
-        const nz = lz + dz;
-        const nextKey = `${nx},${nz}`;
-        if (!footprint.has(nextKey)) continue;
-        const nextDistance = distance + 1;
-        const knownDistance = capDistance.get(nextKey);
-        const knownCap = localCaps.get(nextKey);
-        if (knownDistance !== undefined
-          && (knownDistance < nextDistance
-            || (knownDistance === nextDistance && knownCap! <= cap))) continue;
-        capDistance.set(nextKey, nextDistance);
-        localCaps.set(nextKey, cap);
-        capFrontier.push([nx, nz]);
-      }
-    }
-
-    const groundAt = (lx: number, lz: number): number =>
-      topFloors[spec.cz * PILLAR_CELL_TILES + lz]?.[spec.cx * PILLAR_CELL_TILES + lx] ?? 0;
-    const capAt = (lx: number, lz: number): number | null => {
-      const gx = spec.cx * PILLAR_CELL_TILES + lx;
-      const gz = spec.cz * PILLAR_CELL_TILES + lz;
-      if (tileBiome(topBiomes, gx, gz) === 'outside') return null;
-      const cap = localCaps.get(`${lx},${lz}`);
-      return cap !== undefined ? cap + 0.5 : 8;
-    };
-    // Terrain flows under the pillar (footprint tiles carry real ground
-    // heights) — the foundation rises to meet it per tile
-    let airSpans = pillarAirSpans(spec, groundAt, capAt);
-    // Sky-open is a PER-PILLAR decision: only a pillar standing entirely
-    // in the outside biome gets an open rooftop. A straddler is partly
-    // embedded in the boundary cliff — opening its outside tiles would
-    // cut a notch out of the cliff mass above its crown (missing geo up
-    // to the skyline). Straddlers stay capped; the cliff continues.
-    let outsideTiles = 0, totalTiles = 0;
-    for (const k of airSpans.keys()) {
-      const [lx, lz] = k.split(',').map(Number);
-      totalTiles++;
-      if (tileBiome(topBiomes, spec.cx * PILLAR_CELL_TILES + lx!, spec.cz * PILLAR_CELL_TILES + lz!) === 'outside') outsideTiles++;
-    }
-    const fullyOutside = totalTiles > 0 && outsideTiles === totalTiles;
-    const straddler = outsideTiles > 0 && !fullyOutside;
-    // A straddler removes the crown attic below (the tower merges into
-    // the cliff) — so its crown ramp must not CLIMB, or the flight dead
-    // ends into the stripped attic as a wall across the stairs. Rebuild
-    // its air with the crown band as a flat sheltered landing instead.
-    if (straddler) airSpans = pillarAirSpans(spec, groundAt, capAt, true);
-    for (const [k, air] of airSpans) {
-      const [lx, lz] = k.split(',').map(Number);
-      const gx = spec.cx * PILLAR_CELL_TILES + lx!;
-      const gz = spec.cz * PILLAR_CELL_TILES + lz!;
-      let spans = air.map((s) => ({
-        floor: s.floor, ceil: s.ceil, owner: -1, ceilOwner: -1,
-      }));
-      // Ground surfaces near the terrain JOIN the level system: owner 0,
-      // and the surface height replaces the buried-terrain value in the
-      // height field, so renderer and physics corner-sample one
-      // continuous surface — terrain, plaza slabs, and ramp entries
-      // blend like worn stone, and the footprint boundary stops being a
-      // seam at all. "Near" is judged against the whole 3x3 terrain
-      // neighborhood: a surface within a step of ANY adjacent ground
-      // must blend with it (only equal-height joints crack — anything
-      // still structural has a real ≥1 wall face sealing it).
-      // The GROUND span is not always spans[0]: deep foundation
-      // clearances put a below-grade span first, and testing only that
-      // one skipped the marry entirely — leaving the real ground slab
-      // flat-structural beside corner-blended terrain (the crack
-      // condition, observed as footprint-edge holes). Marry whichever
-      // span actually sits at terrain height.
-      for (const span of spans) {
-        const f0 = span.floor;
-        if (f0 < -100 || f0 > 30) continue;
-        let near = false;
-        for (let dz = -1; dz <= 1 && !near; dz++) {
-          for (let dx = -1; dx <= 1 && !near; dx++) {
-            const t = origFloors[gz + dz]?.[gx + dx];
-            // ASYMMETRIC window: a slab at or below nearby terrain must
-            // marry (blended ground could rise past its lip — the crack
-            // condition), but a slab more than a step ABOVE the terrain
-            // is architecture: flat ground can't climb over its lip and
-            // the riser gets a real sealing face. Marrying those (stair
-            // treads over streets) tented the ground into humps.
-            if (t === undefined || t <= PIT_FLOOR) continue;
-            // Bankable window is NEAR-FLUSH only (< 0.35): anything
-            // higher reads as a deliberate step and keeps a hard riser
-            // face — a 0.6 riser is still under STEP_UP, so it stays
-            // walkable without the terrain humping up to meet it.
-            const d = f0 - Math.max(0, t);
-            if (d < 0.35 && d > -1.0) near = true;
-          }
-        }
-        if (near) {
-          span.owner = 0;
-          topFloors[gz]![gx] = f0;
-          level.pillarGround[gz]![gx] = true;
-          break;
-        }
-      }
-      if (spans.length > 0 && fullyOutside) {
-        // Under open sky the pillar's top is a real rooftop, not an
-        // attic carved into rock — the highest air continues into sky
-        spans[spans.length - 1]!.ceil = SKY_CEIL;
-      } else if (straddler && spans.length > 0) {
-        // A boundary-cliff pillar merges into the skyline as one solid
-        // mass: no crown attic, no recessed ring under a hanging slab —
-        // the spiral tops out at a sheltered landing and the tower
-        // continues up. (Interior pillars keep their attic rooms.)
-        const top = spans[spans.length - 1]!;
-        if (Math.abs(top.floor - spec.totalHeight) < 0.01) spans = spans.slice(0, -1);
-      }
-      columns[gz * genTiles + gx] = spans;
-    }
+    applyPillarSpans(spec, spec.cx * PILLAR_CELL_TILES, spec.cz * PILLAR_CELL_TILES, {
+      gridTiles: genTiles,
+      tiles: level.tiles,
+      pillarWall,
+      cellBiomes: topBiomes,
+      floorHeights: topFloors,
+      ceilingHeights: topCeils,
+      origFloors,
+      pillarGround: level.pillarGround,
+      columns,
+    });
   }
-
   // (The old marriage-PROPAGATION pass is gone: once marrying requires
   // the tile itself to sit in the terrain window — the grade anchor —
   // propagation could never marry a tile the per-tile test wouldn't,
@@ -337,36 +199,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   for (const spec of planningOwners) {
     arches.push(...planOwnedArches(stackSeed, spec.cx, spec.cz, specAt).filter(touchesWindow));
   }
-  for (const ar of arches) {
-    for (const { tx, tz, h } of bridgeTiles(ar)) {
-      if (tx < 0 || tz < 0 || tx >= genTiles || tz >= genTiles) continue;
-      columns[tz * genTiles + tx] = carveArchIntoColumn(columns[tz * genTiles + tx]!, h);
-    }
-  }
-  for (const sw of subways) {
-    for (const { tx, tz, h } of bridgeTiles(sw)) {
-      if (tx < 0 || tz < 0 || tx >= genTiles || tz >= genTiles) continue;
-      columns[tz * genTiles + tx] = carveBridgeIntoColumn(columns[tz * genTiles + tx]!, h, true);
-    }
-  }
-  // Carve TOP-DOWN: when a pair stacks two bridges, the upper deck's
-  // end-support pier fills the air column beneath it — carving the
-  // lower deck afterward lets its clearance bore cut a passage through
-  // the pier instead of being buried by it.
-  const carveOrder = [...bridges].sort((p, q) => Math.max(q.yA, q.yB) - Math.max(p.yA, p.yB));
-  for (const br of carveOrder) {
-    // Sloped decks step tile to tile; the slab must reach DOWN past the
-    // next tread's top or the steps float apart with air slits between.
-    const tread = Math.abs(br.yB - br.yA) / GAP_TILES;
-    const slabDepth = Math.max(0.5, tread + 0.15);
-    for (const { tx, tz, h, support } of bridgeTiles(br)) {
-      if (tx < 0 || tz < 0 || tx >= genTiles || tz >= genTiles) continue;
-      columns[tz * genTiles + tx] = carveBridgeIntoColumn(columns[tz * genTiles + tx]!, h, br.pipe, slabDepth);
-      if (support) {
-        columns[tz * genTiles + tx] = addBridgeEndSupport(columns[tz * genTiles + tx]!, h);
-      }
-    }
-  }
+  carveStructures(columns, genTiles, arches, subways, bridges);
 
   const errs = validateColumns(columns, genTiles, genTiles);
   if (errs.length > 0) {
@@ -624,7 +457,7 @@ function generateLevel(
   };
 }
 
-function nearestPermanentTransit(
+export function nearestPermanentTransit(
   target: GridPos,
   transit: ReadonlySet<string>,
   minCoordinate = 0,
@@ -651,7 +484,7 @@ function nearestPermanentTransit(
 
 /** Farthest active cell from a fixed anchor (distance × noise score),
  *  never an excluded (pillar) cell. */
-function pickFarthestCell(
+export function pickFarthestCell(
   fromCx: number,
   fromCz: number,
   exclude: Set<string>,

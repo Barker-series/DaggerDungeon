@@ -396,3 +396,56 @@ export function addBridgeEndSupport(spans: ColumnSpan[], h: number): ColumnSpan[
   if (!supportSpan) return spans;
   return spans.filter((s) => s !== supportSpan);
 }
+
+/**
+ * Carve a planned set of structures into a window's columns, in the
+ * canonical order (arches, subways, then bridges TOP-DOWN so a lower
+ * deck's clearance bore cuts through the upper deck's end-support pier
+ * instead of being buried by it). Extracted from generateWorld so the
+ * per-chunk generation path (src/game/gen/) carves with the exact same
+ * code. Tiles outside the window are skipped; every window covering a
+ * structure deterministically emits its own part (overlapping-bounds).
+ */
+export function carveStructures(
+  columns: ColumnSpan[][],
+  gridTiles: number,
+  arches: BridgeSpec[],
+  subways: BridgeSpec[],
+  bridges: BridgeSpec[],
+  /** Structure-frame → window-frame tile offset (0 when they match) */
+  txOff = 0,
+  tzOff = 0,
+): void {
+  for (const ar of arches) {
+    for (const t of bridgeTiles(ar)) {
+      const tx = t.tx + txOff;
+      const tz = t.tz + tzOff;
+      if (tx < 0 || tz < 0 || tx >= gridTiles || tz >= gridTiles) continue;
+      columns[tz * gridTiles + tx] = carveArchIntoColumn(columns[tz * gridTiles + tx]!, t.h);
+    }
+  }
+  for (const sw of subways) {
+    for (const t of bridgeTiles(sw)) {
+      const tx = t.tx + txOff;
+      const tz = t.tz + tzOff;
+      if (tx < 0 || tz < 0 || tx >= gridTiles || tz >= gridTiles) continue;
+      columns[tz * gridTiles + tx] = carveBridgeIntoColumn(columns[tz * gridTiles + tx]!, t.h, true);
+    }
+  }
+  const carveOrder = [...bridges].sort((p, q) => Math.max(q.yA, q.yB) - Math.max(p.yA, p.yB));
+  for (const br of carveOrder) {
+    // Sloped decks step tile to tile; the slab must reach DOWN past the
+    // next tread's top or the steps float apart with air slits between.
+    const tread = Math.abs(br.yB - br.yA) / GAP_TILES;
+    const slabDepth = Math.max(0.5, tread + 0.15);
+    for (const t of bridgeTiles(br)) {
+      const tx = t.tx + txOff;
+      const tz = t.tz + tzOff;
+      if (tx < 0 || tz < 0 || tx >= gridTiles || tz >= gridTiles) continue;
+      columns[tz * gridTiles + tx] = carveBridgeIntoColumn(columns[tz * gridTiles + tx]!, t.h, br.pipe, slabDepth);
+      if (t.support) {
+        columns[tz * gridTiles + tx] = addBridgeEndSupport(columns[tz * gridTiles + tx]!, t.h);
+      }
+    }
+  }
+}
