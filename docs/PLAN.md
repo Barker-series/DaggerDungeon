@@ -374,8 +374,11 @@ explicitly a guess until the day it's real work.
   `tools/debug-view.ts '<snap>' out.png` reproduces the exact view headlessly.
 - Never ship with `verify-world` red: `npx tsx tools/verify-world.ts` runs 16
   seeds × (climbability, descendability, bridge walkability, permanent-network
-  reachability, seam agreement, crack pairs, column invariants). Add an
-  invariant with every new guarantee.
+  reachability, seam agreement, crack pairs, column invariants) against the
+  SHIPPING chunked generator. Add an invariant with every new guarantee.
+- Any change to a generation pass must also keep `npx tsx
+  tools/verify-migration.ts` green (chunked path bit-identical to the legacy
+  window pipeline) until the legacy path is retired with milestone C.
 - Seam doctrine, stair/slab rules, and chamfer rules are documented in
   `world-reference.html` and as code comments at the relevant sites — read
   before touching renderer sealing.

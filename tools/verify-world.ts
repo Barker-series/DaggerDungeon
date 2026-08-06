@@ -15,7 +15,10 @@
  */
 
 /* eslint-disable no-console */
-import { generateWorld } from '../src/game/DungeonGenerator';
+// Gate the SHIPPING generator (the chunked path the worker runs).
+// Legacy generateWorld is covered by tools/verify-migration.ts, which
+// proves the two paths bit-identical.
+import { generateWorldChunked as generateWorld } from '../src/game/gen/assemble';
 import { bridgeTiles } from '../src/game/dungeon/pillar-bridges';
 import { PILLAR_CELL_TILES, PILLAR_FACTOR, pillarOccupied } from '../src/game/dungeon/pillar-layer';
 import { pillarFootprint } from '../src/game/dungeon/pillar-geometry';

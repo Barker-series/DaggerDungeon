@@ -135,10 +135,8 @@ export class GameEngine {
   private worldWorker: Worker;
   /** Dedicated lane for the exact window the player is approaching.
    * It must not wait behind speculative cardinal-neighbor generation. */
-  private urgentWorldWorker: Worker;
   private worldCache = new Map<string, WorldData>();
   private pendingWorlds = new Set<string>();
-  private urgentPendingWorlds = new Set<string>();
   private readonly maxCachedWorlds = 10;
 
   /** Frame-limiter period in ms; 0 = present at native refresh */
@@ -228,17 +226,9 @@ export class GameEngine {
       new URL('../game/world-worker.ts', import.meta.url),
       { type: 'module' },
     );
-    this.urgentWorldWorker = new Worker(
-      new URL('../game/world-worker.ts', import.meta.url),
-      { type: 'module' },
-    );
-    this.worldWorker.onmessage = (event) => this.acceptPreparedWorld(event, false);
-    this.urgentWorldWorker.onmessage = (event) => this.acceptPreparedWorld(event, true);
+    this.worldWorker.onmessage = (event) => this.acceptPreparedWorld(event);
     this.worldWorker.onerror = (event) => {
       console.error('[stream] background generation failed', event.message);
-    };
-    this.urgentWorldWorker.onerror = (event) => {
-      console.error('[stream] urgent generation failed', event.message);
     };
     this.timer = new THREE.Timer();
 
@@ -345,10 +335,9 @@ export class GameEngine {
 
   private acceptPreparedWorld(
     event: MessageEvent<{ key: string; world: WorldData; generationMs: number }>,
-    urgent: boolean,
   ): void {
     const { key, world, generationMs } = event.data;
-    (urgent ? this.urgentPendingWorlds : this.pendingWorlds).delete(key);
+    this.pendingWorlds.delete(key);
     // A seed can change while either worker is finishing an old request.
     if (!key.startsWith(`${this.seed}:`)) return;
     this.worldCache.delete(key);
@@ -360,8 +349,7 @@ export class GameEngine {
     }
     if (import.meta.env.DEV) {
       console.debug(
-        `[stream] ${urgent ? 'urgent ' : ''}prepared ${key} off-thread in `
-        + `${generationMs.toFixed(1)} ms`,
+        `[stream] prepared ${key} off-thread in ${generationMs.toFixed(1)} ms`,
       );
     }
   }
@@ -380,18 +368,13 @@ export class GameEngine {
     this.worldWorker.postMessage(request);
   }
 
+  /** ONE worker lane (since milestone B): the worker's chunk cache
+   *  makes adjacent-window prep ~400ms warm, so a second "urgent"
+   *  worker — whose separate module state meant a COLD chunk cache —
+   *  was slower than just queueing on the warm one. Urgency is now
+   *  simply "request it if nothing has yet". */
   private requestUrgentWorld(stack: number, originPcx: number, originPcz: number): void {
-    const key = this.worldKey(stack, originPcx, originPcz);
-    if (this.worldCache.has(key) || this.urgentPendingWorlds.has(key)) return;
-    this.urgentPendingWorlds.add(key);
-    const request: WorldWorkerRequest = {
-      key,
-      seed: this.seed,
-      stack,
-      originPcx,
-      originPcz,
-    };
-    this.urgentWorldWorker.postMessage(request);
+    this.requestWorld(stack, originPcx, originPcz);
   }
 
   /** Watch actual player position, including diagonal movement and sudden
@@ -600,7 +583,6 @@ export class GameEngine {
     this.seed = seed;
     this.worldCache.clear();
     this.pendingWorlds.clear();
-    this.urgentPendingWorlds.clear();
     this.originPcx = 0;
     this.originPcz = 0;
     this.buildWindow(stack);
@@ -684,7 +666,6 @@ export class GameEngine {
     window.removeEventListener('resize', this.handleResize);
     this.renderer.dispose();
     this.worldWorker.terminate();
-    this.urgentWorldWorker.terminate();
   }
 
   setPaused(paused: boolean): void {
