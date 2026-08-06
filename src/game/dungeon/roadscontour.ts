@@ -59,6 +59,11 @@ export interface RoadsSegment {
    *  corner-floor field only knows walkable floors, so wedge floors
    *  beside courts must never sink below the court's own flat top. */
   hardLowTop: number;
+  /** Those hard low tiles individually [centerX, centerZ, top]: wedge
+   *  floor vertices clamp only against the tile they TOUCH — a group-
+   *  blanket clamp lifted street-side vertices above the street quad
+   *  and opened hairline cracks. */
+  hardLows: [number, number, number][];
   /** This band ends exactly at the cut block's own top: the top
    *  surface is CLIPPED to the smooth outline there (no overhang, no
    *  soffit) and its diagonal edge is this segment's line. */
@@ -211,6 +216,7 @@ export function buildRoadsContour(world: WorldData): RoadsContour {
         let maxLowTop = -Infinity;
         let minLowTop = Infinity;
         let hardLowTop = -Infinity;
+        const hardLows: [number, number, number][] = [];
         for (const [tx4, tz4, t, low] of [
           [gx, gz, t00, bl0], [gx + 1, gz, t10, bl1],
           [gx + 1, gz + 1, t11, bl2], [gx, gz + 1, t01, bl3],
@@ -218,7 +224,10 @@ export function buildRoadsContour(world: WorldData): RoadsContour {
           if (low) {
             maxLowTop = Math.max(maxLowTop, t);
             minLowTop = Math.min(minLowTop, t);
-            if (L.tiles[tz4]![tx4] === TileType.Wall) hardLowTop = Math.max(hardLowTop, t);
+            if (L.tiles[tz4]![tx4] === TileType.Wall) {
+              hardLowTop = Math.max(hardLowTop, t);
+              hardLows.push([(tx4 + 0.5) * s, (tz4 + 0.5) * s, t]);
+            }
           }
         }
         const floorY = li === 0
@@ -311,6 +320,7 @@ export function buildRoadsContour(world: WorldData): RoadsContour {
             contDown,
             floorY,
             hardLowTop,
+            hardLows,
             atTop,
           };
           segments.push(seg);

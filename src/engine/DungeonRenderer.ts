@@ -2412,18 +2412,30 @@ export class DungeonRenderer {
               // per-vertex corner-field samples, exact at the segment
               // endpoints and the shared tile corner.
               const ti = hbuf.verts.length / 3;
-              // Never below a hard low-side top: courts are WALL tiles
-              // whose 0.6 surface the walkable-only corner field cannot
-              // see — sampling alone sank wedge floors 0.6 under them.
-              const hb = seg.hardLowTop;
-              const y0 = Math.max(sampleCornerField(cornerFloor, seg.x0, seg.z0), hb);
-              const y1 = Math.max(sampleCornerField(cornerFloor, seg.x1, seg.z1), hb);
-              // Interior corner: never BELOW the wedge's outer edge —
-              // the rolling outside field dips under old block corners
-              // and honest sampling there notches the street ("the
-              // dips"). Where dominance pulls the corner UP (courts),
-              // keep the sample: the wall band bottoms refine to it.
-              const yc = Math.max(sampleCornerField(cornerFloor, ccx, ccz), hb, (y0 + y1) / 2);
+              // Never below a hard low-side top the vertex TOUCHES:
+              // courts are WALL tiles whose 0.6 surface the walkable-
+              // only corner field cannot see. Clamp PER VERTEX against
+              // touching tiles only — the group-blanket clamp lifted
+              // street-side vertices above the street quad (hairline
+              // cracks radiating from block corners).
+              const hbAt = (px: number, pz: number): number => {
+                let v = -Infinity;
+                for (const [hx, hz, ht] of seg.hardLows) {
+                  if (Math.abs(px - hx) <= TILE_SIZE / 2 + 0.1
+                    && Math.abs(pz - hz) <= TILE_SIZE / 2 + 0.1) v = Math.max(v, ht);
+                }
+                return v;
+              };
+              const y0 = Math.max(sampleCornerField(cornerFloor, seg.x0, seg.z0), hbAt(seg.x0, seg.z0));
+              const y1 = Math.max(sampleCornerField(cornerFloor, seg.x1, seg.z1), hbAt(seg.x1, seg.z1));
+              // Interior corner: the FIELD value, clamped only by a
+              // touching hard tile. The field at a grid corner IS the
+              // street quads' shared corner value, so matching it is
+              // flush by definition — the earlier avg-based anti-dip
+              // clamp floated this vertex above the street and drew
+              // hairline cracks radiating from block corners. Terrain
+              // hollows at cut corners are real terrain; let them read.
+              const yc = Math.max(sampleCornerField(cornerFloor, ccx, ccz), hbAt(ccx, ccz));
               for (const [px, py, pz] of [
                 [seg.x0, y0, seg.z0], [seg.x1, y1, seg.z1], [ccx, yc, ccz],
               ] as const) {
