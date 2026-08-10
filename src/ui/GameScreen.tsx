@@ -7,6 +7,7 @@ import { Minimap } from './Minimap';
 import { MobileControls } from './MobileControls';
 import { AutoPlayPanel } from './AutoPlayPanel';
 import { DebugMap } from './DebugMap';
+import { EditorHUD } from './EditorHUD';
 import { SettingsMenu } from './SettingsMenu';
 import { VisualLab } from './VisualLab';
 import {
@@ -254,6 +255,10 @@ export function GameScreen() {
       <MobileControls onAction={handleMobileAction} />
       <AutoPlayPanel />
       <DebugMap />
+      <EditorHUD
+        getSnap={() => engineRef.current?.currentSnap() ?? ''}
+        getReturnSnap={() => engineRef.current?.editorReturn ?? null}
+      />
       {!settingsOpen && !visualLabOpen && (
         <button
           className="visual-lab-toggle"

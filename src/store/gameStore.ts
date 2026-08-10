@@ -35,6 +35,15 @@ export interface GameState {
    *  is the fixed spot R returns to — what maps should mark. */
   spawnAbs: GridPos | null;
 
+  // ── DaggerKit editor mode (E1) ──
+  /** Dev-only inspection mode: noclip fly camera, editor HUD */
+  editorActive: boolean;
+  /** Fly speed in units/second (engine-published for the HUD) */
+  editorSpeed: number;
+  /** A DDSNAP string the HUD asks the engine to teleport to; the
+   *  engine consumes it (sets back to null) on the next frame */
+  editorTeleport: string | null;
+
   // ── Actions ──
   setScreen: (s: GameState['screen']) => void;
   setSeed: (seed: number) => void;
@@ -48,6 +57,9 @@ export interface GameState {
   toggleAutoPlay: () => void;
   setFps: (fps: number) => void;
   setSpawnAbs: (pos: GridPos) => void;
+  setEditorActive: (on: boolean) => void;
+  setEditorSpeed: (speed: number) => void;
+  requestEditorTeleport: (snap: string | null) => void;
   startRun: () => void;
   resetRun: () => void;
 }
@@ -66,6 +78,9 @@ export const useGameStore = create<GameState>((set) => ({
   autoPlay: false,
   fps: 0,
   spawnAbs: null,
+  editorActive: false,
+  editorSpeed: 24,
+  editorTeleport: null,
 
   setScreen: (screen) => set({ screen }),
   setSeed: (seed) => set({ seed }),
@@ -81,6 +96,9 @@ export const useGameStore = create<GameState>((set) => ({
   toggleAutoPlay: () => set((s) => ({ autoPlay: !s.autoPlay })),
   setFps: (fps) => set({ fps }),
   setSpawnAbs: (spawnAbs) => set({ spawnAbs }),
+  setEditorActive: (editorActive) => set({ editorActive }),
+  setEditorSpeed: (editorSpeed) => set({ editorSpeed }),
+  requestEditorTeleport: (editorTeleport) => set({ editorTeleport }),
 
   startRun: () =>
     set({

@@ -19,6 +19,12 @@ export class KeyboardInput {
   /** Physical keyboard state. Virtual bot controls must never mutate this:
    * a held key produces no second keydown after a streaming handoff. */
   private keysDown = new Set<string>();
+
+  /** Raw held-key query (editor fly mode) */
+  isKeyDown(code: string): boolean {
+    return this.keysDown.has(code);
+  }
+
   private botForward = 0;
   private botRight = 0;
   private botSprint = false;

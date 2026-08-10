@@ -227,6 +227,7 @@ is adoptable, and the fresh-code remainder is small and enumerated.
 | Param panel + presets | **Tweakpane v4 + plugin-essentials** (exportState presets, fps/graph monitors) |
 | GLB reference import | GLTFLoader wiring cribbed from **three-gltf-viewer** `viewer.js` (~80 lines); **glTF-Transform** offline preprocessing |
 | Undo/redo + regen plumbing | fresh ~200 lines on the three.js editor Command pattern (read `editor/js/Viewport.js` selection wiring as reference) |
+| E5 placement editing (LATER) | candidate: lift viewport/gizmo/CommandBus/inspector patterns from `series-ai/felicity-level-editor` (company code, vanilla TS + three, production quality) — evaluated Aug 2026: zero overlap with E1-E4 (it's an authoring editor, ours is inspection-first), re-evaluate when E5 becomes real |
 | Seed map pane | fresh ~400 lines (Chunkbase UI as model; our generator already runs in JS workers) |
 
 License traps found: Theatre.js **studio is AGPL-3.0** (core is

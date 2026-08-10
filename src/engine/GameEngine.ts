@@ -149,6 +149,18 @@ export class GameEngine {
   private contours: OrganicContour[] = [];
   private roadsContour: RoadsContour | null = null;
   private seed = 0;
+
+  // ── DaggerKit editor mode (E1): dev-only noclip inspection. The
+  // editor camera IS the player camera — streaming, recenter, chunk
+  // and light culling all follow it for free (the editor is simply
+  // the top dependency's focus, LayerProcGen rule 7). ──
+  private editorMode = false;
+  private editorSpeed = 24;
+  /** The view (as a DDSNAP string) where the player stood when editor
+   *  mode was entered — the HUD's "return" bookmark */
+  editorReturn: string | null = null;
+  private editorGridOn = false;
+  private editorGridGroup: THREE.Group | null = null;
   private vy = 0; // vertical velocity; gridCamera.position.y is the feet
   // Persistent horizontal velocity (Source model) — survives frames and
   // jumps; input accelerates it, friction decays it
@@ -235,6 +247,8 @@ export class GameEngine {
     this.handleResize();
     window.addEventListener('resize', this.handleResize);
     window.addEventListener('keydown', this.handleSnapshotKey);
+    window.addEventListener('keydown', this.handleEditorKey);
+    window.addEventListener('wheel', this.handleEditorWheel, { passive: false });
     window.addEventListener('mousedown', this.handleMarkClick);
   }
 
@@ -283,11 +297,11 @@ export class GameEngine {
    *  assistant: tools/debug-view.ts regenerates this exact world and
    *  renders this exact view headlessly, so a seen bug becomes a
    *  reproducible one. */
-  private handleSnapshotKey = (e: KeyboardEvent) => {
-    if (e.code !== 'F8') return;
-    e.preventDefault();
+  /** The current view as a DDSNAP string — the one serialization for
+   *  repro strings, editor bookmarks, and teleport targets. */
+  currentSnap(): string {
     const pos = this.gridCamera.position;
-    const snap = `DDSNAP1${JSON.stringify({
+    return `DDSNAP1${JSON.stringify({
       seed: this.seed,
       stack: useGameStore.getState().currentFloor,
       ...(this.originPcx !== 0 || this.originPcz !== 0
@@ -301,11 +315,182 @@ export class GameEngine {
         marks: this.marks.map((m) => [+m.pos.x.toFixed(2), +m.pos.y.toFixed(2), +m.pos.z.toFixed(2)]),
       }),
     })}`;
+  }
+
+  private handleSnapshotKey = (e: KeyboardEvent) => {
+    if (e.code !== 'F8') return;
+    e.preventDefault();
+    const snap = this.currentSnap();
     console.log('[snapshot]', snap);
     void copyText(snap).then((copied) => {
       this.onNotice(copied ? 'Snapshot copied' : 'Snapshot copy failed');
     });
   };
+
+  /** DaggerKit is dev tooling: available in dev builds, or in any
+   *  build via ?editor=1 (troubleshooting a deploy). */
+  private editorAllowed(): boolean {
+    return Boolean(import.meta.env?.DEV)
+      || new URLSearchParams(window.location.search).has('editor');
+  }
+
+  private handleEditorKey = (e: KeyboardEvent) => {
+    if (e.code === 'F6' && this.editorAllowed()) {
+      e.preventDefault();
+      this.setEditorMode(!this.editorMode);
+      return;
+    }
+    if (!this.editorMode) return;
+    if (e.code === 'KeyG') {
+      this.editorGridOn = !this.editorGridOn;
+      this.rebuildEditorGrid();
+    }
+  };
+
+  private handleEditorWheel = (e: WheelEvent) => {
+    if (!this.editorMode || !this.gridCamera.getIsPointerLocked()) return;
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.25 : 0.8;
+    this.editorSpeed = Math.max(2, Math.min(600, this.editorSpeed * factor));
+    useGameStore.getState().setEditorSpeed(Math.round(this.editorSpeed));
+  };
+
+  private setEditorMode(on: boolean): void {
+    if (on === this.editorMode) return;
+    this.editorMode = on;
+    const store = useGameStore.getState();
+    store.setEditorActive(on);
+    if (on) {
+      this.editorReturn = this.currentSnap();
+      this.velX = 0;
+      this.velZ = 0;
+      this.vy = 0;
+      this.onNotice('Editor mode — WASD fly, Space/C up/down, wheel speed, G grid, F6 exit');
+    } else {
+      // Exit in place: gravity resumes wherever the camera is. The
+      // pre-editor position lives on as the HUD's "return" bookmark.
+      this.vy = 0;
+      this.isGrounded = false;
+      if (this.editorGridGroup) {
+        this.editorGridOn = false;
+        this.rebuildEditorGrid();
+      }
+      this.onNotice('Editor mode off');
+    }
+  }
+
+  /** Noclip fly: WASD along the LOOK direction (pitch included),
+   *  Space/C for world up/down, ShiftLeft sprint. No collision, no
+   *  gravity — the world streams around the camera as usual. */
+  private processEditorMovement(dt: number): void {
+    const dir = this.input.getMovementDir({ x: 0, y: 0 });
+    const speed = this.editorSpeed * (this.input.isKeyDown('ShiftLeft') ? 4 : 1);
+    const cam = this.gridCamera;
+    const cosP = Math.cos(cam.pitch);
+    // Look-direction forward (yaw 0 = -Z; pitch>0 looks up)
+    const fx = -Math.sin(cam.yaw) * cosP;
+    const fy = Math.sin(cam.pitch);
+    const fz = -Math.cos(cam.yaw) * cosP;
+    const rx = Math.cos(cam.yaw);
+    const rz = -Math.sin(cam.yaw);
+    let vx = fx * dir.y + rx * dir.x;
+    let vy = fy * dir.y;
+    let vz = fz * dir.y + rz * dir.x;
+    if (this.input.isKeyDown('Space')) vy += 1;
+    if (this.input.isKeyDown('KeyC')) vy -= 1;
+    const len = Math.hypot(vx, vy, vz);
+    if (len > 1e-6) {
+      const k = (speed * dt) / len;
+      cam.position.x += vx * k;
+      cam.position.y += vy * k;
+      cam.position.z += vz * k;
+    }
+    this.isGrounded = false;
+  }
+
+  /** Consume a DDSNAP teleport request from the HUD. Same-window jumps
+   *  are instant; window/seed changes rebuild (synchronous fallback is
+   *  acceptable in a dev tool — the worker cache usually has it). */
+  private consumeEditorTeleport(store: ReturnType<typeof useGameStore.getState>): void {
+    const snap = store.editorTeleport;
+    if (!snap) return;
+    store.requestEditorTeleport(null);
+    try {
+      const raw = snap.trim();
+      const json = raw.startsWith('DDSNAP1') ? raw.slice('DDSNAP1'.length) : raw;
+      const t = JSON.parse(json) as {
+        seed?: number; stack?: number; opx?: number; opz?: number;
+        x: number; y: number; z: number; yaw?: number; pitch?: number;
+      };
+      const opx = t.opx ?? 0;
+      const opz = t.opz ?? 0;
+      const stack = t.stack ?? store.currentFloor;
+      const seedChanged = t.seed !== undefined && t.seed !== this.seed;
+      if (seedChanged) {
+        this.seed = t.seed!;
+        store.setSeed(t.seed!);
+        this.worldCache.clear();
+        this.pendingWorlds.clear();
+      }
+      if (seedChanged || opx !== this.originPcx || opz !== this.originPcz
+        || stack !== store.currentFloor) {
+        this.originPcx = opx;
+        this.originPcz = opz;
+        store.setCurrentFloor(stack);
+        this.buildWindow(stack);
+      }
+      this.gridCamera.setPosition(t.x, t.y, t.z);
+      if (t.yaw !== undefined) this.gridCamera.yaw = t.yaw;
+      if (t.pitch !== undefined) this.gridCamera.pitch = t.pitch;
+      this.velX = 0;
+      this.velZ = 0;
+      this.vy = 0;
+      this.onNotice('Teleported');
+    } catch {
+      this.onNotice('Bad DDSNAP string');
+    }
+  }
+
+  /** Chunk (pillar-cell) + dungeon-cell grid overlay: vertical edge
+   *  posts at cell corners, brighter at chunk corners. Rebuilt per
+   *  window; cheap line geometry. */
+  private rebuildEditorGrid(): void {
+    if (this.editorGridGroup) {
+      this.scene.remove(this.editorGridGroup);
+      this.editorGridGroup.traverse((o) => {
+        const m = o as THREE.LineSegments;
+        if (m.geometry) m.geometry.dispose();
+      });
+      this.editorGridGroup = null;
+    }
+    if (!this.editorGridOn || !this.world) return;
+    const w = this.world.levels[0]!.width;
+    const CELL_T = 14;
+    const CHUNK_T = 56;
+    const y0 = -45;
+    const y1 = 320;
+    const cellVerts: number[] = [];
+    const chunkVerts: number[] = [];
+    for (let tz = 0; tz <= w; tz += CELL_T) {
+      for (let tx = 0; tx <= w; tx += CELL_T) {
+        const wx = tx * TILE_SIZE;
+        const wz = tz * TILE_SIZE;
+        const target = tx % CHUNK_T === 0 && tz % CHUNK_T === 0 ? chunkVerts : cellVerts;
+        target.push(wx, y0, wz, wx, y1, wz);
+      }
+    }
+    const group = new THREE.Group();
+    const mk = (verts: number[], color: number, opacity: number): void => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false });
+      group.add(new THREE.LineSegments(g, mat));
+    };
+    mk(cellVerts, 0x2a6a8a, 0.25);
+    mk(chunkVerts, 0x00e5ff, 0.6);
+    this.scene.add(group);
+    this.editorGridGroup = group;
+  }
 
   setRenderScale(scale: number): void {
     this.renderScale = Math.max(0.5, Math.min(1.5, scale));
@@ -442,6 +627,7 @@ export class GameEngine {
     // here: chunks stream in via updateChunks each frame — surviving
     // core chunks carry across, rim chunks rebuild in the background.
     this.dungeonRenderer.setWindow(this.world);
+    if (this.editorGridOn) this.rebuildEditorGrid();
     markPhase('geometry-adopt');
     this.movers = new Movers(this.world, this.scene);
     markPhase('movers');
@@ -659,6 +845,8 @@ export class GameEngine {
     this.input.dispose();
     this.gridCamera.detach();
     window.removeEventListener('keydown', this.handleSnapshotKey);
+    window.removeEventListener('keydown', this.handleEditorKey);
+    window.removeEventListener('wheel', this.handleEditorWheel);
     window.removeEventListener('mousedown', this.handleMarkClick);
     this.sprites.dispose();
     this.postProcessing.dispose();
@@ -697,13 +885,20 @@ export class GameEngine {
     // Player movement
     this.recenterWindow();
     this.movers?.update(dt);
-    // An elevator under your feet carries you with it
-    {
-      const pos = this.gridCamera.position;
-      const carry = this.movers?.carryVelocity(pos.x, pos.z, pos.y) ?? 0;
-      if (carry !== 0 && this.isGrounded) pos.y += carry * dt;
+    if (this.editorMode) {
+      this.consumeEditorTeleport(store);
+      this.processEditorMovement(dt);
+      // Drain queued one-shot actions so they don't fire stale on exit
+      while (this.input.consumeAction()) { /* discarded in editor */ }
+    } else {
+      // An elevator under your feet carries you with it
+      {
+        const pos = this.gridCamera.position;
+        const carry = this.movers?.carryVelocity(pos.x, pos.z, pos.y) ?? 0;
+        if (carry !== 0 && this.isGrounded) pos.y += carry * dt;
+      }
+      this.processMovement(dt);
     }
-    this.processMovement(dt);
     this.prefetchApproachingWindow(store.currentFloor);
     this.syncGridPos(store);
     this.gridCamera.update();
@@ -711,6 +906,7 @@ export class GameEngine {
     // the feet (stair steps become a glide); airborne it tracks tightly
     // so falls and jumps stay 1:1. Large jumps (respawn, teleport) snap.
     const feetY = this.gridCamera.position.y;
+    if (this.editorMode) this.smoothFeetY = feetY; // fly cam tracks 1:1
     const diff = feetY - this.smoothFeetY;
     if (Math.abs(diff) > 3) {
       this.smoothFeetY = feetY;
@@ -732,13 +928,13 @@ export class GameEngine {
     this.lighting.update(pos.x, pos.y, pos.z);
     this.updateAreaFog(dt, pos.x, pos.z);
 
-    // Bot
-    if (store.autoPlay) {
+    // Bot (never while the editor is flying the camera)
+    if (store.autoPlay && !this.editorMode) {
       this.bot.update(dt);
     }
 
     // One-shot actions
-    this.processActions();
+    if (!this.editorMode) this.processActions();
   }
 
   // ── Column-model world queries — the ONE authority on solid vs air ──
