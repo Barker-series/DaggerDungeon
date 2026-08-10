@@ -39,6 +39,30 @@ const CEIL_SWELL_SCALE = 14;
 // Outside crest quantum: one flat crest per cell on this vertical
 // module (2x the 3-unit structural module) — crowns are structure.
 export const CREST_MODULE = 6;
+// ── TALL DISTRICTS: the crest field is HEAVY-TAILED. The common range
+// (66..96) is the base; a coarse clustered field pushes whole regions
+// of wall mass far higher — up to +CREST_TALL_BOOST at the field peak,
+// quadratically ramped so most boosted cells rise modestly and the
+// tail climbs into the distance fog. Walls and supertowers (pillar
+// tail ~348) become one skyline family. Closure faces seal every
+// crest step by construction, so any height is seam-legal. ──
+/** Cells per tall-district feature (clusters, not random spikes) */
+const CREST_TALL_SCALE = 4;
+/** Field value where the boost starts (top ~30% of cells) */
+const CREST_TALL_THRESHOLD = 0.7;
+/** BLAME! scale: the base crest range is multiplied by this — from
+ *  the ground, outside walls have NO visible top; crowns exist only
+ *  from supertower summits and deep district vantages. */
+const CREST_BASE_SCALE = 10;
+/** Max added crest height at the field peak (tall districts reach
+ *  ~5100). The render sky clip (RENDER_SKY_TOP) sits above the max
+ *  possible crest — that pairing is asserted renderer-side. */
+const CREST_TALL_BOOST = 4200;
+/** What may be WRITTEN into outside floor tiles' ceilingHeights: the
+ *  >=100 sky-filler sentinel is a data-format constraint (segment
+ *  group verdicts, trim span checks key on it). The TRUE crest lives
+ *  in DungeonData.cellCrests, which every crown emitter reads. */
+const CREST_DATA_CEIL_MAX = 96;
 const CEIL_DETAIL_SCALE = 4;
 
 // Cave-mouth sweep: interior ceilings within this many tiles of an
@@ -65,10 +89,10 @@ const PROFILES: Record<BiomeType, BiomeHeightProfile> = {
   cave: { rollAmp: 1.2, pitThreshold: 0.36, clearMin: 10, clearMax: 28 },
   // Ember is hole country
   ember: { rollAmp: 1.2, pitThreshold: 0.48, clearMin: 24, clearMax: 44 },
-  // Crest ceiling bound: outside values ceil-quantize to CREST_MODULE
-  // (see the outside branch), so the tallest possible crest is
-  // ceil((clearMax + rollAmp) / CREST_MODULE) * CREST_MODULE = 96 —
-  // strictly under the 100 sky-filler sentinel by construction.
+  // Crest BASE range: 66..96 after quantization. Tall districts boost
+  // far beyond it (cellCrest heavy tail) — the DATA ceiling written to
+  // outside floors stays pinned at CREST_DATA_CEIL_MAX, under the 100
+  // sky-filler sentinel; only cellCrests carries the tall values.
   outside: { rollAmp: 1.6, pitThreshold: 0.38, clearMin: 66, clearMax: 90 },
 };
 
@@ -91,11 +115,16 @@ export function cellCrest(acx: number, acz: number, worldSeed: number): number {
   const heightSeed = worldSeed + 4242;
   const p = PROFILES.outside;
   const cellNoise = sampleNoise(acx, acz, heightSeed + 7, 2);
-  const raw = p.clearMin + cellNoise * (p.clearMax - p.clearMin);
+  const raw = (p.clearMin + cellNoise * (p.clearMax - p.clearMin)) * CREST_BASE_SCALE;
   const ccx = (acx + 0.5) * CELL_TILE_SIZE;
   const ccz = (acz + 0.5) * CELL_TILE_SIZE;
   const cellGround = sampleNoise(ccx, ccz, heightSeed + 55, FLOOR_SWELL_SCALE) * p.rollAmp;
-  return Math.ceil((cellGround + raw) / CREST_MODULE) * CREST_MODULE;
+  const base = Math.ceil((cellGround + raw) / CREST_MODULE) * CREST_MODULE;
+  // Heavy tail: clustered tall districts, quadratic ramp
+  const tall = sampleNoise(acx, acz, heightSeed + 313, CREST_TALL_SCALE);
+  const t = Math.min(1, Math.max(0, (tall - CREST_TALL_THRESHOLD) / (1 - CREST_TALL_THRESHOLD)));
+  const boost = Math.ceil((t * t * CREST_TALL_BOOST) / CREST_MODULE) * CREST_MODULE;
+  return base + boost;
 }
 
 /**
@@ -289,14 +318,17 @@ export function computeHeightFields(
         // repro). Per-tile swell never draws as ceiling here (open
         // sky); it only fed wall crowns.
         const cell = getCell(Math.floor(tx / cellTileSize), Math.floor(tz / cellTileSize))!;
-        // The crest authority: same value the renderer's crown emitters
-        // read via DungeonData.cellCrests. Height lives in the PROFILE
-        // (clearMin raised one module over the old swell mean); the
-        // sub-100 sky-sentinel bound holds by arithmetic on the profile
-        // values, not by a clamp.
+        // The crest authority: crown emitters read the TRUE (possibly
+        // tall-district-boosted) crest via DungeonData.cellCrests. The
+        // DATA ceiling written here is pinned below the 100 sky-filler
+        // sentinel — outside floors' ceilings are legacy plumbing
+        // (segment-group verdicts), not the crown height.
         ceiling[tz]![tx] = Math.max(
           f + TUNNEL_CLEARANCE,
-          cellCrest(windowOrigin().ocx + cell.cx, windowOrigin().ocz + cell.cz, worldSeed),
+          Math.min(
+            cellCrest(windowOrigin().ocx + cell.cx, windowOrigin().ocz + cell.cz, worldSeed),
+            CREST_DATA_CEIL_MAX,
+          ),
         );
         continue;
       }

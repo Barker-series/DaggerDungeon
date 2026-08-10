@@ -235,6 +235,30 @@ Hyperfy is GPL-3.0 — patterns only. Also: try **Needle Inspector**
 (Chrome extension, inspects any three.js scene) as an interim tool
 before E1 exists — zero-cost partial coverage today.
 
+### rundot_template (LorenzGit) — work-project loot, license fully covered
+
+We are Series/RUN funded — RUN-only source-available terms are cleared
+for us; adopt CODE, not just patterns:
+
+- **Dev-mode gating**: `?editor=1`-style query routes + a production
+  build verifier that REJECTS dev tooling leaking into shipped builds.
+  This is how DaggerKit E1 mounts (and DDSNAP-in-URL boots straight
+  into editor mode at a seed+view).
+- **`__gameQa`-style contract → `__ddKit`**: dev-only globalThis API
+  exposing teleport/select/provenance-dump so the editor is drivable
+  by automation (and by the AI agent via browser tooling) — the
+  AI-collaboration loop closed from both directions.
+- **`save.ts`**: versioned persistence, untrusted-field validation,
+  coalesced RUN appStorage writes, non-authoritative local fallback —
+  the platform storage layer of docs/persistence-design.md, prewritten
+  for RUN's actual APIs.
+- **`serverTime.ts`**: trusted time — respawn/expiry policies must
+  never trust the user's clock; this is the fix.
+- Daily-systems discipline (stable claim IDs, in-flight guards,
+  atomic writes, rollback on failure) = our delta-journal write path
+  in miniature; deterministic headless simulation + Playwright e2e =
+  verify-world philosophy extended into the browser.
+
 ### Bonus finds beyond the editor (adopt-candidates, each ~an afternoon spike)
 
 - **recast-navigation-js** (isaac-mason, WASM Recast/Detour +

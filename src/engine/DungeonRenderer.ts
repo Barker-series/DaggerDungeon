@@ -186,7 +186,10 @@ uniform float constructionSeams;`,
  *  megastructure has no uniform ceiling: the real clip is derived per
  *  build from the tallest structure actually present (supertowers push
  *  it up), never below this floor value. */
-const RENDER_SKY_TOP_MIN = 300;
+// Above the maximum possible crest (base ~900 + tall-district boost
+// 4200 = ~5100): the sky clip must clear every crown or virtual-air
+// ranges invert. BLAME! scale — from the ground, walls have no top.
+const RENDER_SKY_TOP_MIN = 5300;
 /** Clearance above the tallest crown before the sky clip */
 const RENDER_SKY_MARGIN = 300;
 /** How deep a bottomless pit's walls render below the lowest level */
