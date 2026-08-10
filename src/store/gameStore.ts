@@ -43,6 +43,9 @@ export interface GameState {
   /** A DDSNAP string the HUD asks the engine to teleport to; the
    *  engine consumes it (sets back to null) on the next frame */
   editorTeleport: string | null;
+  /** E2 provenance selection: the full copyable report and the short
+   *  lines the HUD displays. Null = nothing selected. */
+  editorSelection: { report: string; summary: string[] } | null;
 
   // ── Actions ──
   setScreen: (s: GameState['screen']) => void;
@@ -60,6 +63,7 @@ export interface GameState {
   setEditorActive: (on: boolean) => void;
   setEditorSpeed: (speed: number) => void;
   requestEditorTeleport: (snap: string | null) => void;
+  setEditorSelection: (sel: { report: string; summary: string[] } | null) => void;
   startRun: () => void;
   resetRun: () => void;
 }
@@ -81,6 +85,7 @@ export const useGameStore = create<GameState>((set) => ({
   editorActive: false,
   editorSpeed: 24,
   editorTeleport: null,
+  editorSelection: null,
 
   setScreen: (screen) => set({ screen }),
   setSeed: (seed) => set({ seed }),
@@ -99,6 +104,7 @@ export const useGameStore = create<GameState>((set) => ({
   setEditorActive: (editorActive) => set({ editorActive }),
   setEditorSpeed: (editorSpeed) => set({ editorSpeed }),
   requestEditorTeleport: (editorTeleport) => set({ editorTeleport }),
+  setEditorSelection: (editorSelection) => set({ editorSelection }),
 
   startRun: () =>
     set({

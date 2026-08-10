@@ -10,7 +10,8 @@ import { buildCornerField, sampleCornerField } from '../game/dungeon/heightfield
 import { spanAt } from '../game/dungeon/columns';
 import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
 import { buildRoadsContour, type RoadsContour } from '../game/dungeon/roadscontour';
-import { tileBiome } from '../game/dungeon/cells';
+import { tileBiome, tileCrest, CELL_TILE_SIZE } from '../game/dungeon/cells';
+import { sliceAt } from '../game/mapslice';
 import { DungeonBot } from '../bot/DungeonBot';
 import { useGameStore } from '../store/gameStore';
 import { TileType, Direction, TILE_SIZE, EYE_HEIGHT, ABYSS_FLOOR } from '../game/types';
@@ -161,6 +162,8 @@ export class GameEngine {
   editorReturn: string | null = null;
   private editorGridOn = false;
   private editorGridGroup: THREE.Group | null = null;
+  /** E2 selection highlight (triangle overlay + tile box) */
+  private editorSelGroup: THREE.Group | null = null;
   private vy = 0; // vertical velocity; gridCamera.position.y is the feet
   // Persistent horizontal velocity (Source model) — survives frames and
   // jumps; input accelerates it, friction decays it
@@ -258,6 +261,11 @@ export class GameEngine {
    *  geometry being reported. */
   private handleMarkClick = (e: MouseEvent) => {
     if (!this.gridCamera.getIsPointerLocked()) return;
+    if (this.editorMode) {
+      if (e.button === 0) this.editorSelect();
+      else if (e.button === 2) this.clearEditorSelection();
+      return;
+    }
     if (e.button === 0) {
       const ray = new THREE.Raycaster();
       ray.setFromCamera(new THREE.Vector2(0, 0), this.threeCamera);
@@ -375,6 +383,7 @@ export class GameEngine {
         this.editorGridOn = false;
         this.rebuildEditorGrid();
       }
+      this.clearEditorSelection();
       this.onNotice('Editor mode off');
     }
   }
@@ -490,6 +499,134 @@ export class GameEngine {
     mk(chunkVerts, 0x00e5ff, 0.6);
     this.scene.add(group);
     this.editorGridGroup = group;
+  }
+
+  private clearEditorSelection(): void {
+    if (this.editorSelGroup) {
+      this.scene.remove(this.editorSelGroup);
+      this.editorSelGroup.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+      });
+      this.editorSelGroup = null;
+    }
+    useGameStore.getState().setEditorSelection(null);
+  }
+
+  /** E2 PROVENANCE SELECTION: raycast the crosshair, resolve the hit
+   *  into its causal chain — emitter pass (mesh name), tile/cell/chunk,
+   *  biome, crest, column spans, slice — and publish a copyable report
+   *  (DDSNAP with the hit as a mark, so tools/debug-view.ts reproduces
+   *  the exact selection headlessly). */
+  private editorSelect(): void {
+    if (!this.world) return;
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(0, 0), this.threeCamera);
+    ray.far = 600;
+    const hits = ray.intersectObjects(this.scene.children, true).filter((h) => {
+      const o = h.object as THREE.Mesh;
+      return o.isMesh && !o.userData['debugMark'] && !o.userData['ddkit'];
+    });
+    const hit = hits[0];
+    if (!hit) return;
+    const mesh = hit.object as THREE.Mesh;
+    const p = hit.point;
+    const L = this.world.levels[0]!;
+    const w = L.width;
+    const tx = Math.floor(p.x / TILE_SIZE);
+    const tz = Math.floor(p.z / TILE_SIZE);
+    const inGrid = tx >= 0 && tz >= 0 && tx < w && tz < L.height;
+    const opx = this.world.originPcx;
+    const opz = this.world.originPcz;
+    const absTx = opx * 56 + tx;
+    const absTz = opz * 56 + tz;
+    const absCx = Math.floor(absTx / CELL_TILE_SIZE);
+    const absCz = Math.floor(absTz / CELL_TILE_SIZE);
+    const pass = mesh.name || 'unnamed-pass';
+    const nrm = hit.face
+      ? hit.face.normal.clone().transformDirection(mesh.matrixWorld)
+      : new THREE.Vector3();
+
+    const lines: string[] = [];
+    lines.push(`pass ${pass}`);
+    lines.push(`hit (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}) n(${nrm.x.toFixed(2)},${nrm.y.toFixed(2)},${nrm.z.toFixed(2)})`);
+    let spans: import('../game/types').ColumnSpan[] = [];
+    if (inGrid) {
+      spans = this.world.columns[tz * w + tx]!;
+      const biome = tileBiome(L.cellBiomes, tx, tz) ?? 'tunnel';
+      const crest = tileCrest(L.cellCrests, tx, tz);
+      const flags = [
+        L.tiles[tz]![tx] === TileType.Wall ? 'WALL' : 'floor',
+        L.pillarWall[tz]![tx] ? 'pillarWall' : '',
+        L.pillarGround[tz]![tx] ? 'pillarGround' : '',
+        this.contours[0]?.softWalls.has(tz * w + tx) ? 'softWall' : '',
+        L.roadsCells?.[Math.floor(tz / CELL_TILE_SIZE)]?.[Math.floor(tx / CELL_TILE_SIZE)] ? 'roadsCell' : '',
+      ].filter(Boolean).join(' ');
+      lines.push(`tile local(${tx},${tz}) abs(${absTx},${absTz}) · cell(${absCx},${absCz}) ${biome} crest=${crest} · chunk(${Math.floor(absTx / 56)},${Math.floor(absTz / 56)})`);
+      lines.push(`${flags} floorH=${L.floorHeights[tz]![tx]!.toFixed(1)} ceilH=${L.ceilingHeights[tz]![tx]!.toFixed(1)}`);
+      lines.push(`spans: ${spans.length === 0 ? '(none — solid column)' : spans.map((sp) =>
+        `${sp.floor <= -900 ? 'ABYSS' : sp.floor.toFixed(1)}..${sp.ceil >= 1e8 ? 'SKY' : sp.ceil.toFixed(1)}(${sp.owner},${sp.ceilOwner})`).join(' ')}`);
+      const slice = sliceAt(spans, p.y);
+      lines.push(`slice@hitY: ${JSON.stringify(slice)}`);
+    } else {
+      lines.push('hit outside the window grid');
+    }
+
+    const pos = this.gridCamera.position;
+    const snap = `DDSNAP1${JSON.stringify({
+      seed: this.seed,
+      stack: useGameStore.getState().currentFloor,
+      ...(opx !== 0 || opz !== 0 ? { opx, opz } : {}),
+      x: +pos.x.toFixed(2),
+      y: +pos.y.toFixed(2),
+      z: +pos.z.toFixed(2),
+      yaw: +this.gridCamera.yaw.toFixed(3),
+      pitch: +this.gridCamera.pitch.toFixed(3),
+      marks: [[+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2)]],
+    })}`;
+    const report = ['DDKIT SELECTION', snap, ...lines].join('\n');
+
+    // ── Highlight: the hit triangle + the tile's span box ──
+    this.clearEditorSelection(); // also clears the store; re-set below
+    useGameStore.getState().setEditorSelection({ report, summary: lines });
+    const group = new THREE.Group();
+    group.userData['ddkit'] = true;
+    if (hit.face) {
+      const geo = mesh.geometry;
+      const posAttr = geo.getAttribute('position');
+      const tri = new THREE.BufferGeometry();
+      const verts: number[] = [];
+      for (const vi of [hit.face.a, hit.face.b, hit.face.c]) {
+        const v = new THREE.Vector3(
+          posAttr.getX(vi), posAttr.getY(vi), posAttr.getZ(vi),
+        ).applyMatrix4(mesh.matrixWorld);
+        verts.push(v.x, v.y, v.z);
+      }
+      tri.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      tri.setIndex([0, 1, 2]);
+      const triMesh = new THREE.Mesh(tri, new THREE.MeshBasicMaterial({
+        color: 0x00e5ff, transparent: true, opacity: 0.5, side: THREE.DoubleSide,
+        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+        depthWrite: false,
+      }));
+      triMesh.userData['ddkit'] = true;
+      group.add(triMesh);
+    }
+    if (inGrid) {
+      const span = spans.find((sp) => p.y >= sp.floor - 0.6 && p.y <= sp.ceil + 0.6);
+      const y0 = span ? Math.max(span.floor, p.y - 40) : p.y - 3;
+      const y1 = span ? Math.min(span.ceil >= 1e8 ? p.y + 40 : span.ceil, p.y + 40) : p.y + 3;
+      const box = new THREE.Box3(
+        new THREE.Vector3(tx * TILE_SIZE, y0, tz * TILE_SIZE),
+        new THREE.Vector3((tx + 1) * TILE_SIZE, y1, (tz + 1) * TILE_SIZE),
+      );
+      const helper = new THREE.Box3Helper(box, 0x00e5ff);
+      helper.userData['ddkit'] = true;
+      group.add(helper);
+    }
+    this.scene.add(group);
+    this.editorSelGroup = group;
+    console.log('[ddkit]\n' + report);
   }
 
   setRenderScale(scale: number): void {

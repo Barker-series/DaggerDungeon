@@ -58,6 +58,7 @@ export function EditorHUD({ getSnap, getReturnSnap }: {
   const playerY = useGameStore((s) => s.playerY);
   const [pasteText, setPasteText] = useState('');
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(loadBookmarks);
+  const selection = useGameStore((s) => s.editorSelection);
 
   if (!editorActive || !world || !dungeon) return null;
 
@@ -145,8 +146,28 @@ export function EditorHUD({ getSnap, getReturnSnap }: {
           </div>
         ))}
       </div>
+      {selection && (
+        <div style={{ marginTop: 6, borderTop: '1px solid #345', paddingTop: 4 }}>
+          <div style={{ color: '#0ef' }}>
+            SELECTION
+            <button
+              style={{ float: 'right' }}
+              onClick={() => {
+                void copyText(selection.report);
+              }}
+            >
+              Copy report
+            </button>
+          </div>
+          {selection.summary.map((line, i) => (
+            <div key={i} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{line}</div>
+          ))}
+        </div>
+      )}
       <div style={{ marginTop: 6, color: '#678' }}>
         WASD fly · Space/C rise/sink · Shift sprint · wheel speed · G grid · F8 snap · F6 exit
+        <br />
+        LMB select geo · RMB clear selection
       </div>
     </div>
   );

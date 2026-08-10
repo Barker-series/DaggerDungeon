@@ -876,12 +876,12 @@ export class DungeonRenderer {
 
     for (const [key, buf] of regions) {
       const mats = materialsFor(key);
-      this.addMesh(group, buf.floor, mats.floor);
-      this.addMesh(group, buf.ceil, mats.ceil);
+      this.addMesh(group, buf.floor, mats.floor, `surfaces:floor:${key}`);
+      this.addMesh(group, buf.ceil, mats.ceil, `surfaces:ceil+caps:${key}`);
     }
 
     if (stairs.verts.length > 0) {
-      this.addMesh(group, stairs, this.stairsMaterial);
+      this.addMesh(group, stairs, this.stairsMaterial, 'surfaces:stairs');
     }
 
   }
@@ -1723,9 +1723,9 @@ export class DungeonRenderer {
     }
 
     for (const [key, buf] of buffers) {
-      this.addMesh(group, buf, materialsFor(key).wall);
+      this.addMesh(group, buf, materialsFor(key).wall, `faces:xor-walls:${key}`);
     }
-    this.addMesh(group, rockFloors, materialsFor('tunnel').floor);
+    this.addMesh(group, rockFloors, materialsFor('tunnel').floor, 'faces:rock-tops+roofs');
   }
 
   /**
@@ -2024,7 +2024,7 @@ export class DungeonRenderer {
       if (hiB - Math.max(loM, lo1) >= 0.5) emitHalf(mX, mZ, loM, hiB, seg.x1, seg.z1, lo1, hiB);
     }
     for (const [key, buf] of bufs) {
-      if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor(key).wall);
+      if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor(key).wall, `segment-walls:${key}`);
     }
   }
 
@@ -2375,7 +2375,7 @@ export class DungeonRenderer {
       if (j0.end) cap(p.x0, p.z0, j0, -tdx, -tdz);
       if (j1.end) cap(p.x1, p.z1, j1, tdx, tdz);
     }
-    if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor('tunnel').wall);
+    if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor('tunnel').wall, 'tunnel-trim');
   }
 
   /** ROADS WALLS (One Wall v2, slice 2): extrude the per-module-level
@@ -2537,8 +2537,8 @@ export class DungeonRenderer {
         }
       }
     }
-    if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor('outside').wall);
-    if (hbuf.verts.length > 0) this.addMesh(target, hbuf, this.materialsFor('outside').floor);
+    if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor('outside').wall, 'roads-contour:walls');
+    if (hbuf.verts.length > 0) this.addMesh(target, hbuf, this.materialsFor('outside').floor, 'roads-contour:tops');
   }
 
   private buildPipeChamfers(world: WorldData, target: THREE.Group, bounds?: RenderBounds): void {
@@ -2635,7 +2635,7 @@ export class DungeonRenderer {
         }
       }
     }
-    this.addMesh(target, buf, this.materialsFor('tunnel').wall);
+    this.addMesh(target, buf, this.materialsFor('tunnel').wall, 'bridge-bore-chamfers');
   }
 
   /**
@@ -2682,7 +2682,7 @@ export class DungeonRenderer {
     }
   }
 
-  private addMesh(parent: THREE.Group, buf: MeshBuffers, material: THREE.Material): void {
+  private addMesh(parent: THREE.Group, buf: MeshBuffers, material: THREE.Material, passName = ''): void {
     if (buf.verts.length === 0) return;
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(buf.verts, 3));
@@ -2748,6 +2748,9 @@ export class DungeonRenderer {
       }
     }
     const mesh = new THREE.Mesh(geom, material);
+    // Pass provenance for DaggerKit picking: which emitter pass built
+    // this geometry (E2 selection reports read it off the hit mesh)
+    if (passName) mesh.name = passName;
     parent.add(mesh);
   }
 }
