@@ -1021,21 +1021,47 @@ export class GameEngine {
           : g <= pos.y + AIR_STEP;
       };
       const steps = Math.max(1, Math.ceil(Math.max(Math.abs(moveX), Math.abs(moveZ)) / 0.25));
-      for (let i = 0; i < steps; i++) {
-        const nx = pos.x + moveX / steps;
-        if (!this.collidesAt(nx, pos.z) && canStand(nx, pos.z, Math.abs(moveX / steps))) {
-          pos.x = nx;
-        } else {
-          // Blocked: kill that velocity component (Source clips velocity
-          // against the wall plane; axis-separated movement makes this a
-          // per-axis zero, which also gives free wall-sliding)
-          this.velX = 0;
+      const dtStep = dt / steps;
+      // Blocked by a wall: clip velocity against the wall's TRUE normal
+      // (Source-style). For axis-aligned tile faces this is identical to
+      // the old per-axis zeroing; for contour segments it projects the
+      // velocity onto the wall tangent, so diagonal walls GLIDE — the
+      // old axis-zero response caught/released along them and read as
+      // stair-step bouncing even though the collision line is smooth.
+      const clipVelocity = (nrm: [number, number] | null): void => {
+        if (!nrm) return;
+        const into = this.velX * nrm[0] + this.velZ * nrm[1];
+        if (into < 0) {
+          this.velX -= into * nrm[0];
+          this.velZ -= into * nrm[1];
         }
-        const nz = pos.z + moveZ / steps;
-        if (!this.collidesAt(pos.x, nz) && canStand(pos.x, nz, Math.abs(moveZ / steps))) {
-          pos.z = nz;
-        } else {
-          this.velZ = 0;
+      };
+      for (let i = 0; i < steps; i++) {
+        // Live velocity per substep: after a clip, later substeps
+        // advance along the wall instead of retrying the blocked path
+        const sdx = this.velX * dtStep;
+        if (sdx !== 0) {
+          const nx = pos.x + sdx;
+          const nrm = this.collisionNormalAt(nx, pos.z);
+          if (nrm === null && canStand(nx, pos.z, Math.abs(sdx))) {
+            pos.x = nx;
+          } else if (nrm !== null) {
+            clipVelocity(nrm);
+          } else {
+            this.velX = 0; // cliff/step block: not a wall plane
+          }
+        }
+        const sdz = this.velZ * dtStep;
+        if (sdz !== 0) {
+          const nz = pos.z + sdz;
+          const nrm = this.collisionNormalAt(pos.x, nz);
+          if (nrm === null && canStand(pos.x, nz, Math.abs(sdz))) {
+            pos.z = nz;
+          } else if (nrm !== null) {
+            clipVelocity(nrm);
+          } else {
+            this.velZ = 0;
+          }
         }
         // Grounded feet track the surface between substeps so long slopes
         // accumulate correctly
@@ -1105,7 +1131,33 @@ export class GameEngine {
   }
 
   private collidesAt(x: number, z: number): boolean {
-    if (!this.world) return true;
+    return this.collisionNormalAt(x, z) !== null;
+  }
+
+  /** Outward push normal of the NEAREST blocking primitive at (x,z),
+   *  or null when the position is free. The normal is what the slide
+   *  response clips velocity against: for axis-aligned tile faces it
+   *  reproduces per-axis zeroing exactly; for contour segments it is
+   *  the segment's true normal, so diagonal walls glide instead of
+   *  stair-step catching (the "bounce outward in tunnels" feel). */
+  private collisionNormalAt(x: number, z: number): [number, number] | null {
+    if (!this.world) return [1, 0];
+    let bestD2 = Infinity;
+    let bestNx = 0;
+    let bestNz = 0;
+    let hit = false;
+    const consider = (d2: number, px: number, pz: number): void => {
+      // px/pz = closest point on the blocking primitive
+      hit = true;
+      if (d2 >= bestD2) return;
+      const dx = x - px;
+      const dz = z - pz;
+      const len = Math.hypot(dx, dz);
+      if (len < 1e-6) return; // penetrating dead-center: keep prior/fallback
+      bestD2 = d2;
+      bestNx = dx / len;
+      bestNz = dz / len;
+    };
     const feetY = this.gridCamera.position.y;
     const owner = this.currentOwner();
     const contour = owner >= 0 ? this.contours[owner] : undefined;
@@ -1157,7 +1209,8 @@ export class GameEngine {
             const closestZ = Math.max(tMinZ, Math.min(z, tMaxZ));
             const ddx = x - closestX;
             const ddz = z - closestZ;
-            if (ddx * ddx + ddz * ddz < r * r) return true;
+            const d2 = ddx * ddx + ddz * ddz;
+            if (d2 < r * r) consider(d2, closestX, closestZ);
           }
         }
         // Contour segments registered to this tile (exact visual walls)
@@ -1166,7 +1219,15 @@ export class GameEngine {
           for (const seg of segs) {
             if (seen.has(seg)) continue;
             seen.add(seg);
-            if (segmentDistSq(seg, x, z) < r * r) return true;
+            const d2 = segmentDistSq(seg, x, z);
+            if (d2 < r * r) {
+              // Closest point on the segment (mirrors segmentDistSq)
+              const sdx = seg.x1 - seg.x0;
+              const sdz = seg.z1 - seg.z0;
+              const ll = sdx * sdx + sdz * sdz || 1;
+              const t = Math.max(0, Math.min(1, ((x - seg.x0) * sdx + (z - seg.z0) * sdz) / ll));
+              consider(d2, seg.x0 + sdx * t, seg.z0 + sdz * t);
+            }
           }
         }
         // Roads contour bands (plinth cliffs, One Wall v2 slice 2):
@@ -1180,12 +1241,22 @@ export class GameEngine {
             if (seenRoads.has(seg)) continue;
             seenRoads.add(seg);
             if (feetY > seg.hi - 1.5) continue;
-            if (segmentDistSq(seg, x, z) < r * r) return true;
+            const d2 = segmentDistSq(seg, x, z);
+            if (d2 < r * r) {
+              const sdx = seg.x1 - seg.x0;
+              const sdz = seg.z1 - seg.z0;
+              const ll = sdx * sdx + sdz * sdz || 1;
+              const t = Math.max(0, Math.min(1, ((x - seg.x0) * sdx + (z - seg.z0) * sdz) / ll));
+              consider(d2, seg.x0 + sdx * t, seg.z0 + sdz * t);
+            }
           }
         }
       }
     }
-    return false;
+    if (!hit) return null;
+    // Dead-center penetration with no usable direction: arbitrary push
+    if (bestD2 === Infinity) return [1, 0];
+    return [bestNx, bestNz];
   }
 
   /** A jammed mantle launches instead of dropping: upward boost plus a
