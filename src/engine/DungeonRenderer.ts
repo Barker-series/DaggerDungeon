@@ -2552,6 +2552,23 @@ export class DungeonRenderer {
       const spans = world.columns[tz * w + tx]!;
       return !spans.some((sp) => sp.floor < hi - 0.05 && sp.ceil > lo + 0.05);
     };
+    /** A bore CEILING exists over this tile at ~top: the air span at
+     *  deck height closes bore-scale — the tile is genuinely INSIDE an
+     *  enclosed bore. Chamfer strips (top AND bottom) emit only where
+     *  this holds: a deck running alongside a wall under OPEN air has
+     *  nothing at `top` for the ceiling strip to meet (floating plates,
+     *  seed 1786394096046), and the floor strips there read as
+     *  open-ended wedges leaning on the wall. Edge covers belong to
+     *  tunnels; open causeways stay clean. */
+    const boreRoofed = (tx: number, tz: number, deckY: number, top: number): boolean => {
+      if (tx < 0 || tz < 0 || tx >= w || tz >= w) return false;
+      for (const sp of world.columns[tz * w + tx]!) {
+        if (sp.floor <= deckY + 0.5 && deckY + 0.5 <= sp.ceil) {
+          return sp.ceil <= top + 0.7;
+        }
+      }
+      return false;
+    };
 
     /** One chamfer strip segment: a quad from edge (a0->a1) to edge (b0->b1). */
     const strip = (
@@ -2590,11 +2607,13 @@ export class DungeonRenderer {
           const x1 = x0 + TILE_SIZE;
           const zLo = lowT.tz * TILE_SIZE;
           const zHi = (highT.tz + 1) * TILE_SIZE;
-          if (solidAcross(lowT.tx, lowT.tz - 1, h + 0.2, top - 0.2)) {
+          if (solidAcross(lowT.tx, lowT.tz - 1, h + 0.2, top - 0.2)
+            && boreRoofed(lowT.tx, lowT.tz, h, top)) {
             strip(x0, h, zLo + C, x1, h, zLo + C, x0, h + C, zLo, x1, h + C, zLo, 0, S, S);
             strip(x0, top, zLo + C, x1, top, zLo + C, x0, top - C, zLo, x1, top - C, zLo, 0, -S, S);
           }
-          if (solidAcross(highT.tx, highT.tz + 1, h + 0.2, top - 0.2)) {
+          if (solidAcross(highT.tx, highT.tz + 1, h + 0.2, top - 0.2)
+            && boreRoofed(highT.tx, highT.tz, h, top)) {
             strip(x0, h, zHi - C, x1, h, zHi - C, x0, h + C, zHi, x1, h + C, zHi, 0, S, -S);
             strip(x0, top, zHi - C, x1, top, zHi - C, x0, top - C, zHi, x1, top - C, zHi, 0, -S, -S);
           }
@@ -2603,11 +2622,13 @@ export class DungeonRenderer {
           const z1 = z0 + TILE_SIZE;
           const xLo = lowT.tx * TILE_SIZE;
           const xHi = (highT.tx + 1) * TILE_SIZE;
-          if (solidAcross(lowT.tx - 1, lowT.tz, h + 0.2, top - 0.2)) {
+          if (solidAcross(lowT.tx - 1, lowT.tz, h + 0.2, top - 0.2)
+            && boreRoofed(lowT.tx, lowT.tz, h, top)) {
             strip(xLo + C, h, z0, xLo + C, h, z1, xLo, h + C, z0, xLo, h + C, z1, S, S, 0);
             strip(xLo + C, top, z0, xLo + C, top, z1, xLo, top - C, z0, xLo, top - C, z1, S, -S, 0);
           }
-          if (solidAcross(highT.tx + 1, highT.tz, h + 0.2, top - 0.2)) {
+          if (solidAcross(highT.tx + 1, highT.tz, h + 0.2, top - 0.2)
+            && boreRoofed(highT.tx, highT.tz, h, top)) {
             strip(xHi - C, h, z0, xHi - C, h, z1, xHi, h + C, z0, xHi, h + C, z1, -S, S, 0);
             strip(xHi - C, top, z0, xHi - C, top, z1, xHi, top - C, z0, xHi, top - C, z1, -S, -S, 0);
           }

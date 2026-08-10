@@ -1,7 +1,9 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useMemo } from 'react';
 import { useGameStore } from '../store/gameStore';
-import { TileType } from '../game/types';
+import { TileType, TILE_SIZE } from '../game/types';
 import { sliceAt } from '../game/mapslice';
+import { buildOrganicContour } from '../game/dungeon/organiccontour';
+import { drawSmoothWallOverlay } from './mapContour';
 
 const MAP_SIZE = 140; // pixels
 const TILE_PX = 3; // pixels per tile on minimap
@@ -18,6 +20,8 @@ export function Minimap() {
   const playerPos = useGameStore((s) => s.playerPos);
   const playerY = useGameStore((s) => s.playerY);
   const playerYaw = useGameStore((s) => s.playerYaw);
+  // The same marching-squares contour the walls render and collide with
+  const contour = useMemo(() => (dungeon ? buildOrganicContour(dungeon) : null), [dungeon]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -73,6 +77,30 @@ export function Minimap() {
       }
     }
 
+    // ── Smooth walls: overlay the contour so map corners round exactly
+    // like the rendered geometry (same segments, cannot drift) ──
+    if (contour) {
+      const worldToPx = (wx: number, wz: number): [number, number] =>
+        [offsetX + (wx / TILE_SIZE) * TILE_PX, offsetY + (wz / TILE_SIZE) * TILE_PX];
+      const floorColorAt = (tx: number, tz: number): string | null => {
+        if (tx < 0 || tz < 0 || tx >= w || tz >= dungeon.height) return null;
+        const cell = sliceAt(world.columns[tz * w + tx]!, playerY);
+        if (cell.kind === 'walk') {
+          const dh = Math.max(-4, Math.min(4, cell.floor - playerY));
+          const v = Math.round(70 + dh * 8);
+          const tile = dungeon.tiles[tz]![tx]!;
+          if (tile === TileType.Door) return '#654';
+          if (tile === TileType.StairsDown) return '#3a3';
+          return `rgb(${v},${v},${v + 6})`;
+        }
+        if (cell.kind === 'abyss') return COLOR_ABYSS;
+        if (cell.kind === 'below') return COLOR_BELOW;
+        if (cell.kind === 'above') return COLOR_ABOVE;
+        return null; // solid at this height — square is honest here
+      };
+      drawSmoothWallOverlay(ctx, contour, dungeon, worldToPx, floorColorAt, '#000', MAP_SIZE, MAP_SIZE);
+    }
+
     // Draw player as a triangle pointing in look direction
     const ppx = MAP_SIZE / 2;
     const ppy = MAP_SIZE / 2;
@@ -96,7 +124,7 @@ export function Minimap() {
     ctx.lineTo(rightX, rightY);
     ctx.closePath();
     ctx.fill();
-  }, [world, dungeon, playerPos, playerY, playerYaw]);
+  }, [world, dungeon, contour, playerPos, playerY, playerYaw]);
 
   return (
     <canvas

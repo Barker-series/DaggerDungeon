@@ -1,8 +1,11 @@
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useMemo } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { tileBiome } from '../game/dungeon/cells';
 import { PIT_LEVEL } from '../game/dungeon/heightfield';
 import { sliceAt } from '../game/mapslice';
+import { TILE_SIZE } from '../game/types';
+import { buildOrganicContour } from '../game/dungeon/organiccontour';
+import { drawSmoothWallOverlay } from './mapContour';
 import { PILLAR_FACTOR } from '../game/dungeon/pillar-layer';
 import { regionAtCell, type RegionType } from '../game/dungeon/region-layer';
 
@@ -61,6 +64,8 @@ export function DebugMap() {
   const [visible, setVisible] = useState(false);
   const [mode, setMode] = useState<ViewMode>('slice');
   const dungeon = useGameStore((s) => s.dungeon);
+  // Marching-squares contour — the same lines the walls render/collide with
+  const contour = useMemo(() => (dungeon ? buildOrganicContour(dungeon) : null), [dungeon]);
   const world = useGameStore((s) => s.world);
   const spawnAbs = useGameStore((s) => s.spawnAbs);
   const playerPos = useGameStore((s) => s.playerPos);
@@ -160,6 +165,30 @@ export function DebugMap() {
         }
       }
 
+      // ── Smooth walls: contour overlay (same segments the world uses) ──
+      if (contour) {
+        const worldToPx = (wx: number, wz: number): [number, number] =>
+          [(wx / TILE_SIZE) * tilePx, (wz / TILE_SIZE) * tilePx];
+        const floorColorAt = (ftx: number, ftz: number): string | null => {
+          const col = world.columns[ftz * w + ftx];
+          if (!col) return null;
+          const cell = sliceAt(col, playerY);
+          if (cell.kind === 'walk') {
+            const dh = Math.max(-4, Math.min(4, cell.floor - playerY));
+            const v = Math.round(96 + dh * 12);
+            return `rgb(${v},${v},${v + 10})`;
+          }
+          if (cell.kind === 'abyss') return PIT_COLOR;
+          if (cell.kind === 'below') return '#1a2a3e';
+          if (cell.kind === 'above') return '#2a3a24';
+          return null;
+        };
+        drawSmoothWallOverlay(
+          ctx, contour, dungeon, worldToPx, floorColorAt, '#111',
+          dungeon.width * tilePx, dungeon.height * tilePx,
+        );
+      }
+
       for (const spec of world.pillars.values()) {
         if (!spec.elevator) continue;
         drawElevatorMarker(
@@ -244,6 +273,26 @@ export function DebugMap() {
           }
           ctx.fillRect(px, pz, tilePx, tilePx);
         }
+      }
+
+      // ── Smooth walls: contour overlay so map corners match the world ──
+      if (contour) {
+        const worldToPx = (wx: number, wz: number): [number, number] =>
+          [(wx / TILE_SIZE) * tilePx, (wz / TILE_SIZE) * tilePx];
+        const floorColorAt = (ftx: number, ftz: number): string | null => {
+          if (dungeon.floorHeights[ftz]?.[ftx] === undefined) return null;
+          if (dungeon.floorHeights[ftz]![ftx]! <= PIT_LEVEL) return PIT_COLOR;
+          if (mode === 'biome') {
+            const biome = tileBiome(dungeon.cellBiomes, ftx, ftz) ?? 'dungeon';
+            return BIOME_COLORS[biome] ?? '#2a5a8a';
+          }
+          return '#3a5a3a';
+        };
+        const wallColor = mode === 'biome' ? '#0a0a0a' : '#1a1a1a';
+        drawSmoothWallOverlay(
+          ctx, contour, dungeon, worldToPx, floorColorAt, wallColor,
+          dungeon.width * tilePx, dungeon.height * tilePx,
+        );
       }
 
       // Draw cell grid lines
@@ -529,7 +578,7 @@ export function DebugMap() {
       ctx.fillText(`${key}: ${val}`, legendX, ly);
       ly += 16;
     }
-  }, [visible, mode, dungeon, world, spawnAbs, playerPos, playerY, currentLevel]);
+  }, [visible, mode, dungeon, world, contour, spawnAbs, playerPos, playerY, currentLevel]);
 
   if (!visible) return null;
 
