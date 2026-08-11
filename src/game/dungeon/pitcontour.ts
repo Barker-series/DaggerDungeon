@@ -11,8 +11,10 @@
  * Erosion never ADDS floor over a hole, so collision agreement is one
  * rule: a position on the pit side of its tile's rim segment has no
  * ground (you fall exactly where the hole is drawn) — never the
- * reverse. Deck/causeway tiles (pit on opposite sides) never cut:
- * narrow crossings stay square and fully standable.
+ * reverse. Decks/causeways SMOOTH like everything else (a diagonal
+ * bridge's side is a straight 45° line, not a staircase); their cliff
+ * bands are clipped renderer-side at arch-void ceilings so they never
+ * hang through the open air carved under a deck.
  *
  * Effect distance: one tile (2x2 groups) — window-stable by the same
  * argument as the organic contour.
@@ -83,26 +85,13 @@ export function buildPitContour(dungeon: DungeonData): PitContour {
     tx >= 0 && tz >= 0 && tx < w && tz < h
     && dungeon.tiles[tz]![tx] !== TileType.Wall
     && dungeon.floorHeights[tz]![tx]! > PIT_LEVEL;
-  /** Deck/causeway/ARCH candidate: pit within reach on both sides of
-   *  an axis (the same criterion levelPitDecks/carvePitArches use, span
-   *  12). These tiles are never cut: decks must stay fully standable,
-   *  and arch-carved columns hold under-voids the rim band would slice
-   *  through (its back showing under the arch). */
-  const ARCH_SPAN = 12;
-  const pitWithin = (tx: number, tz: number, dx: number, dz: number): boolean => {
-    for (let i = 1; i <= ARCH_SPAN; i++) {
-      const nx = tx + dx * i;
-      const nz = tz + dz * i;
-      if (nx < 0 || nz < 0 || nx >= w || nz >= h) return false;
-      if (dungeon.tiles[nz]![nx] === TileType.Wall) return false;
-      if (isPit(nx, nz)) return true;
-    }
-    return false;
-  };
-  const isDeck = (tx: number, tz: number): boolean =>
-    isFloor(tx, tz)
-    && ((pitWithin(tx, tz, -1, 0) && pitWithin(tx, tz, 1, 0))
-      || (pitWithin(tx, tz, 0, -1) && pitWithin(tx, tz, 0, 1)));
+  /** THIN pit: a slot one tile wide (floor on both opposite sides).
+   *  Smoothing a slot fans opposing rim wedges into each other —
+   *  slots stay square. */
+  const isThinPit = (tx: number, tz: number): boolean =>
+    isPit(tx, tz)
+    && ((isFloor(tx - 1, tz) && isFloor(tx + 1, tz))
+      || (isFloor(tx, tz - 1) && isFloor(tx, tz + 1)));
 
   const register = (tx: number, tz: number, seg: ContourSegment): void => {
     if (tx < 0 || tz < 0 || tx >= w || tz >= h) return;
@@ -135,6 +124,9 @@ export function buildPitContour(dungeon: DungeonData): PitContour {
       if (!cut && !fill) continue;
       // Every non-floor tile must be a genuine pit
       if ((!tl && !pTL) || (!tr && !pTR) || (!bl && !pBL) || (!br && !pBR)) continue;
+      // Thin-slot pits decline the whole group
+      if ((pTL && isThinPit(tx, tz)) || (pTR && isThinPit(tx + 1, tz))
+        || (pBL && isThinPit(tx, tz + 1)) || (pBR && isThinPit(tx + 1, tz + 1))) continue;
 
       const cx = (tx + 1) * s;
       const cz = (tz + 1) * s;
@@ -147,7 +139,6 @@ export function buildPitContour(dungeon: DungeonData): PitContour {
       if (cut) {
         const ftx = tx + (cut.floorTile % 2);
         const ftz = tz + (cut.floorTile >= 2 ? 1 : 0);
-        if (isDeck(ftx, ftz)) continue;
         const p0 = edgeMid[cut.seg[0]]!;
         const p1 = edgeMid[cut.seg[1]]!;
         const seg: ContourSegment = { x0: p0[0], z0: p0[1], x1: p1[0], z1: p1[1], gx: tx, gz: tz };

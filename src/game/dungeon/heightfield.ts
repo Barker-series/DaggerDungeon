@@ -42,6 +42,38 @@ export function buildCornerField(
     Array.from({ length: width + 1 }, () => fallback),
   );
 
+  // ── PIT-DECK DOMINANCE ── Land strips crossing pits (the arch decks
+  // and causeways) are STRUCTURE, not rolling terrain: corner-blending
+  // them with lower banks sagged the walk surface (the "dips when
+  // crossing bridges" feel). Same doctrine as pillar foundations: the
+  // deck stays dead flat, the banks bend to meet it. Detected here so
+  // every consumer of the corner field (engine ground, renderer floors,
+  // tools) agrees by construction. Criterion mirrors levelPitDecks:
+  // pit within reach on both sides of an axis along a walkable run.
+  const DECK_SPAN = 12;
+  const pitWithin = (tx: number, ty: number, dx: number, dy: number): boolean => {
+    for (let i = 1; i <= DECK_SPAN; i++) {
+      const nx = tx + dx * i;
+      const ny = ty + dy * i;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) return false;
+      if (tiles[ny]![nx] === TileType.Wall) return false;
+      if (values[ny]![nx]! <= PIT_LEVEL) return true;
+    }
+    return false;
+  };
+  const deck: boolean[][] = Array.from({ length: height }, () => new Array(width).fill(false) as boolean[]);
+  for (let ty = 0; ty < height; ty++) {
+    for (let tx = 0; tx < width; tx++) {
+      if (tiles[ty]![tx] === TileType.Wall) continue;
+      if (values[ty]![tx]! <= PIT_LEVEL) continue;
+      // Only tiles actually adjacent-or-near pits qualify; interior
+      // terrain far from any pit never becomes structural
+      if ((pitWithin(tx, ty, -1, 0) && pitWithin(tx, ty, 1, 0))
+        || (pitWithin(tx, ty, 0, -1) && pitWithin(tx, ty, 0, 1))) {
+        deck[ty]![tx] = true;
+      }
+    }
+  }
   for (let cy = 0; cy <= height; cy++) {
     for (let cx = 0; cx <= width; cx++) {
       let sum = 0;
@@ -51,7 +83,7 @@ export function buildCornerField(
       let pitMin = Infinity;
       for (const [tx, ty] of [[cx - 1, cy - 1], [cx, cy - 1], [cx - 1, cy], [cx, cy]]) {
         if (tx! < 0 || ty! < 0 || tx! >= width || ty! >= height) continue;
-        const struct = extraFloor?.[ty!]?.[tx!] ?? false;
+        const struct = (extraFloor?.[ty!]?.[tx!] ?? false) || deck[ty!]![tx!]!;
         if (tiles[ty!]![tx!] === TileType.Wall && !struct) continue;
         const v = values[ty!]![tx!]!;
         if (v <= PIT_LEVEL) {
