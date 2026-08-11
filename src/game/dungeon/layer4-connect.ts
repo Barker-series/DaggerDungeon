@@ -36,20 +36,18 @@ import { RoomType, TileType, type GridPos, type RoomData } from '../types';
 import { cellSeed, mulberry32 } from './rng';
 import { sampleNoise } from './noise';
 import { PILLAR_CELL_TILES } from './pillar-layer';
+import { TUNABLES } from './tunables';
 
 const TRANSIT_SALT = 0x4d335431;
 const HALLWAY_HALF_WIDTH = 1;
 const SOCKET_MARGIN = 6;
 
 // ── Route-shaping tuning ──
-/** How strongly the wander field bends a route (step cost 1..1+W) */
-const NOISE_WEIGHT = 2.5;
+// E3-tunable: TUNABLES.transitNoiseWeight
 /** Wander feature size in tiles */
 const NOISE_SCALE = 9;
-/** Cost added when a step changes direction — buys straight runs */
-const TURN_PENALTY = 2.0;
-/** Step-cost multiplier on existing transit — routes merge into tunnels */
-const REUSE_DISCOUNT = 0.3;
+// E3-tunable: TUNABLES.transitTurnPenalty
+// E3-tunable: TUNABLES.transitReuseDiscount
 const WANDER_SALT = TRANSIT_SALT + 77;
 
 /** Dungeon-cell keys touched by transit, consumed by the debug map. */
@@ -168,7 +166,7 @@ function findWeightedRoute(ctx: CellCtx, from: GridPos, to: GridPos): GridPos[] 
   const cameFrom = new Int32Array(states).fill(-1);
   const stateOf = (x: number, z: number, dir: number): number =>
     ((z - z0) * w + (x - x0)) * 9 + dir;
-  const minStep = REUSE_DISCOUNT;
+  const minStep = TUNABLES.transitReuseDiscount;
 
   // Binary min-heap of [f, state]
   const heap: number[] = [];
@@ -234,9 +232,9 @@ function findWeightedRoute(ctx: CellCtx, from: GridPos, to: GridPos): GridPos[] 
       const nz = z + MOVES[d]![1];
       if (nx < x0 || nz < z0 || nx >= x1 || nz >= z1 || locked?.[nz]?.[nx]) continue;
       const onTransit = permanentTransitTiles.has(`${nx},${nz}`);
-      let step = MOVE_COST[d]! * (1 + NOISE_WEIGHT * wander[(nz - z0) * w + (nx - x0)]!)
-        * (onTransit ? REUSE_DISCOUNT : 1);
-      if (dir !== 8) step += TURN_PENALTY * TURN_FACTOR[dir]![d]!;
+      let step = MOVE_COST[d]! * (1 + TUNABLES.transitNoiseWeight * wander[(nz - z0) * w + (nx - x0)]!)
+        * (onTransit ? TUNABLES.transitReuseDiscount : 1);
+      if (dir !== 8) step += TUNABLES.transitTurnPenalty * TURN_FACTOR[dir]![d]!;
       const ns = stateOf(nx, nz, d);
       const ng = g + step;
       if (ng >= gScore[ns]!) continue;

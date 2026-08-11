@@ -3,7 +3,8 @@
 // layer grids persist across requests in this worker — a recenter
 // only generates the chunks the previous windows didn't cover
 // (~3-4x faster warm), and a revisited window is nearly free.
-import { generateWorldChunked } from './gen/assemble';
+import { generateWorldChunked, resetGenState, type GenResetLevel } from './gen/assemble';
+import { applyTunables, type Tunables } from './dungeon/tunables';
 
 export interface WorldWorkerRequest {
   key: string;
@@ -13,8 +14,22 @@ export interface WorldWorkerRequest {
   originPcz: number;
 }
 
-self.onmessage = (event: MessageEvent<WorldWorkerRequest>) => {
-  const request = event.data;
+/** E3: push new generation tunables; the worker drops every cached
+ *  chunk (mixed-config chunks side by side would be a seam machine). */
+export interface TunablesMessage {
+  type: 'tunables';
+  values: Partial<Tunables>;
+  /** Shallowest dirty layer — everything above stays cached */
+  resetFrom: GenResetLevel;
+}
+
+self.onmessage = (event: MessageEvent<WorldWorkerRequest | TunablesMessage>) => {
+  if ('type' in event.data && event.data.type === 'tunables') {
+    applyTunables(event.data.values);
+    resetGenState(event.data.resetFrom);
+    return;
+  }
+  const request = event.data as WorldWorkerRequest;
   const started = performance.now();
   const world = generateWorldChunked(request);
   self.postMessage({

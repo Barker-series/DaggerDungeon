@@ -1099,3 +1099,31 @@ html, body, #root {
   padding: 4px 8px;
   border-radius: 2px;
 }
+
+.pause-settings-button {
+  margin-top: 24px;
+  padding: 8px 26px;
+  font: inherit;
+  font-size: 14px;
+  letter-spacing: 2px;
+  color: #d4a44a;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(212, 164, 74, 0.5);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.pause-settings-button:hover {
+  background: rgba(212, 164, 74, 0.15);
+}
+
+/* Editor mode keeps the mouse free for the HUD — tiny non-blocking hint */
+.editor-mouse-hint {
+  position: fixed;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  pointer-events: none;
+  color: #4a8a9a;
+}

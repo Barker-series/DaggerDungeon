@@ -298,6 +298,9 @@ export class DungeonRenderer {
   private chunkWorld: WorldData | null = null;
   /** seed:stack of the adopted world — a change invalidates every chunk */
   private chunkStamp = '';
+  /** Bumped when generation CONFIG changes (E3 tunables): same seed,
+   *  different world — every cached chunk is stale. */
+  private configEpoch = 0;
   private chunkCtx: { cornerFloors: number[][][]; contours: Contour[]; roadsContour: RoadsContour } | null = null;
   /** Set when the chunk set was wiped (first load, seed/stack change):
    *  the next updateChunks call builds synchronously so no empty frame
@@ -381,8 +384,12 @@ export class DungeonRenderer {
    * tools/verify-world.ts): every window builds bit-identical geometry
    * for a given absolute cell, so every existing chunk survives a
    * recenter untouched — only its scene offset shifts. */
+  bumpConfigEpoch(): void {
+    this.configEpoch++;
+  }
+
   setWindow(world: WorldData): void {
-    const stamp = `${world.seed}:${world.levels[0]?.floor ?? 0}`;
+    const stamp = `${world.seed}:${world.levels[0]?.floor ?? 0}:${this.configEpoch}`;
     if (stamp !== this.chunkStamp) this.clearChunks();
     this.chunkStamp = stamp;
     this.chunkWorld = world;

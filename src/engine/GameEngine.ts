@@ -11,6 +11,7 @@ import { spanAt } from '../game/dungeon/columns';
 import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
 import { buildRoadsContour, type RoadsContour } from '../game/dungeon/roadscontour';
 import { tileBiome, tileCrest, CELL_TILE_SIZE } from '../game/dungeon/cells';
+import { applyTunables, dirtyLevelFor, TUNABLES, type Tunables } from '../game/dungeon/tunables';
 import { sliceAt } from '../game/mapslice';
 import { DungeonBot } from '../bot/DungeonBot';
 import { useGameStore } from '../store/gameStore';
@@ -162,6 +163,11 @@ export class GameEngine {
   editorReturn: string | null = null;
   private editorGridOn = false;
   private editorGridGroup: THREE.Group | null = null;
+  /** E3: a tunables rebuild of the current window is in flight */
+  private tunablesRebuildPending = false;
+  private tunablesEpoch = 0;
+  /** The exact request key we await; stale-epoch results are dropped */
+  private awaitedTunablesKey: string | null = null;
   /** E2 selection highlight (triangle overlays + tile boxes) */
   private editorSelGroup: THREE.Group | null = null;
   /** LMB held in editor mode: sweep the crosshair to paint-select */
@@ -446,6 +452,51 @@ export class GameEngine {
       cam.position.z += vz * k;
     }
     this.isGrounded = false;
+  }
+
+  /** E3: apply new generation tunables everywhere they generate (this
+   *  thread's legacy fallback AND the worker's chunked layers), drop
+   *  every cached window, and rebuild the current one off-thread. The
+   *  window adopts when the worker delivers (deferred adoption — no
+   *  frame hitch; the HUD shows a regenerating flag meanwhile). */
+  private consumeEditorTunables(store: ReturnType<typeof useGameStore.getState>): void {
+    const values = store.editorTunables;
+    if (values) {
+      store.requestEditorTunables(null);
+      // Only genuinely-changed keys drive invalidation depth
+      const changed = (Object.keys(values) as (keyof Tunables)[])
+        .filter((k) => typeof values[k] === 'number' && TUNABLES[k] !== values[k]);
+      if (changed.length === 0) return;
+      const resetFrom = dirtyLevelFor(changed);
+      applyTunables(values);
+      this.worldWorker.postMessage({ type: 'tunables', values, resetFrom });
+      this.worldCache.clear();
+      this.pendingWorlds.clear();
+      const stack = store.currentFloor;
+      // Epoch-suffixed request key: results generated under OLD
+      // tunables (posted before this change) can never adopt
+      this.tunablesEpoch++;
+      const key = `${this.worldKey(stack, this.originPcx, this.originPcz)}#t${this.tunablesEpoch}`;
+      this.awaitedTunablesKey = key;
+      this.worldWorker.postMessage({
+        key, seed: this.seed, stack,
+        originPcx: this.originPcx, originPcz: this.originPcz,
+      });
+      this.tunablesRebuildPending = true;
+      store.setEditorRegenerating(true);
+    }
+    if (this.tunablesRebuildPending) {
+      const stack = store.currentFloor;
+      const key = this.worldKey(stack, this.originPcx, this.originPcz);
+      if (this.worldCache.has(key)) {
+        this.tunablesRebuildPending = false;
+        // Same seed, different generation config: every rendered chunk
+        // is stale — bump the epoch so adoption rebuilds them all
+        this.dungeonRenderer.bumpConfigEpoch();
+        this.buildWindow(stack);
+        store.setEditorRegenerating(false);
+      }
+    }
   }
 
   /** Consume a DDSNAP teleport request from the HUD. Same-window jumps
@@ -741,6 +792,18 @@ export class GameEngine {
     this.pendingWorlds.delete(key);
     // A seed can change while either worker is finishing an old request.
     if (!key.startsWith(`${this.seed}:`)) return;
+    // E3 tunables rebuilds: only the awaited epoch may land; results
+    // from superseded epochs are discarded outright
+    if (key.includes('#t')) {
+      if (key !== this.awaitedTunablesKey) return;
+      this.awaitedTunablesKey = null;
+      const baseKey = key.slice(0, key.indexOf('#t'));
+      this.worldCache.set(baseKey, world);
+      if (import.meta.env.DEV) {
+        console.debug(`[ddkit] tunables window regenerated in ${generationMs.toFixed(1)} ms`);
+      }
+      return;
+    }
     this.worldCache.delete(key);
     this.worldCache.set(key, world);
     while (this.worldCache.size > this.maxCachedWorlds) {
@@ -1104,6 +1167,7 @@ export class GameEngine {
     this.movers?.update(dt);
     if (this.editorMode) {
       this.consumeEditorTeleport(store);
+      this.consumeEditorTunables(store);
       this.processEditorMovement(dt);
       // Drag-select: while LMB is held, every face the crosshair
       // sweeps over joins the selection (never toggles off mid-drag)

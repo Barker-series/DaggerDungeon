@@ -22,6 +22,7 @@
   "author": "",
   "license": "SEE LICENSE IN LICENSE.txt",
   "devDependencies": {
+    "@tweakpane/core": "^2.0.5",
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",
     "@types/three": "^0.183.1",
@@ -38,6 +39,7 @@
     "react-dom": "^18.3.1",
     "rot-js": "^2.2.1",
     "three": "0.183.2",
+    "tweakpane": "^4.0.5",
     "zustand": "5.0.3"
   },
   "pnpm": {

@@ -47,6 +47,28 @@ interface GenState {
 
 let state: GenState | null = null;
 
+/** E3: generation config changed. `from` names the shallowest dirty
+ *  layer — it and everything downstream drop their chunks; layers
+ *  above it stay cached (transit routing is the expensive pass, and a
+ *  pit-size tweak has no business recomputing it). */
+export type GenResetLevel = 'all' | 'tileBase' | 'transit' | 'height';
+
+export function resetGenState(from: GenResetLevel = 'all'): void {
+  if (!state || from === 'all' || from === 'tileBase') {
+    state = null;
+    return;
+  }
+  if (from === 'transit') {
+    state.transit.clearAll();
+    state.height.clearAll();
+    state.column.clearAll();
+    return;
+  }
+  // from === 'height'
+  state.height.clearAll();
+  state.column.clearAll();
+}
+
 function layersFor(seed: number, stack: number): GenState {
   const key = `${seed}:${stack}`;
   if (state && state.key === key) return state;

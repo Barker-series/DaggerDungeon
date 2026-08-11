@@ -5,11 +5,13 @@
  * (F6, dev builds / ?editor=1).
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Pane } from 'tweakpane';
 import { useGameStore } from '../store/gameStore';
 import { tileBiome, tileCrest, CELL_TILE_SIZE } from '../game/dungeon/cells';
 import { TILE_SIZE } from '../game/types';
 import { copyText } from '../utils/copyText';
+import { TUNABLES, TUNABLE_DEFS, tunablesSnapshot, resetTunables, type Tunables } from '../game/dungeon/tunables';
 
 const PC_TILES = 56;
 
@@ -57,6 +59,45 @@ export function EditorHUD({ getSnap, getReturnSnap }: {
   const playerPos = useGameStore((s) => s.playerPos);
   const playerY = useGameStore((s) => s.playerY);
   const [pasteText, setPasteText] = useState('');
+  const [showTunables, setShowTunables] = useState(false);
+  const regenTimer = useRef<number | null>(null);
+  const paneHost = useRef<HTMLDivElement>(null);
+  const requestTunables = useGameStore((s) => s.requestEditorTunables);
+  const regenerating = useGameStore((s) => s.editorRegenerating);
+
+  // Tweakpane over the live TUNABLES object: draggable value fields
+  // (drag = coarse, click+type = exact), folders per group. Changes
+  // debounce into a regen request.
+  useEffect(() => {
+    if (!editorActive || !paneHost.current) return;
+    const params: Tunables = tunablesSnapshot();
+    const pane = new Pane({ container: paneHost.current });
+    const schedule = (): void => {
+      if (regenTimer.current !== null) window.clearTimeout(regenTimer.current);
+      regenTimer.current = window.setTimeout(() => {
+        requestTunables({ ...params });
+      }, 250);
+    };
+    const groups = [...new Set(TUNABLE_DEFS.map((d) => d.group))];
+    for (const g of groups) {
+      const folder = pane.addFolder({ title: g, expanded: g === 'crest' });
+      for (const def of TUNABLE_DEFS.filter((d) => d.group === g)) {
+        folder.addBinding(params, def.key, {
+          label: def.label, min: def.min, max: def.max, step: def.step,
+        }).on('change', schedule);
+      }
+    }
+    pane.addButton({ title: 'reset defaults' }).on('click', () => {
+      resetTunables();
+      Object.assign(params, tunablesSnapshot());
+      pane.refresh();
+      requestTunables({ ...params });
+    });
+    pane.addButton({ title: 'copy values' }).on('click', () => {
+      void copyText(JSON.stringify(TUNABLES, null, 2));
+    });
+    return () => pane.dispose();
+  }, [editorActive, requestTunables]);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(loadBookmarks);
   const selection = useGameStore((s) => s.editorSelection);
 
@@ -145,6 +186,12 @@ export function EditorHUD({ getSnap, getReturnSnap }: {
             <button onClick={() => saveBookmarks(bookmarks.filter((_, j) => j !== i))}>×</button>
           </div>
         ))}
+      </div>
+      <div style={{ marginTop: 6 }}>
+        <button onClick={() => setShowTunables(!showTunables)}>
+          {showTunables ? '▾' : '▸'} gen tunables{regenerating ? ' — regenerating…' : ''}
+        </button>
+        <div ref={paneHost} style={{ marginTop: 4, display: showTunables ? 'block' : 'none' }} />
       </div>
       {selection && (
         <div style={{ marginTop: 6, borderTop: '1px solid #345', paddingTop: 4 }}>

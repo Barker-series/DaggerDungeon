@@ -25,14 +25,14 @@ import { TileType, type GridPos } from '../types';
 import { PIT_LEVEL } from './heightfield';
 import { getCell, isOrganicBiome, CELL_TILE_SIZE, type BiomeType } from './cells';
 import { sampleNoise, sampleNoise3D } from './noise';
+import { TUNABLES } from './tunables';
 import { windowOrigin } from './cells';
 
 const TUNNEL_CLEARANCE = 3.5;
 const HEIGHT_STEP = 0.5; // built-biome clearances quantize to this
 const FLOOR_SMOOTH_PASSES = 2;
 
-const FLOOR_SWELL_SCALE = 9; // tiles per rolling-floor feature
-const PIT_SCALE = 14; // tiles per hole feature
+// E3-tunable: TUNABLES.floorSwellScale / TUNABLES.pitScale (read at sample time)
 export const PIT_FLOOR = -1000; // hole sentinel: no floor slab at this tile
 
 const CEIL_SWELL_SCALE = 14;
@@ -46,18 +46,11 @@ export const CREST_MODULE = 6;
 // tail climbs into the distance fog. Walls and supertowers (pillar
 // tail ~348) become one skyline family. Closure faces seal every
 // crest step by construction, so any height is seam-legal. ──
-/** Cells per tall-district feature (clusters, not random spikes) */
-const CREST_TALL_SCALE = 4;
-/** Field value where the boost starts (top ~30% of cells) */
-const CREST_TALL_THRESHOLD = 0.7;
-/** BLAME! scale: the base crest range is multiplied by this — from
- *  the ground, outside walls have NO visible top; crowns exist only
- *  from supertower summits and deep district vantages. */
-const CREST_BASE_SCALE = 10;
-/** Max added crest height at the field peak (tall districts reach
- *  ~5100). The render sky clip (RENDER_SKY_TOP) sits above the max
- *  possible crest — that pairing is asserted renderer-side. */
-const CREST_TALL_BOOST = 4200;
+// E3-tunable: TUNABLES.crestTallScale / crestTallThreshold
+// E3-tunable: TUNABLES.crestBaseScale (BLAME! scale — from the ground,
+// outside walls have no visible top at the default 10)
+// E3-tunable: TUNABLES.crestTallBoost (render sky clip must clear the
+// max crest — asserted renderer-side)
 /** What may be WRITTEN into outside floor tiles' ceilingHeights: the
  *  >=100 sky-filler sentinel is a data-format constraint (segment
  *  group verdicts, trim span checks key on it). The TRUE crest lives
@@ -67,8 +60,7 @@ const CEIL_DETAIL_SCALE = 4;
 
 // Cave-mouth sweep: interior ceilings within this many tiles of an
 // outside region rise toward it
-const MOUTH_RANGE = 4;
-const MOUTH_RISE = 16;
+// E3-tunable: TUNABLES.mouthRange / TUNABLES.mouthRise
 
 interface BiomeHeightProfile {
   rollAmp: number; // rolling detail amplitude — always walkable, never a wall
@@ -115,15 +107,15 @@ export function cellCrest(acx: number, acz: number, worldSeed: number): number {
   const heightSeed = worldSeed + 4242;
   const p = PROFILES.outside;
   const cellNoise = sampleNoise(acx, acz, heightSeed + 7, 2);
-  const raw = (p.clearMin + cellNoise * (p.clearMax - p.clearMin)) * CREST_BASE_SCALE;
+  const raw = (p.clearMin + cellNoise * (p.clearMax - p.clearMin)) * TUNABLES.crestBaseScale;
   const ccx = (acx + 0.5) * CELL_TILE_SIZE;
   const ccz = (acz + 0.5) * CELL_TILE_SIZE;
-  const cellGround = sampleNoise(ccx, ccz, heightSeed + 55, FLOOR_SWELL_SCALE) * p.rollAmp;
+  const cellGround = sampleNoise(ccx, ccz, heightSeed + 55, TUNABLES.floorSwellScale) * p.rollAmp;
   const base = Math.ceil((cellGround + raw) / CREST_MODULE) * CREST_MODULE;
   // Heavy tail: clustered tall districts, quadratic ramp
-  const tall = sampleNoise(acx, acz, heightSeed + 313, CREST_TALL_SCALE);
-  const t = Math.min(1, Math.max(0, (tall - CREST_TALL_THRESHOLD) / (1 - CREST_TALL_THRESHOLD)));
-  const boost = Math.ceil((t * t * CREST_TALL_BOOST) / CREST_MODULE) * CREST_MODULE;
+  const tall = sampleNoise(acx, acz, heightSeed + 313, TUNABLES.crestTallScale);
+  const t = Math.min(1, Math.max(0, (tall - TUNABLES.crestTallThreshold) / (1 - TUNABLES.crestTallThreshold)));
+  const boost = Math.ceil((t * t * TUNABLES.crestTallBoost) / CREST_MODULE) * CREST_MODULE;
   return base + boost;
 }
 
@@ -168,7 +160,7 @@ export function computePitMask(
       if (!biome) continue;
       const p = PROFILES[biome];
       if (p.pitThreshold <= 0 || isSafe(tx, tz)) continue;
-      const voidNoise = sampleNoise3D((windowOrigin().ocx * 14 + tx) / PIT_SCALE, 0, (windowOrigin().ocz * 14 + tz) / PIT_SCALE, voidSeed);
+      const voidNoise = sampleNoise3D((windowOrigin().ocx * 14 + tx) / TUNABLES.pitScale, 0, (windowOrigin().ocz * 14 + tz) / TUNABLES.pitScale, voidSeed);
       if (voidNoise < p.pitThreshold) mask[tz]![tx] = true;
     }
   }
@@ -265,7 +257,7 @@ export function computeHeightFields(
       }
       const biome = biomeAt(tx, tz);
       if (!biome || !isOrganicBiome(biome)) continue; // built floors stay flat between breaches
-      const swell = sampleNoise(windowOrigin().ocx * 14 + tx, windowOrigin().ocz * 14 + tz, heightSeed + 55, FLOOR_SWELL_SCALE);
+      const swell = sampleNoise(windowOrigin().ocx * 14 + tx, windowOrigin().ocz * 14 + tz, heightSeed + 55, TUNABLES.floorSwellScale);
       floor[tz]![tx] = swell * PROFILES[biome].rollAmp;
     }
   }
@@ -520,7 +512,7 @@ function applyMouthSweep(
     }
   }
 
-  for (let d = 1; d <= MOUTH_RANGE && frontier.length > 0; d++) {
+  for (let d = 1; d <= TUNABLES.mouthRange && frontier.length > 0; d++) {
     const next: GridPos[] = [];
     for (const cur of frontier) {
       for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
@@ -531,7 +523,7 @@ function applyMouthSweep(
         if (biomeAt(nx, nz) === 'outside') continue;
         dist.set(k, d);
         next.push({ x: nx, y: nz });
-        const rise = MOUTH_RISE * (1 - d / (MOUTH_RANGE + 1));
+        const rise = TUNABLES.mouthRise * (1 - d / (TUNABLES.mouthRange + 1));
         ceiling[nz]![nx] = Math.max(ceiling[nz]![nx]!, floor[nz]![nx]! + TUNNEL_CLEARANCE + rise);
       }
     }

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { Direction, type GridPos, type DungeonData, type WorldData } from '../game/types';
+import type { Tunables } from '../game/dungeon/tunables';
 
 export interface GameState {
   // ── Screen ──
@@ -46,6 +47,10 @@ export interface GameState {
   /** E2 provenance selection: the full copyable report and the short
    *  lines the HUD displays. Null = nothing selected. */
   editorSelection: { report: string; summary: string[] } | null;
+  /** E3: pending tunables change the engine consumes next frame */
+  editorTunables: Partial<Tunables> | null;
+  /** E3: true while the window is regenerating after a tunables change */
+  editorRegenerating: boolean;
 
   // ── Actions ──
   setScreen: (s: GameState['screen']) => void;
@@ -64,6 +69,8 @@ export interface GameState {
   setEditorSpeed: (speed: number) => void;
   requestEditorTeleport: (snap: string | null) => void;
   setEditorSelection: (sel: { report: string; summary: string[] } | null) => void;
+  requestEditorTunables: (values: Partial<Tunables> | null) => void;
+  setEditorRegenerating: (on: boolean) => void;
   startRun: () => void;
   resetRun: () => void;
 }
@@ -86,6 +93,8 @@ export const useGameStore = create<GameState>((set) => ({
   editorSpeed: 24,
   editorTeleport: null,
   editorSelection: null,
+  editorTunables: null,
+  editorRegenerating: false,
 
   setScreen: (screen) => set({ screen }),
   setSeed: (seed) => set({ seed }),
@@ -105,6 +114,8 @@ export const useGameStore = create<GameState>((set) => ({
   setEditorSpeed: (editorSpeed) => set({ editorSpeed }),
   requestEditorTeleport: (editorTeleport) => set({ editorTeleport }),
   setEditorSelection: (editorSelection) => set({ editorSelection }),
+  requestEditorTunables: (editorTunables) => set({ editorTunables }),
+  setEditorRegenerating: (editorRegenerating) => set({ editorRegenerating }),
 
   startRun: () =>
     set({

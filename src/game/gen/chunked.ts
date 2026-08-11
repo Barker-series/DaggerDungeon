@@ -95,6 +95,11 @@ export abstract class ChunkedLayer<T> {
     return this.chunks.size;
   }
 
+  /** Drop every chunk (generation config changed for this layer). */
+  clearAll(): void {
+    this.chunks.clear();
+  }
+
   protected abstract create(cx: number, cz: number): T;
 }
 

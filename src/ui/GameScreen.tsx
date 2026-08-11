@@ -157,11 +157,11 @@ export function GameScreen() {
         engineRef.current?.setPaused(false);
         return;
       }
+      // Escape only ever CLOSES the settings menu (opening lives on the
+      // pause screen's Settings button — double-Escape surprise removed)
       setSettingsOpen((open) => {
-        const next = !open;
-        engineRef.current?.setPaused(next);
-        if (next && document.pointerLockElement) document.exitPointerLock();
-        return next;
+        if (open) engineRef.current?.setPaused(false);
+        return false;
       });
     };
     window.addEventListener('keydown', onEscape);
@@ -227,20 +227,38 @@ export function GameScreen() {
   }, [handlePlayClick, pointerLockUnavailable, setPaused]);
 
   const screen = useGameStore((s) => s.screen);
+  const editorActive = useGameStore((s) => s.editorActive);
   if (screen !== 'playing') return null;
 
   return (
     <div className="game-screen">
-      <canvas ref={canvasRef} className="game-canvas" />
+      <canvas ref={canvasRef} className="game-canvas" onClick={editorActive && !pointerLocked ? handlePlayClick : undefined} />
 
-      {/* Click-to-play overlay when pointer not locked */}
-      {!settingsOpen && !visualLabOpen && !pointerLocked && !pointerLockUnavailable && (
+      {/* Click-to-play overlay when pointer not locked. In EDITOR mode
+          the mouse is meant to be free for the HUD — no overlay; click
+          the world itself to recapture mouse look. */}
+      {!settingsOpen && !visualLabOpen && !pointerLocked && !pointerLockUnavailable && !editorActive && (
         <div
           className="pointer-lock-overlay"
           onClick={handlePlayClick}
         >
           <div className="pointer-lock-prompt">Click to Play</div>
           <div className="pointer-lock-hint">Escape to release mouse</div>
+          <button
+            type="button"
+            className="pause-settings-button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setPaused(true);
+            }}
+          >
+            Settings
+          </button>
+        </div>
+      )}
+      {!settingsOpen && !visualLabOpen && !pointerLocked && !pointerLockUnavailable && editorActive && (
+        <div className="pointer-lock-hint editor-mouse-hint">
+          mouse free — click the world to capture look
         </div>
       )}
       {!settingsOpen && !visualLabOpen && pointerLockUnavailable && (
