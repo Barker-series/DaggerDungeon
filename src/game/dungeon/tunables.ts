@@ -37,11 +37,13 @@ export const TUNABLES = {
   crestTallBoost: 4200,
   // ── Terrain ──
   floorSwellScale: 9,
-  pitScale: 14,
-  mouthRange: 4,
-  mouthRise: 16,
+  // User-tuned via DaggerKit E3 (Aug 11 2026): bigger pit features,
+  // slightly wider/lower cave mouths, much airier cave carving
+  pitScale: 20,
+  mouthRange: 5,
+  mouthRise: 13,
   // ── Cave sculpting ──
-  fineThreshold: 0.38,
+  fineThreshold: 0.19,
   // ── Transit route shaping ──
   transitNoiseWeight: 2.5,
   transitTurnPenalty: 2.0,
