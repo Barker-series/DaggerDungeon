@@ -167,7 +167,7 @@ export function EditorHUD({ getSnap, getReturnSnap }: {
       <div style={{ marginTop: 6, color: '#678' }}>
         WASD fly · Space/C rise/sink · Shift sprint · wheel speed · G grid · F8 snap · F6 exit
         <br />
-        LMB select geo · RMB clear selection
+        LMB select geo · Shift+LMB add to selection · RMB clear
       </div>
     </div>
   );

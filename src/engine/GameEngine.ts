@@ -162,8 +162,21 @@ export class GameEngine {
   editorReturn: string | null = null;
   private editorGridOn = false;
   private editorGridGroup: THREE.Group | null = null;
-  /** E2 selection highlight (triangle overlay + tile box) */
+  /** E2 selection highlight (triangle overlays + tile boxes) */
   private editorSelGroup: THREE.Group | null = null;
+  /** LMB held in editor mode: sweep the crosshair to paint-select */
+  private editorPainting = false;
+  /** The face the mousedown click already handled — the drag must not
+   *  re-add it (a click-to-toggle-off is several frames of held button,
+   *  and painting was instantly re-selecting the face it just removed) */
+  private editorPaintSkip: string | null = null;
+  /** Drag polarity: a drag that STARTS by deselecting keeps erasing;
+   *  one that starts by selecting keeps painting */
+  private editorPaintRemove = false;
+  /** Accumulated multi-select hits (Shift+LMB toggles membership) */
+  private editorSelHits: {
+    key: string; point: THREE.Vector3; lines: string[]; sub: THREE.Group;
+  }[] = [];
   private vy = 0; // vertical velocity; gridCamera.position.y is the feet
   // Persistent horizontal velocity (Source model) — survives frames and
   // jumps; input accelerates it, friction decays it
@@ -253,6 +266,7 @@ export class GameEngine {
     window.addEventListener('keydown', this.handleEditorKey);
     window.addEventListener('wheel', this.handleEditorWheel, { passive: false });
     window.addEventListener('mousedown', this.handleMarkClick);
+    window.addEventListener('mouseup', this.handleEditorMouseUp);
   }
 
   /** Pointer-locked LMB: mark the surface under the crosshair with a
@@ -262,8 +276,16 @@ export class GameEngine {
   private handleMarkClick = (e: MouseEvent) => {
     if (!this.gridCamera.getIsPointerLocked()) return;
     if (this.editorMode) {
-      if (e.button === 0) this.editorSelect();
-      else if (e.button === 2) this.clearEditorSelection();
+      if (e.button === 0) {
+        const k = this.editorSelect(e.shiftKey);
+        this.editorPaintSkip = k;
+        // If the initial click REMOVED the face, the drag erases
+        this.editorPaintRemove = k !== null
+          && !this.editorSelHits.some((h) => h.key === k);
+        this.editorPainting = true;
+      } else if (e.button === 2) {
+        this.clearEditorSelection();
+      }
       return;
     }
     if (e.button === 0) {
@@ -352,6 +374,15 @@ export class GameEngine {
     if (e.code === 'KeyG') {
       this.editorGridOn = !this.editorGridOn;
       this.rebuildEditorGrid();
+    }
+  };
+
+  private handleEditorMouseUp = (e: MouseEvent) => {
+    if (e.button === 0 && this.editorPainting) {
+      this.editorPainting = false;
+      // One console report for the whole drag (per-face logs are
+      // suppressed while painting)
+      if (this.editorSelHits.length > 0) this.publishSelection();
     }
   };
 
@@ -502,6 +533,7 @@ export class GameEngine {
   }
 
   private clearEditorSelection(): void {
+    this.editorSelHits = [];
     if (this.editorSelGroup) {
       this.scene.remove(this.editorSelGroup);
       this.editorSelGroup.traverse((o) => {
@@ -518,8 +550,8 @@ export class GameEngine {
    *  biome, crest, column spans, slice — and publish a copyable report
    *  (DDSNAP with the hit as a mark, so tools/debug-view.ts reproduces
    *  the exact selection headlessly). */
-  private editorSelect(): void {
-    if (!this.world) return;
+  private editorSelect(additive = false, paint: 'add' | 'remove' | null = null): string | null {
+    if (!this.world) return null;
     const ray = new THREE.Raycaster();
     ray.setFromCamera(new THREE.Vector2(0, 0), this.threeCamera);
     ray.far = 600;
@@ -528,8 +560,27 @@ export class GameEngine {
       return o.isMesh && !o.userData['debugMark'] && !o.userData['ddkit'];
     });
     const hit = hits[0];
-    if (!hit) return;
+    if (!hit) return null;
     const mesh = hit.object as THREE.Mesh;
+    // TOGGLE: clicking an already-selected face deselects it
+    const faceKey = `${mesh.uuid}:${hit.faceIndex ?? -1}`;
+    if (paint && faceKey === this.editorPaintSkip) return faceKey;
+    const existing = this.editorSelHits.findIndex((h) => h.key === faceKey);
+    if (paint === 'add' && existing >= 0) return faceKey; // re-crossed
+    if (paint === 'remove' && existing < 0) return faceKey; // nothing to erase
+    if (existing >= 0) {
+      const [removed] = this.editorSelHits.splice(existing, 1);
+      if (removed && this.editorSelGroup) {
+        this.editorSelGroup.remove(removed.sub);
+        removed.sub.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (m.geometry) m.geometry.dispose();
+        });
+      }
+      this.publishSelection();
+      return faceKey;
+    }
+    if (!additive) this.clearEditorSelection();
     const p = hit.point;
     const L = this.world.levels[0]!;
     const w = L.width;
@@ -572,25 +623,13 @@ export class GameEngine {
       lines.push('hit outside the window grid');
     }
 
-    const pos = this.gridCamera.position;
-    const snap = `DDSNAP1${JSON.stringify({
-      seed: this.seed,
-      stack: useGameStore.getState().currentFloor,
-      ...(opx !== 0 || opz !== 0 ? { opx, opz } : {}),
-      x: +pos.x.toFixed(2),
-      y: +pos.y.toFixed(2),
-      z: +pos.z.toFixed(2),
-      yaw: +this.gridCamera.yaw.toFixed(3),
-      pitch: +this.gridCamera.pitch.toFixed(3),
-      marks: [[+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2)]],
-    })}`;
-    const report = ['DDKIT SELECTION', snap, ...lines].join('\n');
-
-    // ── Highlight: the hit triangle + the tile's span box ──
-    this.clearEditorSelection(); // also clears the store; re-set below
-    useGameStore.getState().setEditorSelection({ report, summary: lines });
-    const group = new THREE.Group();
+    // ── Highlight subgroup for this hit ──
+    const group = this.editorSelGroup ?? new THREE.Group();
     group.userData['ddkit'] = true;
+    const parentGroup = group;
+    const sub = new THREE.Group();
+    sub.userData['ddkit'] = true;
+    this.editorSelHits.push({ key: faceKey, point: p.clone(), lines, sub });
     if (hit.face) {
       const geo = mesh.geometry;
       const posAttr = geo.getAttribute('position');
@@ -610,7 +649,7 @@ export class GameEngine {
         depthWrite: false,
       }));
       triMesh.userData['ddkit'] = true;
-      group.add(triMesh);
+      sub.add(triMesh);
     }
     if (inGrid) {
       const span = spans.find((sp) => p.y >= sp.floor - 0.6 && p.y <= sp.ceil + 0.6);
@@ -622,11 +661,51 @@ export class GameEngine {
       );
       const helper = new THREE.Box3Helper(box, 0x00e5ff);
       helper.userData['ddkit'] = true;
-      group.add(helper);
+      sub.add(helper);
     }
-    this.scene.add(group);
-    this.editorSelGroup = group;
-    console.log('[ddkit]\n' + report);
+    parentGroup.add(sub);
+    if (!this.editorSelGroup) {
+      this.scene.add(parentGroup);
+      this.editorSelGroup = parentGroup;
+    }
+    this.publishSelection();
+    return faceKey;
+  }
+
+  /** Rebuild + publish the selection report from the current hit set
+   *  (add and toggle-remove both funnel through here). */
+  private publishSelection(): void {
+    const store = useGameStore.getState();
+    const n = this.editorSelHits.length;
+    if (n === 0 || !this.world) {
+      store.setEditorSelection(null);
+      return;
+    }
+    const opx = this.world.originPcx;
+    const opz = this.world.originPcz;
+    const pos = this.gridCamera.position;
+    const snap = `DDSNAP1${JSON.stringify({
+      seed: this.seed,
+      stack: store.currentFloor,
+      ...(opx !== 0 || opz !== 0 ? { opx, opz } : {}),
+      x: +pos.x.toFixed(2),
+      y: +pos.y.toFixed(2),
+      z: +pos.z.toFixed(2),
+      yaw: +this.gridCamera.yaw.toFixed(3),
+      pitch: +this.gridCamera.pitch.toFixed(3),
+      marks: this.editorSelHits.map((h) =>
+        [+h.point.x.toFixed(2), +h.point.y.toFixed(2), +h.point.z.toFixed(2)]),
+    })}`;
+    const report = [
+      `DDKIT SELECTION (${n} hit${n === 1 ? '' : 's'})`,
+      snap,
+      ...this.editorSelHits.flatMap((h, i) =>
+        [n > 1 ? `-- hit ${i + 1} --` : '', ...h.lines].filter(Boolean)),
+    ].join('\n');
+    const last = this.editorSelHits[n - 1]!.lines;
+    const summary = n > 1 ? [`${n} hits (report has all)`, ...last] : last;
+    store.setEditorSelection({ report, summary });
+    if (!this.editorPainting) console.log('[ddkit]\n' + report);
   }
 
   setRenderScale(scale: number): void {
@@ -984,6 +1063,7 @@ export class GameEngine {
     window.removeEventListener('keydown', this.handleSnapshotKey);
     window.removeEventListener('keydown', this.handleEditorKey);
     window.removeEventListener('wheel', this.handleEditorWheel);
+    window.removeEventListener('mouseup', this.handleEditorMouseUp);
     window.removeEventListener('mousedown', this.handleMarkClick);
     this.sprites.dispose();
     this.postProcessing.dispose();
@@ -1025,6 +1105,11 @@ export class GameEngine {
     if (this.editorMode) {
       this.consumeEditorTeleport(store);
       this.processEditorMovement(dt);
+      // Drag-select: while LMB is held, every face the crosshair
+      // sweeps over joins the selection (never toggles off mid-drag)
+      if (this.editorPainting) {
+        this.editorSelect(true, this.editorPaintRemove ? 'remove' : 'add');
+      }
       // Drain queued one-shot actions so they don't fire stale on exit
       while (this.input.consumeAction()) { /* discarded in editor */ }
     } else {
