@@ -5,6 +5,7 @@ import { tileBiome, tileCrest, type BiomeType } from '../game/dungeon/cells';
 import { buildCornerField, sampleCornerField, PIT_LEVEL } from '../game/dungeon/heightfield';
 import { buildOrganicContour, isOrganicTileIn, isTransitFloorIn } from '../game/dungeon/organiccontour';
 import { buildRoadsContour, ROAD_WALL_LEVELS, ROAD_WALL_MODULE, type RoadsContour } from '../game/dungeon/roadscontour';
+import { buildPitContour, type PitContour } from '../game/dungeon/pitcontour';
 import { bridgeTiles, PIPE_BORE, CLEARANCE } from '../game/dungeon/pillar-bridges';
 import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
 
@@ -301,7 +302,7 @@ export class DungeonRenderer {
   /** Bumped when generation CONFIG changes (E3 tunables): same seed,
    *  different world — every cached chunk is stale. */
   private configEpoch = 0;
-  private chunkCtx: { cornerFloors: number[][][]; contours: Contour[]; roadsContour: RoadsContour } | null = null;
+  private chunkCtx: { cornerFloors: number[][][]; contours: Contour[]; roadsContour: RoadsContour; pitContour: PitContour } | null = null;
   /** Set when the chunk set was wiped (first load, seed/stack change):
    *  the next updateChunks call builds synchronously so no empty frame
    *  is ever presented. Ordinary recenters stay budgeted. */
@@ -368,15 +369,17 @@ export class DungeonRenderer {
     // chamfered wall quads both come from it
     const contours = world.levels.map((l) => buildOrganicContour(l));
     const roadsContour = buildRoadsContour(world);
+    const pitContour = buildPitContour(world.levels[0]!);
 
     for (let li = 0; li < world.levels.length; li++) {
-      this.buildLevelSurfaces(world, li, cornerFloors[li]!, contours[li]!, this.materialsFor, this.meshGroup);
+      this.buildLevelSurfaces(world, li, cornerFloors[li]!, contours[li]!, this.materialsFor, this.meshGroup, undefined, li === 0 ? pitContour : undefined);
     }
-    this.buildWalls(world, cornerFloors, contours, roadsContour, this.materialsFor, this.meshGroup);
+    this.buildWalls(world, cornerFloors, contours, roadsContour, this.materialsFor, this.meshGroup, undefined, pitContour);
     this.buildPipeChamfers(world, this.meshGroup);
     this.buildSegmentWalls(world, contours[0]!, cornerFloors[0]!, this.meshGroup);
     this.buildTunnelTrim(world, contours[0]!, cornerFloors[0]!, this.meshGroup);
     this.buildRoadsWalls(world, roadsContour, cornerFloors[0]!, this.meshGroup);
+    this.buildPitRims(world, pitContour, cornerFloors[0]!, this.meshGroup);
   }
 
   /** Adopt a window as the chunk data source. Windows are RIM-EXACT
@@ -399,6 +402,7 @@ export class DungeonRenderer {
         buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround)),
       contours: world.levels.map((l) => buildOrganicContour(l)),
       roadsContour: buildRoadsContour(world),
+      pitContour: buildPitContour(world.levels[0]!),
     };
     // Two classes of chunk cannot survive a window adoption unchanged
     // (both found as walk-through phantom walls in playtest DDSNAPs,
@@ -538,11 +542,12 @@ export class DungeonRenderer {
     for (let li = 0; li < w.levels.length; li++) {
       this.buildLevelSurfaces(
         w, li, ctx.cornerFloors[li]!, ctx.contours[li]!, this.materialsFor,
-        chunk.group, bounds,
+        chunk.group, bounds, li === 0 ? ctx.pitContour : undefined,
       );
     }
-    this.buildWalls(w, ctx.cornerFloors, ctx.contours, ctx.roadsContour, this.materialsFor, chunk.group, bounds);
+    this.buildWalls(w, ctx.cornerFloors, ctx.contours, ctx.roadsContour, this.materialsFor, chunk.group, bounds, ctx.pitContour);
     this.buildPipeChamfers(w, chunk.group, bounds);
+    this.buildPitRims(w, ctx.pitContour, ctx.cornerFloors[0]!, chunk.group, bounds);
     this.buildSegmentWalls(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
     this.buildTunnelTrim(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
     this.buildRoadsWalls(w, ctx.roadsContour, ctx.cornerFloors[0]!, chunk.group, bounds);
@@ -610,6 +615,7 @@ export class DungeonRenderer {
     materialsFor: (key: RegionKey) => RegionMaterials,
     target: THREE.Group,
     bounds?: RenderBounds,
+    pitContour?: PitContour,
   ): void {
     const dungeon = world.levels[li]!;
     const w = dungeon.width;
@@ -862,17 +868,32 @@ export class DungeonRenderer {
 
         if (ownsFloor(x, y)) {
           const floorBuf = tile === TileType.StairsDown ? stairs : buf.floor;
-          // Pit-rim tiles need no extra tessellation: the corner field is
-          // pure bilinear and pit dominance clamps rim corners flat to
-          // grade, so a plain quad is exactly as faithful here as on any
-          // other tile. (The 4x4 subdivision was a wireframe-visible
-          // waste ringing every pit.)
-          addHorizontalQuad(
-            floorBuf, wx, wz,
-            cornerFloor[y]![x]!, cornerFloor[y]![x + 1]!,
-            cornerFloor[y + 1]![x]!, cornerFloor[y + 1]![x + 1]!,
-            true,
-          );
+          // SMOOTHED PIT RIMS: a rim tile with cut corners draws its
+          // top clipped to the marching-squares diagonal — the corner
+          // wedge is open hole (the cliff band in buildPitRims is its
+          // edge, and physics agrees via inPitCut).
+          const cutBase = pitContour ? (y * w + x) * 4 : -1;
+          const hasCut = cutBase >= 0 && (
+            pitContour!.cutTileCorners.has(cutBase)
+            || pitContour!.cutTileCorners.has(cutBase + 1)
+            || pitContour!.cutTileCorners.has(cutBase + 2)
+            || pitContour!.cutTileCorners.has(cutBase + 3));
+          if (hasCut) {
+            this.addClippedFloor(
+              floorBuf, x, y, cornerFloor, pitContour!.cutTileCorners,
+            );
+          } else {
+            // Pit-rim tiles need no extra tessellation: the corner field
+            // is pure bilinear and pit dominance clamps rim corners flat
+            // to grade, so a plain quad is exactly as faithful here as on
+            // any other tile.
+            addHorizontalQuad(
+              floorBuf, wx, wz,
+              cornerFloor[y]![x]!, cornerFloor[y]![x + 1]!,
+              cornerFloor[y + 1]![x]!, cornerFloor[y + 1]![x + 1]!,
+              true,
+            );
+          }
         }
         if (ownsCeil(x, y)) {
           const tc = dungeon.ceilingHeights[y]![x]!;
@@ -909,6 +930,7 @@ export class DungeonRenderer {
     materialsFor: (key: RegionKey) => RegionMaterials,
     target: THREE.Group,
     bounds?: RenderBounds,
+    pitContour?: PitContour,
   ): void {
     const w = world.levels[0]!.width;
     const h = world.levels[0]!.height;
@@ -1605,6 +1627,32 @@ export class DungeonRenderer {
               }
               return needed > 0;
             };
+            // SMOOTHED PIT RIMS: a floor|pit boundary half whose group
+            // emitted a CUT diagonal loses its square face — the
+            // diagonal band replaces it, and the square would jut out
+            // on the PIT side of the smooth plane (the pleat bug).
+            const pitCovered = (k: 0 | 1): boolean => {
+              if (!pitContour) return false;
+              if (solidX < 0 || solidZ < 0 || solidX >= w || solidZ >= h) return false;
+              if (airX < 0 || airZ < 0 || airX >= w || airZ >= h) return false;
+              const L0 = world.levels[0]!;
+              // air side must be a PIT tile, solid side a real floor
+              if (L0.tiles[airZ]![airX] === TileType.Wall) return false;
+              if (L0.floorHeights[airZ]![airX]! > PIT_LEVEL) return false;
+              if (L0.tiles[solidZ]![solidX] === TileType.Wall) return false;
+              if (L0.floorHeights[solidZ]![solidX]! <= PIT_LEVEL) return false;
+              // Only the BELOW-FLOOR band is replaced by the diagonal;
+              // ceiling-side slivers (pit ceil vs floor ceil) keep
+              // their square faces
+              if (mid >= L0.floorHeights[solidZ]![solidX]! + 0.1) return false;
+              const gx2 = dx !== 0
+                ? Math.min(airX, solidX)
+                : (k === 0 ? airX - 1 : airX);
+              const gz2 = dx !== 0
+                ? (k === 0 ? airZ - 1 : airZ)
+                : Math.min(airZ, solidZ);
+              return pitContour.cutGroups.has(gz2 * w + gx2);
+            };
             const cov0 = halfCovered(0);
             const cov1 = halfCovered(1);
             const rcov0 = !cov0 && roadsCovered(0);
@@ -1644,7 +1692,9 @@ export class DungeonRenderer {
               addOrientedQuad(buf, vi, -nrmX, 0, -nrmZ);
             };
             if (!emitOctagonal) {
-              if (cov0) {
+              if (pitCovered(0)) {
+                // covered by the pit-rim diagonal band
+              } else if (cov0) {
                 emitCapTransom(0, 0.5);
               } else if (rcov0) {
                 // roads contour band covers this half (plinth tops
@@ -1655,7 +1705,9 @@ export class DungeonRenderer {
               } else {
                 emitFlat(0, 0.5);
               }
-              if (cov1) {
+              if (pitCovered(1)) {
+                // covered by the pit-rim diagonal band
+              } else if (cov1) {
                 emitCapTransom(0.5, 1);
               } else if (rcov1) {
                 // roads contour band covers this half
@@ -1772,6 +1824,221 @@ export class DungeonRenderer {
    * the square system has always used. Segment walls, cap transoms,
    * and the old faces sample the same number, so junctions knit by
    * construction. -Infinity when no neighbor qualifies. */
+  /** Rim floor tile top clipped to the pit contour: cut corners are
+   *  replaced by the marching-squares diagonal (bevel points at tile
+   *  edge midpoints — bilinear-exact heights, so the cliff band's top
+   *  edge matches this polygon's diagonal edge vertex-for-vertex). */
+  private addClippedFloor(
+    buf: MeshBuffers,
+    tx: number,
+    tz: number,
+    cornerFloor: number[][],
+    cuts: Set<number>,
+    w = cornerFloor[0]!.length - 1,
+  ): void {
+    const wx = tx * TILE_SIZE;
+    const wz = tz * TILE_SIZE;
+    const half = TILE_SIZE / 2;
+    const base = (tz * w + tx) * 4;
+    const cNW = cornerFloor[tz]![tx]!;
+    const cNE = cornerFloor[tz]![tx + 1]!;
+    const cSW = cornerFloor[tz + 1]![tx]!;
+    const cSE = cornerFloor[tz + 1]![tx + 1]!;
+    const ring: [number, number, number][] = [];
+    const push = (px: number, py: number, pz: number): void => {
+      const last = ring[ring.length - 1];
+      if (last && Math.abs(last[0] - px) < 1e-6 && Math.abs(last[2] - pz) < 1e-6) return;
+      ring.push([px, py, pz]);
+    };
+    // NW -> NE -> SE -> SW; a cut corner becomes two edge-midpoint
+    // bevel points (edge midpoints are bilinear-exact: corner average)
+    if (cuts.has(base + 0)) {
+      push(wx, (cNW + cSW) / 2, wz + half);
+      push(wx + half, (cNW + cNE) / 2, wz);
+    } else push(wx, cNW, wz);
+    if (cuts.has(base + 1)) {
+      push(wx + half, (cNW + cNE) / 2, wz);
+      push(wx + TILE_SIZE, (cNE + cSE) / 2, wz + half);
+    } else push(wx + TILE_SIZE, cNE, wz);
+    if (cuts.has(base + 3)) {
+      push(wx + TILE_SIZE, (cNE + cSE) / 2, wz + half);
+      push(wx + half, (cSW + cSE) / 2, wz + TILE_SIZE);
+    } else push(wx + TILE_SIZE, cSE, wz + TILE_SIZE);
+    if (cuts.has(base + 2)) {
+      push(wx + half, (cSW + cSE) / 2, wz + TILE_SIZE);
+      push(wx, (cNW + cSW) / 2, wz + half);
+    } else push(wx, cSW, wz + TILE_SIZE);
+    if (ring.length < 3) return;
+    const vi = buf.verts.length / 3;
+    for (const [px, py, pz] of ring) {
+      buf.verts.push(px, py, pz);
+      buf.norms.push(0, 1, 0);
+      buf.uvs.push(px / TILE_SIZE, pz / TILE_SIZE);
+    }
+    for (let i = 1; i + 1 < ring.length; i++) {
+      const ax = ring[i]![0] - ring[0]![0];
+      const az = ring[i]![2] - ring[0]![2];
+      const bx = ring[i + 1]![0] - ring[0]![0];
+      const bz = ring[i + 1]![2] - ring[0]![2];
+      const area = az * bx - ax * bz;
+      if (Math.abs(area) < 1e-9) continue;
+      if (area >= 0) buf.idxs.push(vi, vi + i, vi + i + 1);
+      else buf.idxs.push(vi, vi + i + 1, vi + i);
+    }
+  }
+
+  /** SMOOTHED PIT RIM CLIFFS: one quad per contour segment, from the
+   *  rim floor surface straight down to the abyss bottom. The top edge
+   *  shares the clipped floor's diagonal edge exactly; the square XOR
+   *  faces at the adjacent tile boundaries survive BEHIND the diagonal
+   *  (buried under the rim mass) — no suppression contract needed. */
+  private buildPitRims(
+    world: WorldData,
+    pitContour: PitContour,
+    cornerFloor: number[][],
+    target: THREE.Group,
+    bounds?: RenderBounds,
+  ): void {
+    const L = world.levels[0]!;
+    const w = L.width;
+    let deepest = 0;
+    for (const spec of world.pillars.values()) {
+      deepest = Math.min(deepest, spec.baseDepth);
+    }
+    const worldBottom = Math.min(
+      world.levels[world.levels.length - 1]!.baseY - RENDER_ABYSS_DROP,
+      deepest - RENDER_ABYSS_DROP,
+    );
+    const bufs = new Map<RegionKey, MeshBuffers>();
+    const bufFor = (key: RegionKey): MeshBuffers => {
+      let b = bufs.get(key);
+      if (!b) {
+        b = newBuffers();
+        bufs.set(key, b);
+      }
+      return b;
+    };
+    const fillBufs = new Map<RegionKey, MeshBuffers>();
+    const fillFloorFor = (key: RegionKey): MeshBuffers => {
+      let b = fillBufs.get(key);
+      if (!b) {
+        b = newBuffers();
+        fillBufs.set(key, b);
+      }
+      return b;
+    };
+    const heightAt = (px: number, pz: number): number => {
+      // Endpoints lie on tile edge midpoints — bilinear is exact there
+      return sampleCornerField(cornerFloor, px, pz);
+    };
+    const allSegs = [
+      ...pitContour.segments.map((sg) => ({ sg, fill: false })),
+      ...pitContour.fillSegments.map((sg) => ({ sg, fill: true })),
+    ];
+    for (const { sg: seg, fill } of allSegs) {
+      if (bounds && (seg.gx < bounds.x0 || seg.gx >= bounds.x1
+        || seg.gz < bounds.z0 || seg.gz >= bounds.z1)) continue;
+      const y0 = heightAt(seg.x0, seg.z0);
+      const y1 = heightAt(seg.x1, seg.z1);
+      // Normal toward the PIT: away from the floor tile — the floor
+      // side is where the (single) floor tile of the group sits; use
+      // the group's pit centroid direction instead: perpendicular,
+      // pointed away from the higher... simplest: away from the
+      // clipped floor tile center, which byTile/CUT construction puts
+      // strictly on the floor side.
+      let nx = -(seg.z1 - seg.z0);
+      let nz = seg.x1 - seg.x0;
+      // Orientation reference: CUT groups have ONE floor tile (face
+      // away from it); FILL groups have ONE pit tile (face toward it).
+      // Using "away from any floor" flipped fill bands whose first
+      // floor sat on the wrong side (their backs showed cyan).
+      let rx = 0;
+      let rz = 0;
+      let toward = false;
+      for (const [dx2, dz2] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) {
+        const ttx = seg.gx + dx2;
+        const ttz = seg.gz + dz2;
+        if (ttx < 0 || ttz < 0 || ttx >= w || ttz >= L.height) continue;
+        if (L.tiles[ttz]![ttx] === TileType.Wall) continue;
+        const isPitTile = L.floorHeights[ttz]![ttx]! <= PIT_LEVEL;
+        if (fill ? isPitTile : !isPitTile) {
+          rx = (ttx + 0.5) * TILE_SIZE;
+          rz = (ttz + 0.5) * TILE_SIZE;
+          toward = fill; // fill: toward pit; cut: away from floor
+          break;
+        }
+      }
+      const mx = (seg.x0 + seg.x1) / 2;
+      const mz = (seg.z0 + seg.z1) / 2;
+      const dot = nx * (rx - mx) + nz * (rz - mz);
+      if (toward ? dot < 0 : dot > 0) {
+        nx = -nx;
+        nz = -nz;
+      }
+      const nl = Math.hypot(nx, nz) || 1;
+      nx /= nl;
+      nz /= nl;
+      let btx = seg.gx;
+      let btz = seg.gz;
+      for (const [dx2, dz2] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) {
+        const ttx = seg.gx + dx2;
+        const ttz = seg.gz + dz2;
+        if (ttx < 0 || ttz < 0 || ttx >= w || ttz >= L.height) continue;
+        if (L.tiles[ttz]![ttx] !== TileType.Wall
+          && L.floorHeights[ttz]![ttx]! > PIT_LEVEL) {
+          btx = ttx;
+          btz = ttz;
+          break;
+        }
+      }
+      const biome = tileBiome(L.cellBiomes, btx, btz) ?? 'tunnel';
+      const buf = bufFor(biome);
+      const vi = buf.verts.length / 3;
+      buf.verts.push(
+        seg.x0, y0, seg.z0,
+        seg.x1, y1, seg.z1,
+        seg.x1, worldBottom, seg.z1,
+        seg.x0, worldBottom, seg.z0,
+      );
+      for (let k = 0; k < 4; k++) buf.norms.push(nx, 0, nz);
+      const u0 = (seg.x0 + seg.z0) / TILE_SIZE;
+      const u1 = (seg.x1 + seg.z1) / TILE_SIZE;
+      buf.uvs.push(u0, y0 / TILE_SIZE, u1, y1 / TILE_SIZE, u1, worldBottom / TILE_SIZE, u0, worldBottom / TILE_SIZE);
+      addOrientedQuad(buf, vi, nx, 0, nz);
+
+      // FILL: floor patch bridging the pit tile's near quarter — the
+      // triangle (p0, p1, group corner), drawn face-up in the floor
+      // material. Physics stands on the identical plane (pitFillGround).
+      if (fill) {
+        const gxp = (seg.gx + 1) * TILE_SIZE;
+        const gzp = (seg.gz + 1) * TILE_SIZE;
+        const yg = heightAt(gxp, gzp);
+        const fbuf = fillFloorFor(biome);
+        const fvi = fbuf.verts.length / 3;
+        fbuf.verts.push(seg.x0, y0, seg.z0, seg.x1, y1, seg.z1, gxp, yg, gzp);
+        for (let k = 0; k < 3; k++) fbuf.norms.push(0, 1, 0);
+        fbuf.uvs.push(
+          seg.x0 / TILE_SIZE, seg.z0 / TILE_SIZE,
+          seg.x1 / TILE_SIZE, seg.z1 / TILE_SIZE,
+          gxp / TILE_SIZE, gzp / TILE_SIZE,
+        );
+        // Wind so the geometric normal points up
+        const ax = seg.x1 - seg.x0;
+        const az = seg.z1 - seg.z0;
+        const bx = gxp - seg.x0;
+        const bz = gzp - seg.z0;
+        if (az * bx - ax * bz >= 0) fbuf.idxs.push(fvi, fvi + 1, fvi + 2);
+        else fbuf.idxs.push(fvi, fvi + 2, fvi + 1);
+      }
+    }
+    for (const [key, buf] of bufs) {
+      if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor(key).wall, `pit-rim:${key}`);
+    }
+    for (const [key, buf] of fillBufs) {
+      if (buf.verts.length > 0) this.addMesh(target, buf, this.materialsFor(key).floor, `pit-rim-fill:${key}`);
+    }
+  }
+
   private capMax(L: DungeonData, tx: number, tz: number): number {
     let v = -Infinity;
     let facesSky = false;

@@ -9,6 +9,7 @@ import { Movers } from './Movers';
 import { buildCornerField, sampleCornerField } from '../game/dungeon/heightfield';
 import { spanAt } from '../game/dungeon/columns';
 import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
+import { buildPitContour, inPitCut, pitFillGround, type PitContour } from '../game/dungeon/pitcontour';
 import { buildRoadsContour, type RoadsContour } from '../game/dungeon/roadscontour';
 import { tileBiome, tileCrest, CELL_TILE_SIZE } from '../game/dungeon/cells';
 import { applyTunables, dirtyLevelFor, TUNABLES, type Tunables } from '../game/dungeon/tunables';
@@ -149,6 +150,9 @@ export class GameEngine {
    *  surfaces the renderer draws */
   private cornerFloors: number[][][] = [];
   private contours: OrganicContour[] = [];
+  /** Pit rim contour (level 0) — smoothed hole edges; the cut wedge of
+   *  a rim tile has NO ground (fall exactly where the hole is drawn) */
+  private pitContour: PitContour | null = null;
   private roadsContour: RoadsContour | null = null;
   private seed = 0;
 
@@ -900,6 +904,7 @@ export class GameEngine {
     this.cornerFloors = this.world.levels.map((l) =>
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
     this.contours = this.world.levels.map((l) => buildOrganicContour(l));
+    this.pitContour = buildPitContour(this.world.levels[0]!);
     this.roadsContour = buildRoadsContour(this.world);
     markPhase('collision');
     // Adopt the window as the chunk data source. No geometry is built
@@ -1289,15 +1294,34 @@ export class GameEngine {
     let best = -Infinity;
     const s = spanAt(spans, limitY, 0.6);
     if (s && s.floor !== ABYSS_FLOOR) {
-      best = s.owner < 0
-        ? s.floor
-        : this.world!.levels[s.owner]!.baseY + sampleCornerField(this.cornerFloors[s.owner]!, x, z);
+      // Smoothed pit rims: the cut wedge of a rim tile is drawn as
+      // open hole — its level-0 terrain floor must not support feet
+      const rimCut = s.owner === 0
+        && this.pitContour !== null
+        && inPitCut(
+          this.pitContour, this.world!.levels[0]!.width,
+          Math.floor(x / TILE_SIZE), Math.floor(z / TILE_SIZE), x, z,
+        );
+      if (!rimCut) {
+        best = s.owner < 0
+          ? s.floor
+          : this.world!.levels[s.owner]!.baseY + sampleCornerField(this.cornerFloors[s.owner]!, x, z);
+      }
     }
     // Chamfer pockets: contoured wall columns carry their apron floor —
     // the drawn surface behind the diagonal wall is real ground, never a
     // gap into the level below
     const tx = Math.floor(x / TILE_SIZE);
     const tz = Math.floor(z / TILE_SIZE);
+    // Smoothed pit rims, fill side: the patch bridging a concave pit
+    // corner is real drawn floor — stand on its exact plane
+    if (this.pitContour) {
+      const fg = pitFillGround(
+        this.pitContour, this.world!.levels[0]!.width, tx, tz, x, z,
+        (px, pz) => sampleCornerField(this.cornerFloors[0]!, px, pz),
+      );
+      if (fg !== null && fg <= limitY + 0.6 && fg > best) best = fg;
+    }
     for (let li = 0; li < this.world!.levels.length; li++) {
       const g = this.pocketGround(li, tx, tz, x, z);
       if (g !== null && g <= limitY + 0.6 && g > best) best = g;
