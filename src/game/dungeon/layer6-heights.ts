@@ -601,19 +601,37 @@ export function levelPitDecks(
  * below. Pure per-column with a bounded scan — infinite-world legal.
  * Runs on the finished column model; the walk surface is untouched.
  */
-export function carvePitArches(
-  columns: import('../types').ColumnSpan[][],
+const MAX_ARCH_SPAN = 12;
+/** Minimum slab thickness at the arch crown */
+export const ARCH_DECK = 1.4;
+
+/** An arch-carved tile's crossing: axis direction and pit distances.
+ *  (a forward along +axis, b backward; S = a + b tiles rim to rim.) */
+export interface ArchSpan {
+  dx: number;
+  dz: number;
+  a: number;
+  b: number;
+}
+
+/** The crossing carvePitArches uses for a tile — the SHAPE AUTHORITY
+ *  shared with the renderer, so the drawn intrados is the same curve
+ *  the columns were carved from. Null = tile doesn't arch. */
+export function archSpanAt(
   tiles: TileType[][],
   floorHeights: number[][],
   gridTiles: number,
+  tx: number,
+  tz: number,
   pillarWall?: boolean[][],
-): void {
-  const MAX_ARCH_SPAN = 12;
-  const DECK = 1.4; // minimum slab thickness at the crown
-  const ABYSS = -1e9 as number; // matches ABYSS_FLOOR sentinel scale
-  const isPit = (tx: number, tz: number): boolean =>
-    floorHeights[tz]?.[tx] !== undefined && floorHeights[tz]![tx]! <= PIT_FLOOR;
-  const spanAcross = (tx: number, tz: number, dx: number, dz: number): [number, number] | null => {
+): ArchSpan | null {
+  if (tx < 0 || tz < 0 || tx >= gridTiles || tz >= gridTiles) return null;
+  if (tiles[tz]![tx] === TileType.Wall || pillarWall?.[tz]?.[tx]) return null;
+  const f = floorHeights[tz]![tx]!;
+  if (f <= PIT_FLOOR) return null;
+  const isPit = (px: number, pz: number): boolean =>
+    floorHeights[pz]?.[px] !== undefined && floorHeights[pz]![px]! <= PIT_FLOOR;
+  const spanAcross = (dx: number, dz: number): [number, number] | null => {
     let a = 0;
     for (let i = 1; i <= MAX_ARCH_SPAN; i++) {
       const nx = tx + dx * i;
@@ -634,26 +652,50 @@ export function carvePitArches(
     if (b === 0 || a + b - 1 > MAX_ARCH_SPAN) return null;
     return [a, b];
   };
+  const sx = spanAcross(1, 0);
+  const sz = spanAcross(0, 1);
+  if (sx && (!sz || sx[0] + sx[1] <= sz[0] + sz[1])) return { dx: 1, dz: 0, a: sx[0], b: sx[1] };
+  if (sz) return { dx: 0, dz: 1, a: sz[0], b: sz[1] };
+  return null;
+}
 
+/** Depth of the arch intrados below the deck surface at a CONTINUOUS
+ *  point (px, pz in tile-center coordinates — tile (tx,tz)'s center is
+ *  (tx, tz)). Evaluating the parabola here, instead of smoothing its
+ *  per-tile-quantized column output, is what makes the drawn arch the
+ *  authored curve. */
+export function archDepthAt(
+  span: ArchSpan,
+  tx: number,
+  tz: number,
+  px: number,
+  pz: number,
+): number {
+  const t = span.dx !== 0 ? tx : tz;
+  const p = span.dx !== 0 ? px : pz;
+  const S = span.a + span.b; // tiles from pit edge to pit edge
+  // Crown at the span midpoint; u in [-1, 1] across the crossing.
+  const c = t + (span.a - span.b) / 2;
+  const u = Math.max(-1, Math.min(1, (p - c) / (S / 2)));
+  // Sag: how far below the deck the intrados drops. Scaled to the
+  // span so wide crossings get grand arches.
+  return ARCH_DECK + Math.max(4, S * 2.2) * u * u;
+}
+
+export function carvePitArches(
+  columns: import('../types').ColumnSpan[][],
+  tiles: TileType[][],
+  floorHeights: number[][],
+  gridTiles: number,
+  pillarWall?: boolean[][],
+): void {
+  const ABYSS = -1e9 as number; // matches ABYSS_FLOOR sentinel scale
   for (let tz = 0; tz < gridTiles; tz++) {
     for (let tx = 0; tx < gridTiles; tx++) {
-      if (tiles[tz]![tx] === TileType.Wall || pillarWall?.[tz]?.[tx]) continue;
+      const span = archSpanAt(tiles, floorHeights, gridTiles, tx, tz, pillarWall);
+      if (!span) continue;
       const f = floorHeights[tz]![tx]!;
-      if (f <= PIT_FLOOR) continue;
-      const sx = spanAcross(tx, tz, 1, 0);
-      const sz = spanAcross(tx, tz, 0, 1);
-      let best: [number, number] | null = null;
-      if (sx && (!sz || sx[0] + sx[1] <= sz[0] + sz[1])) best = sx;
-      else if (sz) best = sz;
-      if (!best) continue;
-      const [a, b] = best;
-      const S = a + b; // tiles from pit edge to pit edge
-      // Parameter across the span in [-1, 1]; 0 at the arch crown.
-      const u = (b - a) / S;
-      // Sag: how far below the deck the intrados drops at this tile.
-      // Scaled to the span so wide crossings get grand arches.
-      const sag = Math.max(4, S * 2.2) * u * u;
-      const openingTop = f - DECK - sag;
+      const openingTop = f - archDepthAt(span, tx, tz, tx, tz);
       const spans = columns[tz * gridTiles + tx]!;
       // Insert the under-arch void below everything this column has.
       const lowest = spans.length > 0 ? spans[0]!.floor : f;

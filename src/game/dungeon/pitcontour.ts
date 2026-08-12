@@ -22,6 +22,7 @@
 
 import { TileType, TILE_SIZE, type DungeonData } from '../types';
 import { PIT_LEVEL } from './heightfield';
+import { archSpanAt } from './layer6-heights';
 import type { ContourSegment } from './organiccontour';
 
 export interface PitContour {
@@ -127,6 +128,16 @@ export function buildPitContour(dungeon: DungeonData): PitContour {
       // Thin-slot pits decline the whole group
       if ((pTL && isThinPit(tx, tz)) || (pTR && isThinPit(tx + 1, tz))
         || (pBL && isThinPit(tx, tz + 1)) || (pBR && isThinPit(tx + 1, tz + 1))) continue;
+      // ARCH-carved floors decline: arch undersides render DATA-EXACT
+      // (flat per-tile soffits), and a smoothing band can't meet that
+      // surface — its corner-blended bottom hangs mid-air as a
+      // floating panel at the arch mouth (DDSNAP, Aug 2026). Square
+      // rims + XOR faces seal these groups the ordinary way. Same
+      // shape authority as the carve, so decline == carved, always.
+      if ((tl && archSpanAt(dungeon.tiles, dungeon.floorHeights, w, tx, tz, dungeon.pillarWall))
+        || (tr && archSpanAt(dungeon.tiles, dungeon.floorHeights, w, tx + 1, tz, dungeon.pillarWall))
+        || (bl && archSpanAt(dungeon.tiles, dungeon.floorHeights, w, tx, tz + 1, dungeon.pillarWall))
+        || (br && archSpanAt(dungeon.tiles, dungeon.floorHeights, w, tx + 1, tz + 1, dungeon.pillarWall))) continue;
 
       const cx = (tx + 1) * s;
       const cz = (tz + 1) * s;

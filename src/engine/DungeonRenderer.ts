@@ -973,8 +973,6 @@ export class DungeonRenderer {
     const clipY = (y: number): number =>
       y >= SKY_CEIL ? skyTop : (y <= ABYSS_FLOOR ? worldBottom : y);
 
-    const arch = this.archField(world);
-
     // ── THE CREST AUTHORITY, render side: every solid-topped column
     // crowns at ONE definite height — its cell's crest (cellCrests),
     // lifted where real structure rises above it (interior span
@@ -1035,15 +1033,8 @@ export class DungeonRenderer {
             const v = cornerFloors[s.owner]![cz]?.[cx];
             if (v !== undefined && v > PIT_LEVEL) return world.levels[s.owner]!.baseY + v;
           }
-          // ARCH void ceilings render from the intrados corner field —
-          // their face bounds must sample the same surface
-          if (s.ceilOwner === -1 && s.floor <= ABYSS_FLOOR
-            && s.ceil < 1e8 && Math.abs(clipY(s.ceil) - y) < 0.02) {
-            const v = arch.corners[cz]?.[cx];
-            if (v !== undefined && v > PIT_LEVEL) return v;
-          }
-          // Other ceiling bounds stay at the exact cut value — those
-          // ceilings render flat at their model height.
+          // Ceiling bounds stay at the exact cut value — ceilings
+          // render flat at their model height, so cut == drawn surface.
         }
       }
       return y;
@@ -1136,58 +1127,6 @@ export class DungeonRenderer {
         else rockFloors.idxs.push(vi, vi + i + 1, vi + i);
       }
     };
-    /** Arch underside tile: down-facing polygon on the INTRADOS corner
-     *  field (optionally hole-clipped by pit-rim cut corners). Heights
-     *  come from the shared field, so adjacent tiles and the pit-band
-     *  bottoms meet vertex-for-vertex. */
-    const emitArchCeil = (x: number, z: number, cuts: Set<number> | null): void => {
-      const wx = x * TILE_SIZE;
-      const wz = z * TILE_SIZE;
-      const half = TILE_SIZE / 2;
-      const base = (z * w + x) * 4;
-      const ring: [number, number][] = [];
-      const pushPt = (px: number, pz: number): void => {
-        const last = ring[ring.length - 1];
-        if (last && Math.abs(last[0] - px) < 1e-6 && Math.abs(last[1] - pz) < 1e-6) return;
-        ring.push([px, pz]);
-      };
-      const cut = (i: number): boolean => cuts !== null && cuts.has(base + i);
-      if (cut(0)) {
-        pushPt(wx, wz + half);
-        pushPt(wx + half, wz);
-      } else pushPt(wx, wz);
-      if (cut(1)) {
-        pushPt(wx + half, wz);
-        pushPt(wx + TILE_SIZE, wz + half);
-      } else pushPt(wx + TILE_SIZE, wz);
-      if (cut(3)) {
-        pushPt(wx + TILE_SIZE, wz + half);
-        pushPt(wx + half, wz + TILE_SIZE);
-      } else pushPt(wx + TILE_SIZE, wz + TILE_SIZE);
-      if (cut(2)) {
-        pushPt(wx + half, wz + TILE_SIZE);
-        pushPt(wx, wz + TILE_SIZE - half);
-      } else pushPt(wx, wz + TILE_SIZE);
-      if (ring.length < 3) return;
-      const vi = rockFloors.verts.length / 3;
-      for (const [px, pz] of ring) {
-        rockFloors.verts.push(px, sampleCornerField(arch.corners, px, pz), pz);
-        rockFloors.norms.push(0, -1, 0);
-        rockFloors.uvs.push(px / TILE_SIZE, pz / TILE_SIZE);
-      }
-      for (let i = 1; i + 1 < ring.length; i++) {
-        const ax = ring[i]![0] - ring[0]![0];
-        const az = ring[i]![1] - ring[0]![1];
-        const bx = ring[i + 1]![0] - ring[0]![0];
-        const bz = ring[i + 1]![1] - ring[0]![1];
-        const area = az * bx - ax * bz;
-        if (Math.abs(area) < 1e-9) continue;
-        // Wind so the geometric normal points DOWN
-        if (area >= 0) rockFloors.idxs.push(vi, vi + i + 1, vi + i);
-        else rockFloors.idxs.push(vi, vi + i, vi + i + 1);
-      }
-    };
-
     for (let z = bounds?.z0 ?? 0; z < (bounds?.z1 ?? h); z++) {
       const open = new Map<string, Run>();
       for (let x = bounds?.x0 ?? 0; x < (bounds?.x1 ?? w); x++) {
@@ -1208,27 +1147,17 @@ export class DungeonRenderer {
           || roadsContour.cutTileCorners.has(cutBase + 1)
           || roadsContour.cutTileCorners.has(cutBase + 2)
           || roadsContour.cutTileCorners.has(cutBase + 3);
-        // Pit-rim cut corners: the hole passes THROUGH an arch-carved
-        // slab — the void's ceiling (the slab underside) is clipped by
-        // the same diagonal, or its top shows through the cut.
-        const pitCut = pitContour !== undefined && (
-          pitContour.cutTileCorners.has(cutBase)
-          || pitContour.cutTileCorners.has(cutBase + 1)
-          || pitContour.cutTileCorners.has(cutBase + 2)
-          || pitContour.cutTileCorners.has(cutBase + 3));
         for (const s of a) {
           if (s.owner === -1 && s.floor > ABYSS_FLOOR) {
             if (topCut) emitClippedTop(x, z, s.floor);
             else want(s.floor, true);
           }
-          if (s.ceilOwner === -1 && s.ceil < SKY_CEIL) {
-            if (arch.isArch[z]![x]! && s.floor <= ABYSS_FLOOR) {
-              // Smooth intrados: corner-field surface, hole-clipped
-              emitArchCeil(x, z, pitCut ? pitContour!.cutTileCorners : null);
-            } else {
-              want(s.ceil, false);
-            }
-          }
+          // Arch void ceilings included: DATA-EXACT flat pieces (the
+          // corner-field intrados and every smoothed successor read
+          // wrong from below — removed Aug 2026; a from-scratch arch
+          // underside can rebuild on layer6-heights' archSpanAt /
+          // archDepthAt shape authority).
+          if (s.ceilOwner === -1 && s.ceil < SKY_CEIL) want(s.ceil, false);
         }
         // The world's top plane is WATERTIGHT: every column either opens
         // to sky or carries a roof slab at its crown (the crest
@@ -1275,27 +1204,6 @@ export class DungeonRenderer {
 
             const airSpans = inA ? a : b;
             const otherSpans = inA ? b : a;
-            // ARCH|ARCH step strips are interior to the continuous
-            // intrados surface — the corner field replaced them
-            {
-              const bx2 = x + dx;
-              const bz2 = z + dz;
-              if (bx2 >= 0 && bz2 >= 0 && bx2 < w && bz2 < h
-                && arch.isArch[z]![x]! && arch.isArch[bz2]![bx2]!) {
-                const ceilOf = (col: ColumnSpan[]): number | null => {
-                  for (const sp of col) {
-                    if (sp.floor <= ABYSS_FLOOR && sp.ceil < 1e8) return sp.ceil;
-                  }
-                  return null;
-                };
-                const ca = ceilOf(a);
-                const cb = ceilOf(b);
-                if (ca !== null && cb !== null
-                  && mid >= Math.min(ca, cb) - 0.02 && mid <= Math.max(ca, cb) + 0.02) {
-                  continue;
-                }
-              }
-            }
             // The nearest breakpoint above this segment: face overshoot
             // and transoms must stop there — another face occupies the
             // plane beyond it, and coplanar overlap in a different
@@ -2032,31 +1940,16 @@ export class DungeonRenderer {
       ...pitContour.segments.map((sg) => ({ sg, fill: false })),
       ...pitContour.fillSegments.map((sg) => ({ sg, fill: true })),
     ];
-    // Band bottom: normally the abyss — but beside ARCH-carved slabs
-    // the band stops at the INTRADOS surface. It samples the same
-    // corner field the underside draws from, so band bottom edge and
-    // arch surface meet vertex-for-vertex (no ribs, no slivers).
-    const arch = this.archField(world);
+    // Band bottom: always the abyss. Pit-rim smoothing DECLINES on
+    // arch-carved groups (buildPitContour), so no band ever needs to
+    // meet an arch soffit — arch mouths render square, data-exact.
     for (const { sg: seg, fill } of allSegs) {
       if (bounds && (seg.gx < bounds.x0 || seg.gx >= bounds.x1
         || seg.gz < bounds.z0 || seg.gz >= bounds.z1)) continue;
       const y0 = heightAt(seg.x0, seg.z0);
       const y1 = heightAt(seg.x1, seg.z1);
-      // Bottom: the intrados corner field where any group floor is
-      // arch-carved (per-endpoint sample = shared surface heights);
-      // the abyss otherwise
-      let archNear = false;
-      for (const [dx2, dz2] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) {
-        const ttx = seg.gx + dx2;
-        const ttz = seg.gz + dz2;
-        if (ttx < 0 || ttz < 0 || ttx >= w || ttz >= L.height) continue;
-        if (arch.isArch[ttz]![ttx]!) {
-          archNear = true;
-          break;
-        }
-      }
-      const bottom0 = archNear ? sampleCornerField(arch.corners, seg.x0, seg.z0) : worldBottom;
-      const bottom1 = archNear ? sampleCornerField(arch.corners, seg.x1, seg.z1) : worldBottom;
+      const bottom0 = worldBottom;
+      const bottom1 = worldBottom;
       // Normal toward the PIT: away from the floor tile — the floor
       // side is where the (single) floor tile of the group sits; use
       // the group's pit centroid direction instead: perpendicular,
@@ -2168,34 +2061,6 @@ export class DungeonRenderer {
     }
   }
 
-  /** ARCH INTRADOS FIELD — the arch void ceilings (carvePitArches'
-   *  per-tile openingTop steps) put through the SAME corner-field
-   *  machinery floors use: adjacent values average at shared corners,
-   *  the underside draws as one continuous surface, and every
-   *  consumer (underside quads, face bounds, pit-band bottoms)
-   *  samples the same field. Non-arch tiles carry the pit sentinel so
-   *  they never contribute. */
-  private archField(world: WorldData): { corners: number[][]; isArch: boolean[][] } {
-    const L = world.levels[0]!;
-    const w = L.width;
-    const h = L.height;
-    const vals: number[][] = Array.from({ length: h }, () => new Array(w).fill(PIT_LEVEL - 1) as number[]);
-    const isArch: boolean[][] = Array.from({ length: h }, () => new Array(w).fill(false) as boolean[]);
-    for (let tz = 0; tz < h; tz++) {
-      for (let tx = 0; tx < w; tx++) {
-        if (L.tiles[tz]![tx] === TileType.Wall) continue;
-        if (L.floorHeights[tz]![tx]! <= PIT_LEVEL) continue;
-        for (const sp of world.columns[tz * w + tx]!) {
-          if (sp.floor <= ABYSS_FLOOR && sp.ceil < 1e8) {
-            vals[tz]![tx] = sp.ceil;
-            isArch[tz]![tx] = true;
-            break;
-          }
-        }
-      }
-    }
-    return { corners: buildCornerField(L.tiles, vals, w, h, 0), isArch };
-  }
 
   private capMax(L: DungeonData, tx: number, tz: number): number {
     let v = -Infinity;
