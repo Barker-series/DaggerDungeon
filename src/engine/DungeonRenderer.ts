@@ -8,7 +8,7 @@ import { buildRoadsContour, ROAD_WALL_LEVELS, ROAD_WALL_MODULE, type RoadsContou
 import { buildPitContour, type PitContour } from '../game/dungeon/pitcontour';
 import { bridgeTiles, PIPE_BORE, CLEARANCE } from '../game/dungeon/pillar-bridges';
 import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
-import { foldColumnBand, foldBandRange } from '../game/dungeon/fold-structure';
+import { foldColumnBand } from '../game/dungeon/fold-structure';
 
 const loader = new THREE.TextureLoader();
 
@@ -993,10 +993,10 @@ export class DungeonRenderer {
     const foldSeed = world.seed + world.stack * 100000;
     const foldAbsTx0 = world.originPcx * PILLAR_CELL_TILES;
     const foldAbsTz0 = world.originPcz * PILLAR_CELL_TILES;
-    const [foldDeepY, foldTopY] = foldBandRange();
     const foldBandCache = new Float64Array(w * h).fill(NaN);
+    const foldTopCache = new Float64Array(w * h);
     const foldPresetCache = new Int8Array(w * h).fill(-1);
-    const foldBandOf = (tx: number, tz: number): { yLo: number; preset: number } | null => {
+    const foldBandOf = (tx: number, tz: number): { yLo: number; yHi: number; preset: number } | null => {
       if (tx < 0 || tz < 0 || tx >= w || tz >= h) return null;
       const i = tz * w + tx;
       let v = foldBandCache[i]!;
@@ -1004,14 +1004,15 @@ export class DungeonRenderer {
         const b = foldColumnBand(foldL.tiles, foldL.floorHeights, foldL.cellBiomes, foldL.pillarGround, foldSeed, foldAbsTx0, foldAbsTz0, tx, tz);
         v = b === null ? -Infinity : b.yLo;
         foldBandCache[i] = v;
+        foldTopCache[i] = b === null ? 0 : b.yHi;
         foldPresetCache[i] = b === null ? -1 : b.preset;
       }
-      return v === -Infinity ? null : { yLo: v, preset: foldPresetCache[i]! };
+      return v === -Infinity ? null : { yLo: v, yHi: foldTopCache[i]!, preset: foldPresetCache[i]! };
     };
     /** Preset of the fold surface at height y on tile (tx,tz), or -1 */
     const foldOwned = (tx: number, tz: number, y: number): number => {
       const b = foldBandOf(tx, tz);
-      return b !== null && y >= b.yLo - 0.01 && y <= foldTopY + 0.01 && y >= foldDeepY - 0.01 ? b.preset : -1;
+      return b !== null && y >= b.yLo - 0.01 && y <= b.yHi + 0.01 ? b.preset : -1;
     };
 
     const bufferFor = (key: RegionKey): MeshBuffers => {

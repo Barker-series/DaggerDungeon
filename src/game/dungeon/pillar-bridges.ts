@@ -180,8 +180,11 @@ export function carveArchIntoColumn(spans: ColumnSpan[], y: number): ColumnSpan[
       out.push(s);
       continue;
     }
-    if (s.floor < lo) out.push({ floor: s.floor, ceil: lo, owner: s.owner, ceilOwner: -1 });
-    if (s.ceil > y) out.push({ floor: y, ceil: s.ceil, owner: -1, ceilOwner: s.ceilOwner });
+    // Crushed air slivers merge into the beam (uninhabitable) — the
+    // same rule the bridge carve applies; fold mass reaching crown
+    // height (crest-to-abyss) made these real for the first time
+    if (s.floor < lo && lo - s.floor >= MIN_AIR) out.push({ floor: s.floor, ceil: lo, owner: s.owner, ceilOwner: -1 });
+    if (s.ceil > y && s.ceil - y >= MIN_AIR) out.push({ floor: y, ceil: s.ceil, owner: -1, ceilOwner: s.ceilOwner });
   }
   return out;
 }

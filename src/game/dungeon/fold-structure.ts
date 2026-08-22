@@ -39,6 +39,7 @@ import { PIT_LEVEL } from './heightfield';
 import { tileBiome, type BiomeType } from './cells';
 import { regionCellAt, regionType, foldDistrictPreset, type RegionType } from './region-layer';
 import { cellSeed, mulberry32 } from './rng';
+import { cellCrest } from './layer6-heights';
 import { TUNABLES } from './tunables';
 
 /** Cell size in tiles (mirrors CELL_TILE_SIZE without an import cycle) */
@@ -64,6 +65,8 @@ export interface FoldPreset {
   flipX: number;
   flipY: number;
   flipZ: number;
+  /** Spans crest-to-abyss when TUNABLES.foldCrestToAbyss is on */
+  fullHeight?: boolean;
 }
 export const FOLD_PRESETS: FoldPreset[] = [
   // "city" — OURS: #5's recipe pushed toward #7 (rot TAU/6, offset 0.7,
@@ -72,7 +75,7 @@ export const FOLD_PRESETS: FoldPreset[] = [
   // courts/cells cut in, towers rising out. (#5 as-published was base
   // 500 / 0.75 / 0.5 / TAU/24 / 24 octaves.)
   { name: 'city', base: 500, decay: 0.55, offset: 0.7, rot: Math.PI / 6, maxOctaves: 14,
-    swapXY: 0, swapXZ: 0, flipX: 2, flipY: 8, flipZ: 2 },
+    swapXY: 0, swapXZ: 0, flipX: 2, flipY: 8, flipZ: 2, fullHeight: true },
   // #6 "industrial girders": base 200, decay 0.25, offset 0.95, TAU/16, swaps xy k&1 / xz k&2, flips x k&4, y k&8, z k&16
   { name: 'girders (#6)', base: 200, decay: 0.25, offset: 0.95, rot: Math.PI / 8, maxOctaves: 8,
     swapXY: 1, swapXZ: 2, flipX: 4, flipY: 8, flipZ: 16 },
@@ -114,6 +117,15 @@ export function foldBandRange(): [number, number] { return [foldDeep(), foldTop(
 
 /** Walk clearance bored through fold mass on permanent transit tiles */
 const TRANSIT_CLEAR = 3.5;
+/** ABYSS floor for crest-to-abyss mode: pits render to worldBottom
+ *  (RENDER_ABYSS_DROP = 300 below the deepest base); fold below that is
+ *  never seen */
+export const FOLD_ABYSS = -300;
+/** Y-term table ceiling (field space) */
+const TABLE_TOP = 600;
+function crestToAbyss(P: FoldPreset): boolean {
+  return P.fullHeight === true && Math.round(TUNABLES.foldCrestToAbyss) === 1;
+}
 /** Interior-pit rim search radius (tiles) — bounded effect distance */
 const RIM_SCAN = 6;
 /** Octave floor: features below ~a tile come from texture, not geometry
@@ -166,13 +178,13 @@ export function octavesUsed(P: FoldPreset): number {
  * (preset, domain offset, position). The general evaluator — used
  * directly for presets whose permutes mix y into x/z (swapXY).
  */
-export function foldFieldAt(P: FoldPreset, ox: number, oz: number, wx: number, wy: number, wz: number): number {
+export function foldFieldAt(P: FoldPreset, ox: number, oz: number, wx: number, wy: number, wz: number, top = foldTop()): number {
   const cr = Math.cos(P.rot);
   const sr = Math.sin(P.rot);
   let qx = wx + ox;
   let qy = wy;
   let qz = wz + oz;
-  let d = wy - foldTop();
+  let d = wy - top;
   let scale = P.base;
   const n = octavesUsed(P);
   for (let k = 0; k < n; k++) {
@@ -248,12 +260,12 @@ export function foldHeightY(P: FoldPreset, wy: number): Float64Array {
  *  preset or band changes (every scanned y lands on this lattice) */
 const yTables = new Map<string, Float64Array[]>();
 function yTerms(P: FoldPreset, wy: number): Float64Array {
-  const deep = foldDeep();
-  const key = `${P.name}|${foldTop()}|${deep}`;
+  const deep = Math.min(foldDeep(), -60);
+  const key = `${P.name}|${deep}`;
   let table = yTables.get(key);
   if (!table) {
     if (yTables.size > 16) yTables.clear();
-    const rows = Math.round((foldTop() - deep) / STEP) + 1;
+    const rows = Math.round((Math.max(foldTop(), TABLE_TOP) - deep) / STEP) + 1;
     table = new Array<Float64Array>(rows);
     for (let i = 0; i < rows; i++) table[i] = foldHeightY(P, deep + i * STEP);
     yTables.set(key, table);
@@ -263,9 +275,9 @@ function yTerms(P: FoldPreset, wy: number): Float64Array {
   return foldHeightY(P, wy);
 }
 /** d(y) for a precomputed column — identical to foldFieldAt */
-export function foldFastAt(P: FoldPreset, mxz: Float64Array, wy: number): number {
+export function foldFastAt(P: FoldPreset, mxz: Float64Array, wy: number, top = foldTop()): number {
   const qy = yTerms(P, wy);
-  let d = wy - foldTop();
+  let d = wy - top;
   for (let k = 0; k < mxz.length; k++) {
     const m = mxz[k]! < qy[k]! ? mxz[k]! : qy[k]!;
     if (m > d) d = m;
@@ -283,10 +295,11 @@ function foldIntervals(P: FoldPreset, ox: number, oz: number, wx: number, wz: nu
   const out: [number, number][] = [];
   const fast = separable(P);
   const mxz = fast ? foldColumnXZ(P, ox, oz, wx, wz) : null;
+  const cap = yHi;
   let y = yHi;
   let solidTop: number | null = null;
   while (y >= yLo) {
-    const d = mxz ? foldFastAt(P, mxz, y) : foldFieldAt(P, ox, oz, wx, y, wz);
+    const d = mxz ? foldFastAt(P, mxz, y, cap) : foldFieldAt(P, ox, oz, wx, y, wz, cap);
     if (d <= 0) {
       if (solidTop === null) solidTop = y;
       y -= Math.max(STEP, Math.floor(-d / STEP) * STEP);
@@ -331,21 +344,57 @@ export function foldColumnBand(
   absTz0: number,
   tx: number,
   tz: number,
-): { yLo: number; preset: number } | null {
+): { yLo: number; yHi: number; fLo: number; fHi: number; preset: number } | null {
   if (tiles[tz]![tx] === TileType.Wall) return null;
   if (pillarGround?.[tz]?.[tx]) return null;
   const absTx = absTx0 + tx;
   const absTz = absTz0 + tz;
+  const acx = Math.floor(absTx / CELL);
+  const acz = Math.floor(absTz / CELL);
   // District gate + preset (absolute dungeon cells)
-  const preset = presetIndexFor(stackSeed, Math.floor(absTx / CELL), Math.floor(absTz / CELL));
+  const preset = presetIndexFor(stackSeed, acx, acz);
   if (preset === undefined) return null;
+  const P = FOLD_PRESETS[preset]!;
   const f = floorHeights[tz]![tx]!;
   const isPit = f <= PIT_LEVEL;
+  const outside = tileBiome(cellBiomes, tx, tz) === 'outside';
   // Interior rooms/corridors are untouchable; fold lives in pits and
   // open-sky terrain
-  if (!isPit && tileBiome(cellBiomes, tx, tz) !== 'outside') return null;
-  const yLo = isPit ? foldDeep() : f;
-  return yLo >= foldTop() ? null : { yLo, preset };
+  if (!isPit && !outside) return null;
+  const full = crestToAbyss(P);
+  // FIELD band (the designed structure): pits from foldDeep, ground
+  // tiles from their floor, up to foldTop. MOVE TARGETS (crest-to-abyss):
+  // the structure's TOPMOST geometry is moved up to the cell's CREST —
+  // where this cell's walls crown — and in pits the BOTTOMMOST geometry
+  // is moved down to the pit bottom (where pit walls end). Everything
+  // between is untouched: same rooms, same stories.
+  const fLo = isPit ? foldDeep() : f;
+  const fHi = foldTop();
+  const yLo = isPit && full ? FOLD_ABYSS : fLo;
+  let yHi = full ? Math.max(fHi, cellCrest(acx, acz, stackSeed)) : fHi;
+  // INTERIOR PITS (no open sky above): the mass stays INSIDE the shaft —
+  // capped at the surrounding rim's floor — instead of climbing out of
+  // the pit into the room above.
+  if (isPit && !outside) {
+    const gridTiles = tiles.length;
+    let rim = Infinity;
+    for (let r = 1; r <= RIM_SCAN && rim === Infinity; r++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+          const nx = tx + dx;
+          const nz = tz + dz;
+          if (nx < 0 || nz < 0 || nx >= gridTiles || nz >= gridTiles) continue;
+          if (tiles[nz]![nx] === TileType.Wall) continue;
+          const nf = floorHeights[nz]![nx]!;
+          if (nf > PIT_LEVEL && nf < rim) rim = nf;
+        }
+      }
+    }
+    if (rim !== Infinity) yHi = Math.min(yHi, rim);
+  }
+  if (fLo >= Math.min(fHi, yHi)) return null;
+  return { yLo, yHi, fLo, fHi, preset };
 }
 
 /** Bore an air band [lo, hi] through whatever solid occupies it; air
@@ -395,7 +444,6 @@ export function foldTileIntervals(
   pillarCellMemo?: Map<string, boolean>,
 ): { bands: [number, number][]; preset: number; yLo: number } | null {
   const [ox, oz] = foldOrigin(stackSeed);
-  const top = foldTop();
   const band = foldColumnBand(tiles, floorHeights, cellBiomes, pillarGround, stackSeed, absTx0, absTz0, tx, tz);
   if (band === null) return null;
   const PC = 56;
@@ -427,33 +475,13 @@ export function foldTileIntervals(
     }
   }
   const yLo = band.yLo;
+  const yHi = band.yHi;
   const P = FOLD_PRESETS[band.preset]!;
-  // INTERIOR PITS (no open sky above): fold stays INSIDE the shaft —
-  // capped at the surrounding rim's floor — instead of climbing out of
-  // the pit into the room above. Open-sky pits keep their towers.
-  let yHi = top;
-  if (floorHeights[tz]![tx]! <= PIT_LEVEL && tileBiome(cellBiomes, tx, tz) !== 'outside') {
-    let rim = Infinity;
-    for (let r = 1; r <= RIM_SCAN && rim === Infinity; r++) {
-      for (let dz = -r; dz <= r; dz++) {
-        for (let dx = -r; dx <= r; dx++) {
-          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
-          const nx = tx + dx;
-          const nz = tz + dz;
-          if (nx < 0 || nz < 0 || nx >= gridTiles || nz >= gridTiles) continue;
-          if (tiles[nz]![nx] === TileType.Wall) continue;
-          const nf = floorHeights[nz]![nx]!;
-          if (nf > PIT_LEVEL && nf < rim) rim = nf;
-        }
-      }
-    }
-    if (rim !== Infinity) yHi = Math.min(top, rim);
-  }
-  if (yLo >= yHi) return null;
   // Column center in world units, ABSOLUTE frame
   const wx = (absTx + 0.5) * TILE_SIZE;
   const wz = (absTz + 0.5) * TILE_SIZE;
-  let bands = foldIntervals(P, ox, oz, wx, wz, yLo, yHi);
+  // Scan the DESIGNED band (interior-pit rim cap applies to the scan top)
+  let bands = foldIntervals(P, ox, oz, wx, wz, band.fLo, Math.min(band.fHi, yHi));
   if (FOLD_MODULE > 0) {
     const snapped: [number, number][] = [];
     for (const [lo, hi] of bands) {
@@ -466,7 +494,17 @@ export function foldTileIntervals(
     }
     bands = snapped;
   }
-  return bands.length === 0 ? null : { bands, preset: band.preset, yLo };
+  if (bands.length === 0) return null;
+  // MOVE the structure's TOPMOST geometry (what touches the designed top
+  // plane) up to the top target, and its BOTTOMMOST (what touches the
+  // designed bottom plane) down to the bottom target. Lower roofs,
+  // setbacks and ledges keep their heights — the detail stays.
+  const scanTop = Math.min(band.fHi, yHi);
+  const last = bands[bands.length - 1]!;
+  if (yHi > last[1] && last[1] >= scanTop - STEP - 1e-6) last[1] = yHi;
+  const first = bands[0]!;
+  if (yLo < first[0] && first[0] <= band.fLo + STEP + 1e-6) first[0] = yLo;
+  return { bands, preset: band.preset, yLo };
 }
 
 export function applyFoldStructures(

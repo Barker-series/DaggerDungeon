@@ -55,6 +55,10 @@ export const TUNABLES = {
   foldPreset: -1,
   foldTop: 60,
   foldDeep: -60,
+  /** 1 = presets flagged fullHeight get their TOPMOST geometry moved up
+   *  to the cell CREST and (in pits) their BOTTOMMOST moved down to the
+   *  pit bottom (-300); everything between is untouched */
+  foldCrestToAbyss: 1,
 };
 
 export type Tunables = typeof TUNABLES;
@@ -75,6 +79,7 @@ export const TUNABLE_DEFS: TunableDef[] = [
   { key: 'foldPreset', label: 'preset (-1 per district, 0 city 1 girders 2 interior 3 rodrigues)', group: 'fold', min: -1, max: 3, step: 1, dirties: 'column' },
   { key: 'foldTop', label: 'top (y)', group: 'fold', min: 10, max: 300, step: 5, dirties: 'column' },
   { key: 'foldDeep', label: 'deep (y)', group: 'fold', min: -300, max: 0, step: 5, dirties: 'column' },
+  { key: 'foldCrestToAbyss', label: 'tops→crest, bottoms→pit bottom (city)', group: 'fold', min: 0, max: 1, step: 1, dirties: 'column' },
 ];
 
 /** Shallowest dirty layer for a set of changed keys. */
