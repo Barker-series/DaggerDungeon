@@ -26,6 +26,7 @@ import { carveRoadsRegion, cutRoadBlockTops, flattenRoadStreets, suppressRoadPit
 import { connectPermanentTransit, permanentTransitTiles, hallwayCells } from '../dungeon/layer4-connect';
 import { placePillars } from '../dungeon/layer45-pillars';
 import { computeHeightFields, computePitMask, carvePitArches, levelPitDecks } from '../dungeon/layer6-heights';
+import { applyFoldStructures } from '../dungeon/fold-structure';
 import { buildColumns } from '../dungeon/columns';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from '../dungeon/pillar-layer';
 import { pillarFootprint } from '../dungeon/pillar-geometry';
@@ -354,6 +355,16 @@ export class ColumnLayer extends ChunkedLayer<ColumnChunk> {
         arches.push(...planOwnedArches(this.stackSeed, cx, cz, specAt));
       }
     }
+    // Fold structures BEFORE bridges: clearance bores cut through fold
+    // mass (same ordering as the legacy path)
+    applyFoldStructures(
+      columns, tiles, floors, cellBiomes, gridTiles,
+      this.stackSeed, ccx * CT - PAD_COLUMN, ccz * CT - PAD_COLUMN,
+      // Core only: pointwise pass, padding is discarded anyway (2.25×)
+      { x0: PAD_COLUMN, z0: PAD_COLUMN, x1: PAD_COLUMN + CT, z1: PAD_COLUMN + CT },
+      pillarGround, transitSetFor(this.transit, b),
+    );
+
     // Field tile frame → working frame: field origin is FR chunks
     // northwest of this chunk; working origin is PAD_COLUMN inside.
     const off = -FR * CT + PAD_COLUMN;

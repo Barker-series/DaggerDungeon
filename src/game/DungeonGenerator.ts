@@ -33,6 +33,7 @@ import { carveRoadsRegion, cutRoadBlockTops, flattenRoadStreets, suppressRoadPit
 import { regionAtCell } from './dungeon/region-layer';
 import { connectPermanentTransit, permanentTransitTiles, hallwayCells } from './dungeon/layer4-connect';
 import { computeHeightFields, computePitMask, carvePitArches, levelPitDecks, cellCrest } from './dungeon/layer6-heights';
+import { applyFoldStructures } from './dungeon/fold-structure';
 import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
 import { applyPillarSpans } from './dungeon/pillar-marry';
@@ -199,6 +200,34 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   for (const spec of planningOwners) {
     arches.push(...planOwnedArches(stackSeed, spec.cx, spec.cz, specAt).filter(touchesWindow));
   }
+  // ── Fold structures: canyon districts grow kaleidoscopic-fold
+  // megastructure mass (pits → tower roots, open sky → canopy), fully
+  // columnized = fully playable. BEFORE bridges/subways so their
+  // clearance bores cut through fold mass — walkways pierce towers. ──
+  applyFoldStructures(
+    columns, level.tiles, level.floorHeights, level.cellBiomes, genTiles,
+    stackSeed, genPcx * PILLAR_CELL_TILES, genPcz * PILLAR_CELL_TILES,
+    // Core only: pointwise pass, the guard ring is cropped anyway
+    { x0: padTiles, z0: padTiles, x1: padTiles + GRID_TILES, z1: padTiles + GRID_TILES },
+    level.pillarGround, permanentTransitTiles,
+  );
+  // Fold post-condition (the network guard is load-bearing): every
+  // permanent transit tile keeps its walk clearance above its floor.
+  {
+    let broken = 0;
+    for (const key of permanentTransitTiles) {
+      const comma = key.indexOf(',');
+      const tx = Number(key.slice(0, comma));
+      const tz = Number(key.slice(comma + 1));
+      if (tx < padTiles || tz < padTiles || tx >= padTiles + GRID_TILES || tz >= padTiles + GRID_TILES) continue;
+      const f = level.floorHeights[tz]![tx]!;
+      if (f <= -900 || level.tiles[tz]![tx] === TileType.Wall) continue;
+      const ok = columns[tz * genTiles + tx]!.some((s) => s.floor <= f + 0.05 && s.ceil >= f + 3.0);
+      if (!ok) broken++;
+    }
+    if (broken > 0) console.error(`[gen] column invariant: ${broken} transit tiles lost walk clearance under fold mass`);
+  }
+
   carveStructures(columns, genTiles, arches, subways, bridges);
 
   const errs = validateColumns(columns, genTiles, genTiles);

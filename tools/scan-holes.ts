@@ -132,6 +132,11 @@ for (const seed of SEEDS) {
       if (L.tiles[tz]![tx] === TileType.Wall) continue;
       const f = L.floorHeights[tz]![tx]!;
       if (f <= -900) continue;
+      // The eye must be in AIR per the column model: a tile buried under
+      // generated mass (fold structures) is not a standable origin — an
+      // origin inside solid makes every ray "escape" (false positives)
+      const col = world.columns[tz * L.width + tx]!;
+      if (!col.some((s) => s.floor <= f + 0.05 && s.ceil >= f + 1.8)) continue;
       origins++;
       const ox = (tx + 0.5) * TILE_SIZE;
       const oz = (tz + 0.5) * TILE_SIZE;

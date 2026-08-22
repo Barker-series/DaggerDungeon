@@ -903,8 +903,9 @@ export class GameEngine {
     markPhase('world');
     this.cornerFloors = this.world.levels.map((l) =>
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
-    this.contours = this.world.levels.map((l) => buildOrganicContour(l));
-    this.pitContour = buildPitContour(this.world.levels[0]!);
+    const worldCols = this.world.columns;
+    this.contours = this.world.levels.map((l) => buildOrganicContour(l, worldCols));
+    this.pitContour = buildPitContour(this.world.levels[0]!, this.world.columns);
     this.roadsContour = buildRoadsContour(this.world);
     markPhase('collision');
     // Adopt the window as the chunk data source. No geometry is built

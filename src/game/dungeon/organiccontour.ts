@@ -10,7 +10,7 @@
  * floor beyond half a tile.
  */
 
-import { TileType, TILE_SIZE, type DungeonData } from '../types';
+import { TileType, TILE_SIZE, type DungeonData, type ColumnSpan } from '../types';
 import { tileBiome, isOrganicBiome, type BiomeType } from './cells';
 
 export interface ContourSegment {
@@ -87,7 +87,14 @@ export function isTransitFloorIn(
   return tileBiome(dungeon.cellBiomes, tx, tz) === null;
 }
 
-export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
+export function buildOrganicContour(
+  dungeon: DungeonData,
+  /** Column model (optional): floor tiles BURIED by generated mass
+   *  (fold structures) are structural, not organic air — contouring a
+   *  corner as if they were open opens the chamfer wedge into solid
+   *  (DDSNAP, Aug 2026). Pass it wherever available. */
+  columns?: ColumnSpan[][],
+): OrganicContour {
   const s = TILE_SIZE;
   const w = dungeon.width;
   const h = dungeon.height;
@@ -123,8 +130,21 @@ export function buildOrganicContour(dungeon: DungeonData): OrganicContour {
   // tiles are structural for the same reason — a border group between a
   // cave ledge and a roads plinth must not fence the step with a 2D
   // segment the column model says is walkable.
+  /** A floor tile whose column has no standable air at its floor —
+   *  buried under generated mass. Structural like a pillar footprint:
+   *  the mass's real shape lives in the column spans. */
+  const isBuried = (tx: number, tz: number): boolean => {
+    if (!columns || tx < 0 || tz < 0 || tx >= w || tz >= h) return false;
+    if (dungeon.tiles[tz]![tx] === TileType.Wall) return false;
+    const f = dungeon.floorHeights[tz]![tx]!;
+    if (f <= -900) return false;
+    const fy = dungeon.baseY + f;
+    const col = columns[tz * w + tx];
+    if (!col) return false;
+    return !col.some((sp) => sp.floor <= fy + 0.05 && sp.ceil >= fy + 1.5);
+  };
   const isPillar = (tx: number, tz: number): boolean =>
-    (dungeon.pillarWall?.[tz]?.[tx] ?? false) || isRoadsTile(tx, tz);
+    (dungeon.pillarWall?.[tz]?.[tx] ?? false) || isRoadsTile(tx, tz) || isBuried(tx, tz);
 
   const register = (tx: number, tz: number, seg: ContourSegment): void => {
     if (tx < 0 || tz < 0 || tx >= w || tz >= h) return;

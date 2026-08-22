@@ -99,6 +99,31 @@ directly, killing recenter and the window-local coordinate shell.
 Future directions — none of these are commitments, and the rail one is
 explicitly a guess until the day it's real work.
 
+- **Fold-generated biome areas (reference: Shadertoy WcGyzm, "Megastructure
+  Path Trace 5" by RedKef — user + design conversation, Aug 20 2026).** A
+  ~30-line kaleidoscopic-fold SDF (rotate → mod-tile → mirror-fold →
+  axis-slab intersect, scale ×0.75 per octave, 24 octaves over a ground
+  plane) produces a full BLAME!-city at every detail scale — our art bar,
+  from one rule repeated at shrinking scales. Directions worth exploring:
+  fold-style rules as per-biome geometry flavor, facade greeble octaves as
+  render-side surface detail, or a far-plane raymarched skyline impostor
+  beyond the streamed chunks. The sequel "Path Trace 6" (WcGyzm → Wf3BWn)
+  proves the parameter space IS the content: identical code, six constants
+  changed (octaves 24→8, offset 0.5→0.95, decay 0.75→0.25, axis swaps),
+  and the city canyon becomes industrial girder trusses — so one fold
+  engine + a preset per district could give each biome its own generated
+  architecture. License doctrine (user directive, Aug 20 2026): the
+  shaders are Shadertoy-default CC BY-NC-SA, which restricts copying
+  their CODE (expression) — it does NOT restrict the technique, the
+  construction, or the parameter values, which are facts and public
+  fractal-community knowledge. House rule: study references freely,
+  port their SETTINGS faithfully as the starting point, ship only our
+  own implementation (obeying infinite-world discipline and, for
+  anything walkable, the column model), then evolve it into our own
+  thing. Credit to RedKef's Megastructure series is given as a
+  courtesy, not an obligation. Faithful-port-first: no invented
+  variants before the user has seen the reference reproduced.
+
 - **The subway (plan-8 rail, design sketch — user + design conversation,
   Aug 3 2026).** Endless point-to-point tunnels, done the LayerProcGen way:
   not one infinite path (nothing holds global knowledge) but an endless

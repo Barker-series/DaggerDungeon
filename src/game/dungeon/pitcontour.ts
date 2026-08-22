@@ -20,7 +20,7 @@
  * argument as the organic contour.
  */
 
-import { TileType, TILE_SIZE, type DungeonData } from '../types';
+import { TileType, TILE_SIZE, ABYSS_FLOOR, type ColumnSpan, type DungeonData } from '../types';
 import { PIT_LEVEL } from './heightfield';
 import { archSpanAt } from './layer6-heights';
 import type { ContourSegment } from './organiccontour';
@@ -67,10 +67,25 @@ const FILL_CASES: Record<number, { seg: [number, number]; pitTile: number }> = {
   14: { seg: [2, 3], pitTile: 2 }, // BL pit
 };
 
-export function buildPitContour(dungeon: DungeonData): PitContour {
+export function buildPitContour(
+  dungeon: DungeonData,
+  /** Column model, for the occupied-pit decline. Optional so tools
+   *  without columns keep working; pass it wherever available. */
+  columns?: ColumnSpan[][],
+): PitContour {
   const s = TILE_SIZE;
   const w = dungeon.width;
   const h = dungeon.height;
+  /** A pit column carrying real floors (fold structures rising out of
+   *  the void) is not a clean drop: its rim bands would fall THROUGH
+   *  the structure's air as giant curtains. Such groups keep square
+   *  rims — the XOR faces seal them data-exactly. */
+  const occupiedPit = (tx: number, tz: number): boolean => {
+    if (!columns) return false;
+    const col = columns[tz * w + tx];
+    if (!col) return false;
+    return col.some((sp) => sp.floor > ABYSS_FLOOR);
+  };
   const segments: ContourSegment[] = [];
   const fillSegments: ContourSegment[] = [];
   const byTile = new Map<number, ContourSegment[]>();
@@ -128,6 +143,9 @@ export function buildPitContour(dungeon: DungeonData): PitContour {
       // Thin-slot pits decline the whole group
       if ((pTL && isThinPit(tx, tz)) || (pTR && isThinPit(tx + 1, tz))
         || (pBL && isThinPit(tx, tz + 1)) || (pBR && isThinPit(tx + 1, tz + 1))) continue;
+      // Occupied pits (fold structures in the void) decline
+      if ((pTL && occupiedPit(tx, tz)) || (pTR && occupiedPit(tx + 1, tz))
+        || (pBL && occupiedPit(tx, tz + 1)) || (pBR && occupiedPit(tx + 1, tz + 1))) continue;
       // ARCH-carved floors decline: arch undersides render DATA-EXACT
       // (flat per-tile soffits), and a smoothing band can't meet that
       // surface — its corner-blended bottom hangs mid-air as a

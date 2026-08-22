@@ -367,9 +367,9 @@ export class DungeonRenderer {
     // One contour per level: the marching-squares line is the single
     // authority on organic wall SHAPE — collision segments and the
     // chamfered wall quads both come from it
-    const contours = world.levels.map((l) => buildOrganicContour(l));
+    const contours = world.levels.map((l) => buildOrganicContour(l, world.columns));
     const roadsContour = buildRoadsContour(world);
-    const pitContour = buildPitContour(world.levels[0]!);
+    const pitContour = buildPitContour(world.levels[0]!, world.columns);
 
     for (let li = 0; li < world.levels.length; li++) {
       this.buildLevelSurfaces(world, li, cornerFloors[li]!, contours[li]!, this.materialsFor, this.meshGroup, undefined, li === 0 ? pitContour : undefined);
@@ -400,9 +400,9 @@ export class DungeonRenderer {
     this.chunkCtx = {
       cornerFloors: world.levels.map((l) =>
         buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround)),
-      contours: world.levels.map((l) => buildOrganicContour(l)),
+      contours: world.levels.map((l) => buildOrganicContour(l, world.columns)),
       roadsContour: buildRoadsContour(world),
-      pitContour: buildPitContour(world.levels[0]!),
+      pitContour: buildPitContour(world.levels[0]!, world.columns),
     };
     // Two classes of chunk cannot survive a window adoption unchanged
     // (both found as walk-through phantom walls in playtest DDSNAPs,
@@ -1347,6 +1347,20 @@ export class DungeonRenderer {
                   airIsSky = s.ceil >= SKY_CEIL;
                   airTopKnown = true;
                   break;
+                }
+              }
+              // STRUCTURE-CARVED air (owner -1: fold gaps, bridge bores)
+              // sitting over a level-0 column against a level-0 soft
+              // wall, below that wall's cap, belongs to the segment wall
+              // that already spans floor→cap there. Without this the XOR
+              // pass draws flat halves on the very plane the segment
+              // wall draws — z-fighting wherever fold mass meets outer
+              // walls (DDSNAP, Aug 2026).
+              if (airOwner === -1 && airTopKnown) {
+                const base = airSpans.find((s2) => s2.owner === 0);
+                if (base && contours[0]!.softWalls.has(solidZ * w + solidX)) {
+                  const cap = this.capMax(world.levels[0]!, solidX, solidZ);
+                  if (Number.isFinite(cap) && mid <= cap) airOwner = 0;
                 }
               }
               if (airOwner >= 0 && contours[airOwner]!.softWalls.has(solidZ * w + solidX)) {
