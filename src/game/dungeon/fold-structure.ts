@@ -67,6 +67,11 @@ export interface FoldPreset {
   flipZ: number;
   /** Spans crest-to-abyss when TUNABLES.foldCrestToAbyss is on */
   fullHeight?: boolean;
+  /** Solid THICKENING (world units): the field's distance bound is a
+   *  signed distance, so treating d <= thicken as solid offsets the
+   *  surface outward — thin members survive tile quantization as
+   *  connected beams instead of floating cubes */
+  thicken?: number;
 }
 export const FOLD_PRESETS: FoldPreset[] = [
   // "city" — OURS: #5's recipe pushed toward #7 (rot TAU/6, offset 0.7,
@@ -78,7 +83,7 @@ export const FOLD_PRESETS: FoldPreset[] = [
     swapXY: 0, swapXZ: 0, flipX: 2, flipY: 8, flipZ: 2, fullHeight: true },
   // #6 "industrial girders": base 200, decay 0.25, offset 0.95, TAU/16, swaps xy k&1 / xz k&2, flips x k&4, y k&8, z k&16
   { name: 'girders (#6)', base: 200, decay: 0.25, offset: 0.95, rot: Math.PI / 8, maxOctaves: 8,
-    swapXY: 1, swapXZ: 2, flipX: 4, flipY: 8, flipZ: 16 },
+    swapXY: 1, swapXZ: 2, flipX: 4, flipY: 8, flipZ: 16, thicken: 1.5 },
   // #7 "carved interior": base 500, decay 0.5, offset 0.75, TAU/8, #5's flips
   { name: 'interior (#7)', base: 500, decay: 0.5, offset: 0.75, rot: Math.PI / 4, maxOctaves: 12,
     swapXY: 0, swapXZ: 0, flipX: 2, flipY: 8, flipZ: 2 },
@@ -296,10 +301,12 @@ function foldIntervals(P: FoldPreset, ox: number, oz: number, wx: number, wz: nu
   const fast = separable(P);
   const mxz = fast ? foldColumnXZ(P, ox, oz, wx, wz) : null;
   const cap = yHi;
+  const thick = P.thicken ?? 0;
   let y = yHi;
   let solidTop: number | null = null;
   while (y >= yLo) {
-    const d = mxz ? foldFastAt(P, mxz, y, cap) : foldFieldAt(P, ox, oz, wx, y, wz, cap);
+    // Offset surface: solid where the distance bound is within `thicken`
+    const d = (mxz ? foldFastAt(P, mxz, y, cap) : foldFieldAt(P, ox, oz, wx, y, wz, cap)) - thick;
     if (d <= 0) {
       if (solidTop === null) solidTop = y;
       y -= Math.max(STEP, Math.floor(-d / STEP) * STEP);
