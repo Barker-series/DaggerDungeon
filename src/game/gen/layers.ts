@@ -362,7 +362,7 @@ export class ColumnLayer extends ChunkedLayer<ColumnChunk> {
       this.stackSeed, ccx * CT - PAD_COLUMN, ccz * CT - PAD_COLUMN,
       // Core only: pointwise pass, padding is discarded anyway (2.25×)
       { x0: PAD_COLUMN, z0: PAD_COLUMN, x1: PAD_COLUMN + CT, z1: PAD_COLUMN + CT },
-      pillarGround, transitSetFor(this.transit, b),
+      pillarGround, transitSetFor(this.transit, b), pillarWall,
     );
 
     // Field tile frame → working frame: field origin is FR chunks

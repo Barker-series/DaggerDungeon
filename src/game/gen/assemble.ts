@@ -51,7 +51,7 @@ let state: GenState | null = null;
  *  layer — it and everything downstream drop their chunks; layers
  *  above it stay cached (transit routing is the expensive pass, and a
  *  pit-size tweak has no business recomputing it). */
-export type GenResetLevel = 'all' | 'tileBase' | 'transit' | 'height';
+export type GenResetLevel = 'all' | 'tileBase' | 'transit' | 'height' | 'column';
 
 export function resetGenState(from: GenResetLevel = 'all'): void {
   if (!state || from === 'all' || from === 'tileBase') {
@@ -64,8 +64,12 @@ export function resetGenState(from: GenResetLevel = 'all'): void {
     state.column.clearAll();
     return;
   }
-  // from === 'height'
-  state.height.clearAll();
+  if (from === 'height') {
+    state.height.clearAll();
+    state.column.clearAll();
+    return;
+  }
+  // from === 'column' (fold tunables): only the column layer regenerates
   state.column.clearAll();
 }
 

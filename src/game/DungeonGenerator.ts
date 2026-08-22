@@ -209,7 +209,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     stackSeed, genPcx * PILLAR_CELL_TILES, genPcz * PILLAR_CELL_TILES,
     // Core only: pointwise pass, the guard ring is cropped anyway
     { x0: padTiles, z0: padTiles, x1: padTiles + GRID_TILES, z1: padTiles + GRID_TILES },
-    level.pillarGround, permanentTransitTiles,
+    level.pillarGround, permanentTransitTiles, pillarWall,
   );
   // Fold post-condition (the network guard is load-bearing): every
   // permanent transit tile keeps its walk clearance above its floor.

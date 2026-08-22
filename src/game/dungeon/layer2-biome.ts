@@ -127,6 +127,11 @@ export function assignBiomes(_cellTileSize: number, stackSeed: number, level: nu
         // reads as cave until the region gets its own vertical vocabulary.
         cell.biome = level === 0 ? 'outside' : 'cave';
         break;
+      case 'fold':
+        // Fold district: open sky at grade — the fold structures ARE the
+        // architecture here (fold-structure.ts builds on outside tiles)
+        cell.biome = level === 0 ? 'outside' : 'cave';
+        break;
       case 'frontier':
         if (wildness > 0.612) {
           cell.biome = level === 0 ? 'outside' : 'cave';

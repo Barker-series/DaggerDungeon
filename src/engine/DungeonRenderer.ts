@@ -8,6 +8,7 @@ import { buildRoadsContour, ROAD_WALL_LEVELS, ROAD_WALL_MODULE, type RoadsContou
 import { buildPitContour, type PitContour } from '../game/dungeon/pitcontour';
 import { bridgeTiles, PIPE_BORE, CLEARANCE } from '../game/dungeon/pillar-bridges';
 import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
+import { foldColumnBand, foldBandRange } from '../game/dungeon/fold-structure';
 
 const loader = new THREE.TextureLoader();
 
@@ -335,6 +336,25 @@ export class DungeonRenderer {
       m.mesh.rotation.y += dt * 1.2;
       m.mesh.position.y = m.baseY + Math.sin(this.markerTime * 2) * 0.15;
     }
+  }
+
+  /** DEBUG TINT for fold-generated surfaces: one colour per preset so
+   *  fold mass reads apart from terrain and presets read apart from
+   *  each other in-game. Vertex biome tints still multiply in. */
+  private foldMaterials = new Map<number, RegionMaterials>();
+  private foldMaterialsFor(preset: number): RegionMaterials {
+    let m = this.foldMaterials.get(preset);
+    if (!m) {
+      const FOLD_TINTS = [0x7fb0ff, 0xc08cff, 0xffb066, 0x8fe08f]; // blue, purple, orange, green
+      const tint = FOLD_TINTS[preset % FOLD_TINTS.length]!;
+      m = {
+        wall: makeConcreteMaterial(tint, 0x000000, 0.9, true),
+        floor: makeConcreteMaterial(tint, 0x000000, 0.94),
+        ceil: makeConcreteMaterial(tint, 0x000000, 0.97),
+      };
+      this.foldMaterials.set(preset, m);
+    }
+    return m;
   }
 
   private materialsFor = (key: RegionKey): RegionMaterials => {
@@ -961,6 +981,39 @@ export class DungeonRenderer {
 
     const buffers = new Map<RegionKey, MeshBuffers>();
     const rockFloors = newBuffers();
+    // Fold-owned surfaces get their own buffers PER PRESET (debug tint)
+    const foldWallsBy = new Map<number, MeshBuffers>();
+    const foldTopsBy = new Map<number, MeshBuffers>();
+    const foldBuf = (m: Map<number, MeshBuffers>, preset: number): MeshBuffers => {
+      let b = m.get(preset);
+      if (!b) { b = newBuffers(); m.set(preset, b); }
+      return b;
+    };
+    const foldL = world.levels[0]!;
+    const foldSeed = world.seed + world.stack * 100000;
+    const foldAbsTx0 = world.originPcx * PILLAR_CELL_TILES;
+    const foldAbsTz0 = world.originPcz * PILLAR_CELL_TILES;
+    const [foldDeepY, foldTopY] = foldBandRange();
+    const foldBandCache = new Float64Array(w * h).fill(NaN);
+    const foldPresetCache = new Int8Array(w * h).fill(-1);
+    const foldBandOf = (tx: number, tz: number): { yLo: number; preset: number } | null => {
+      if (tx < 0 || tz < 0 || tx >= w || tz >= h) return null;
+      const i = tz * w + tx;
+      let v = foldBandCache[i]!;
+      if (Number.isNaN(v)) {
+        const b = foldColumnBand(foldL.tiles, foldL.floorHeights, foldL.cellBiomes, foldL.pillarGround, foldSeed, foldAbsTx0, foldAbsTz0, tx, tz);
+        v = b === null ? -Infinity : b.yLo;
+        foldBandCache[i] = v;
+        foldPresetCache[i] = b === null ? -1 : b.preset;
+      }
+      return v === -Infinity ? null : { yLo: v, preset: foldPresetCache[i]! };
+    };
+    /** Preset of the fold surface at height y on tile (tx,tz), or -1 */
+    const foldOwned = (tx: number, tz: number, y: number): number => {
+      const b = foldBandOf(tx, tz);
+      return b !== null && y >= b.yLo - 0.01 && y <= foldTopY + 0.01 && y >= foldDeepY - 0.01 ? b.preset : -1;
+    };
+
     const bufferFor = (key: RegionKey): MeshBuffers => {
       let b = buffers.get(key);
       if (!b) {
@@ -1070,10 +1123,10 @@ export class DungeonRenderer {
     // never be seen. (Wireframe audit: the per-tile version was ~130k
     // hidden or redundant triangles per window.) ──
     // Per row: runs of (height, up/down) keyed by exact height
-    type Run = { x0: number; x1: number; y: number; up: boolean };
+    type Run = { x0: number; x1: number; y: number; up: boolean; fold: number };
     const flushRuns = (runs: Map<string, Run>, z: number): void => {
       for (const r of runs.values()) {
-        addFlatStrip(rockFloors, r.x0 * TILE_SIZE, z * TILE_SIZE, (r.x1 + 1) * TILE_SIZE, (z + 1) * TILE_SIZE, r.y, r.up);
+        addFlatStrip(r.fold >= 0 ? foldBuf(foldTopsBy, r.fold) : rockFloors, r.x0 * TILE_SIZE, z * TILE_SIZE, (r.x1 + 1) * TILE_SIZE, (z + 1) * TILE_SIZE, r.y, r.up);
       }
       runs.clear();
     };
@@ -1132,14 +1185,14 @@ export class DungeonRenderer {
       for (let x = bounds?.x0 ?? 0; x < (bounds?.x1 ?? w); x++) {
         const a = world.columns[z * w + x]!;
         const here = new Set<string>();
-        const want = (y: number, up: boolean): void => {
-          const k = `${up ? 'u' : 'd'}${y}`;
+        const want = (y: number, up: boolean, fold = -1): void => {
+          const k = `${fold >= 0 ? `F${fold}` : ''}${up ? 'u' : 'd'}${y}`;
           here.add(k);
           const r = open.get(k);
           if (r && r.x1 === x - 1) r.x1 = x;
           else {
-            if (r) addFlatStrip(rockFloors, r.x0 * TILE_SIZE, z * TILE_SIZE, (r.x1 + 1) * TILE_SIZE, (z + 1) * TILE_SIZE, r.y, r.up);
-            open.set(k, { x0: x, x1: x, y, up });
+            if (r) addFlatStrip(r.fold >= 0 ? foldBuf(foldTopsBy, r.fold) : rockFloors, r.x0 * TILE_SIZE, z * TILE_SIZE, (r.x1 + 1) * TILE_SIZE, (z + 1) * TILE_SIZE, r.y, r.up);
+            open.set(k, { x0: x, x1: x, y, up, fold });
           }
         };
         const cutBase = (z * w + x) * 4;
@@ -1150,14 +1203,14 @@ export class DungeonRenderer {
         for (const s of a) {
           if (s.owner === -1 && s.floor > ABYSS_FLOOR) {
             if (topCut) emitClippedTop(x, z, s.floor);
-            else want(s.floor, true);
+            else want(s.floor, true, foldOwned(x, z, s.floor));
           }
           // Arch void ceilings included: DATA-EXACT flat pieces (the
           // corner-field intrados and every smoothed successor read
           // wrong from below — removed Aug 2026; a from-scratch arch
           // underside can rebuild on layer6-heights' archSpanAt /
           // archDepthAt shape authority).
-          if (s.ceilOwner === -1 && s.ceil < SKY_CEIL) want(s.ceil, false);
+          if (s.ceilOwner === -1 && s.ceil < SKY_CEIL) want(s.ceil, false, foldOwned(x, z, s.ceil));
         }
         // The world's top plane is WATERTIGHT: every column either opens
         // to sky or carries a roof slab at its crown (the crest
@@ -1174,7 +1227,7 @@ export class DungeonRenderer {
         // Runs whose height vanished at this column flush now
         for (const [k, r] of open) {
           if (!here.has(k) && r.x1 < x) {
-            addFlatStrip(rockFloors, r.x0 * TILE_SIZE, z * TILE_SIZE, (r.x1 + 1) * TILE_SIZE, (z + 1) * TILE_SIZE, r.y, r.up);
+            addFlatStrip(r.fold >= 0 ? foldBuf(foldTopsBy, r.fold) : rockFloors, r.x0 * TILE_SIZE, z * TILE_SIZE, (r.x1 + 1) * TILE_SIZE, (z + 1) * TILE_SIZE, r.y, r.up);
             open.delete(k);
           }
         }
@@ -1281,7 +1334,10 @@ export class DungeonRenderer {
             const solidZ = inA ? nz : z;
 
             const region = faceRegion(airSpans, lo, hi, airX, airZ);
-            const buf = bufferFor(region);
+            const foldP = (solidX >= 0 && solidZ >= 0 && solidX < w && solidZ < h
+              && foldOwned(solidX, solidZ, lo) >= 0 && foldOwned(solidX, solidZ, hi) >= 0)
+              ? foldOwned(solidX, solidZ, lo) : -1;
+            const buf = foldP >= 0 ? foldBuf(foldWallsBy, foldP) : bufferFor(region);
             const ex0 = c0.cx * TILE_SIZE;
             const ez0 = c0.cz * TILE_SIZE;
             const ex1 = c1.cx * TILE_SIZE;
@@ -1804,6 +1860,8 @@ export class DungeonRenderer {
       this.addMesh(group, buf, materialsFor(key).wall, `faces:xor-walls:${key}`);
     }
     this.addMesh(group, rockFloors, materialsFor('tunnel').floor, 'faces:rock-tops+roofs');
+    for (const [preset, b] of foldTopsBy) this.addMesh(group, b, this.foldMaterialsFor(preset).floor, `faces:fold-tops:${preset}`);
+    for (const [preset, b] of foldWallsBy) this.addMesh(group, b, this.foldMaterialsFor(preset).wall, `faces:fold-walls:${preset}`);
   }
 
   /**

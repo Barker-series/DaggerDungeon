@@ -32,17 +32,22 @@ import { sampleNoise3D } from './noise';
 /** Dungeon cells per region axis (= 2x2 pillar cells, 336 wu) */
 export const REGION_CELLS = 8;
 
-export type RegionType = 'city' | 'machine' | 'canyon' | 'frontier' | 'roads';
+export type RegionType = 'city' | 'machine' | 'canyon' | 'frontier' | 'roads' | 'fold';
 
 /** Weighted character of each district type */
 const REGION_WEIGHTS: [RegionType, number][] = [
-  ['city', 0.3],
-  ['machine', 0.25],
-  ['canyon', 0.17],
-  ['frontier', 0.13],
+  ['city', 0.25],
+  ['machine', 0.2],
+  ['canyon', 0.15],
+  ['frontier', 0.12],
   // The street-vein experiment district (docs/roads-layer-design.md):
   // arterial road networks carved under open sky.
-  ['roads', 0.15],
+  ['roads', 0.13],
+  // FOLD districts (Aug 22 2026): whole regions owned by one fold
+  // preset — open sky at grade so the generated architecture can build
+  // (fold-structure.ts); the preset is a pure function of the region
+  // cell, so each fold district is ONE coherent architecture.
+  ['fold', 0.15],
 ];
 
 const REGION_SALT = 7373;
@@ -65,10 +70,21 @@ export function regionType(worldSeed: number, rcx: number, rcz: number): RegionT
  * the lookup position is pushed around by low-frequency noise before
  * quantizing to the region grid.
  */
-export function regionAtCell(worldSeed: number, cx: number, cz: number): RegionType {
+/** The REGION cell a dungeon cell belongs to (after border warp) */
+export function regionCellAt(worldSeed: number, cx: number, cz: number): { rcx: number; rcz: number } {
   const wx = (sampleNoise3D(cx / REGION_CELLS, 0, cz / REGION_CELLS, worldSeed + 4747) - 0.5) * 2 * BORDER_WARP;
   const wz = (sampleNoise3D(cx / REGION_CELLS, 0, cz / REGION_CELLS, worldSeed + 4747 + 77) - 0.5) * 2 * BORDER_WARP;
-  const rcx = Math.floor((cx + wx) / REGION_CELLS);
-  const rcz = Math.floor((cz + wz) / REGION_CELLS);
+  return { rcx: Math.floor((cx + wx) / REGION_CELLS), rcz: Math.floor((cz + wz) / REGION_CELLS) };
+}
+export function regionAtCell(worldSeed: number, cx: number, cz: number): RegionType {
+  const { rcx, rcz } = regionCellAt(worldSeed, cx, cz);
   return regionType(worldSeed, rcx, rcz);
+}
+
+const FOLD_REGION_SALT = 9111;
+/** Which fold preset a FOLD district is built from — pure (seed, region
+ *  cell), so the whole district is one architecture. */
+export function foldDistrictPreset(worldSeed: number, rcx: number, rcz: number, presetCount: number): number {
+  const rng = mulberry32(cellSeed(rcx, rcz, worldSeed, FOLD_REGION_SALT));
+  return Math.min(presetCount - 1, Math.floor(rng() * presetCount));
 }

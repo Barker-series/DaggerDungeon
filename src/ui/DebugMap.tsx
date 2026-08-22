@@ -28,6 +28,7 @@ const REGION_COLORS: Record<RegionType, string> = {
   canyon: '#78453b',
   frontier: '#486a55',
   roads: '#3d5a8a',
+  fold: '#7a5fa8',
 };
 
 type ViewMode = 'slice' | 'tiles' | 'biome' | 'region' | 'noise' | 'content' | 'pillars';

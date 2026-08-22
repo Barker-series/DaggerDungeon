@@ -125,6 +125,10 @@ export function pillarOccupied(worldSeed: number, pcx: number, pcz: number): boo
     case 'frontier':
       // Looser isolated monuments and small, irregular groups.
       return local * 0.6 + macro * 0.4 >= 0.55;
+    case 'fold':
+      // Fold district: mostly open plane — the fold architecture is the
+      // mass; rare monuments punctuate it.
+      return local * 0.4 + macro * 0.6 >= 0.74;
   }
 }
 

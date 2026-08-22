@@ -19,6 +19,20 @@
 // Legacy generateWorld is covered by tools/verify-migration.ts, which
 // proves the two paths bit-identical.
 import { generateWorldChunked as generateWorld } from '../src/game/gen/assemble';
+// --tunables=key=val,key=val — apply live gen tunables before generating
+{
+  const tunArg = process.argv.find((a) => a.startsWith('--tunables='));
+  if (tunArg) {
+    const { applyTunables } = await import('../src/game/dungeon/tunables');
+    const vals: Record<string, number> = {};
+    for (const kv of tunArg.slice('--tunables='.length).split(',')) {
+      const [k, v] = kv.split('=');
+      if (k && v !== undefined) vals[k] = Number(v);
+    }
+    applyTunables(vals as never);
+    console.log('tunables:', vals);
+  }
+}
 import { bridgeTiles } from '../src/game/dungeon/pillar-bridges';
 import { PILLAR_CELL_TILES, PILLAR_FACTOR, pillarOccupied } from '../src/game/dungeon/pillar-layer';
 import { pillarFootprint } from '../src/game/dungeon/pillar-geometry';
@@ -29,7 +43,7 @@ import { findForwardExplorationPath } from '../src/game/pathfinding';
 import { TileType } from '../src/game/types';
 
 const DEFAULT_SEEDS = [1, 7, 42, 99, 137, 500, 999, 1234, 4096, 7777, 12345, 31337, 55555, 90210, 2024, 13];
-const seeds = process.argv.slice(2).map(Number).filter((n) => Number.isFinite(n));
+const seeds = process.argv.slice(2).filter((a) => !a.startsWith('--')).map(Number).filter((n) => Number.isFinite(n));
 const SEEDS = seeds.length > 0 ? seeds : DEFAULT_SEEDS;
 
 /** Engine STEP_UP (0.65) plus slack */
@@ -153,6 +167,8 @@ for (const seed of SEEDS) {
     frontier: new Set(['dungeon', 'crypt', 'cave', 'ember', 'outside']),
     // Street-vein district: open sky at grade (crude slice).
     roads: new Set(['outside']),
+    // Fold district: open sky at grade, cave below.
+    fold: new Set(['outside', 'cave']),
   };
   let wrongRegionBiomes = 0;
   for (let cz = 0; cz < L.cellBiomes.length; cz++) {

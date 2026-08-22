@@ -19,10 +19,24 @@
 
 const THREE = await import('three');
 const { generateWorld } = await import('../src/game/DungeonGenerator');
+// --tunables=key=val,key=val — apply live gen tunables before generating
+{
+  const tunArg = process.argv.find((a) => a.startsWith('--tunables='));
+  if (tunArg) {
+    const { applyTunables } = await import('../src/game/dungeon/tunables');
+    const vals: Record<string, number> = {};
+    for (const kv of tunArg.slice('--tunables='.length).split(',')) {
+      const [k, v] = kv.split('=');
+      if (k && v !== undefined) vals[k] = Number(v);
+    }
+    applyTunables(vals as never);
+    console.log('tunables:', vals);
+  }
+}
 const { DungeonRenderer } = await import('../src/engine/DungeonRenderer');
 const { TileType, TILE_SIZE, SKY_CEIL } = await import('../src/game/types');
 
-const seeds = process.argv.slice(2).map(Number).filter((n) => Number.isFinite(n));
+const seeds = process.argv.slice(2).filter((a) => !a.startsWith('--')).map(Number).filter((n) => Number.isFinite(n));
 const SEEDS = seeds.length > 0 ? seeds : [1, 42, 889549, 1784949147155];
 
 /** Ray directions: a hemisphere biased upward (where seams live) */

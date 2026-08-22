@@ -24,7 +24,7 @@ export interface TunableDef {
   step: number;
   /** Shallowest generation layer this value dirties — regen resets it
    *  and downstream only (layers above stay cached = fast updates) */
-  dirties: 'tileBase' | 'transit' | 'height';
+  dirties: 'tileBase' | 'transit' | 'height' | 'column';
 }
 
 /** The live values. Gen code reads these INSIDE loops/functions (never
@@ -48,6 +48,13 @@ export const TUNABLES = {
   transitNoiseWeight: 2.5,
   transitTurnPenalty: 2.0,
   transitReuseDiscount: 0.3,
+  // ── Fold structures (canyon districts) ──
+  /** -1 = preset per district (fold-structure DISTRICT_PRESET); 0-3 =
+   *  global override: 0 city (#5), 1 girders (#6), 2 interior (#7),
+   *  3 rodrigues */
+  foldPreset: -1,
+  foldTop: 60,
+  foldDeep: -60,
 };
 
 export type Tunables = typeof TUNABLES;
@@ -65,12 +72,15 @@ export const TUNABLE_DEFS: TunableDef[] = [
   { key: 'transitNoiseWeight', label: 'route wander', group: 'transit', min: 0, max: 8, step: 0.1, dirties: 'transit' },
   { key: 'transitTurnPenalty', label: 'route straightness', group: 'transit', min: 0, max: 8, step: 0.1, dirties: 'transit' },
   { key: 'transitReuseDiscount', label: 'tunnel merging', group: 'transit', min: 0.05, max: 1, step: 0.05, dirties: 'transit' },
+  { key: 'foldPreset', label: 'preset (-1 per district, 0 city 1 girders 2 interior 3 rodrigues)', group: 'fold', min: -1, max: 3, step: 1, dirties: 'column' },
+  { key: 'foldTop', label: 'top (y)', group: 'fold', min: 10, max: 300, step: 5, dirties: 'column' },
+  { key: 'foldDeep', label: 'deep (y)', group: 'fold', min: -300, max: 0, step: 5, dirties: 'column' },
 ];
 
 /** Shallowest dirty layer for a set of changed keys. */
-export function dirtyLevelFor(keys: (keyof Tunables)[]): 'all' | 'tileBase' | 'transit' | 'height' {
-  const rank = { tileBase: 0, transit: 1, height: 2 } as const;
-  let level: 'tileBase' | 'transit' | 'height' | null = null;
+export function dirtyLevelFor(keys: (keyof Tunables)[]): 'all' | 'tileBase' | 'transit' | 'height' | 'column' {
+  const rank = { tileBase: 0, transit: 1, height: 2, column: 3 } as const;
+  let level: 'tileBase' | 'transit' | 'height' | 'column' | null = null;
   for (const k of keys) {
     const def = TUNABLE_DEFS.find((d) => d.key === k);
     if (!def) return 'all';

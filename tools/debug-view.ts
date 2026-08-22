@@ -50,6 +50,19 @@ console.log('snapshot:', snap);
 
 // ── World + geometry ──
 
+// --tunables=key=val,key=val — apply live gen tunables before generating
+// (e.g. --tunables=foldPreset=1,foldTop=120)
+const tunArg = process.argv.find((a) => a.startsWith('--tunables='));
+if (tunArg) {
+  const { applyTunables } = await import('../src/game/dungeon/tunables');
+  const vals: Record<string, number> = {};
+  for (const kv of tunArg.slice('--tunables='.length).split(',')) {
+    const [k, v] = kv.split('=');
+    if (k && v !== undefined) vals[k] = Number(v);
+  }
+  applyTunables(vals as never);
+  console.log('tunables:', vals);
+}
 const world = generateWorld({ seed: snap.seed, stack: snap.stack, originPcx: snap.opx ?? 0, originPcz: snap.opz ?? 0 });
 const L = world.levels[0]!;
 const scene = new THREE.Scene();

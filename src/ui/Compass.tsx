@@ -3,9 +3,11 @@ import { useGameStore } from '../store/gameStore';
 export function Compass() {
   const playerYaw = useGameStore((s) => s.playerYaw);
 
-  // Camera yaw 0 faces world north (-Z). Rotate the fixed north needle
-  // against the player's heading so it always indicates absolute north.
-  const rotationDeg = (playerYaw * 180) / Math.PI;
+  // HEADING needle on a north-up dial — the same convention as the
+  // minimap's player arrow (yaw 0 = north/-Z; yaw +90° = west/-X, so the
+  // needle swings LEFT). The old sign rotated the needle the other way,
+  // which read as east/west swapped against the minimap.
+  const rotationDeg = (-playerYaw * 180) / Math.PI;
 
   return (
     <div className="compass" title="North">
