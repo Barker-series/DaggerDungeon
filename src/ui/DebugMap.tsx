@@ -66,7 +66,13 @@ export function DebugMap() {
   const [mode, setMode] = useState<ViewMode>('slice');
   const dungeon = useGameStore((s) => s.dungeon);
   // Marching-squares contour — the same lines the walls render/collide with
-  const contour = useMemo(() => (dungeon ? buildOrganicContour(dungeon) : null), [dungeon]);
+  const storeContour = useGameStore((s) => s.worldContour);
+  // Prefer the engine's contour (built off-thread with the world); the
+  // local rebuild is only a fallback for views without one
+  const contour = useMemo(
+    () => storeContour ?? (dungeon ? buildOrganicContour(dungeon) : null),
+    [storeContour, dungeon],
+  );
   const world = useGameStore((s) => s.world);
   const spawnAbs = useGameStore((s) => s.spawnAbs);
   const playerPos = useGameStore((s) => s.playerPos);

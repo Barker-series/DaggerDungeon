@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { Direction, type GridPos, type DungeonData, type WorldData } from '../game/types';
 import type { Tunables } from '../game/dungeon/tunables';
+import type { OrganicContour } from '../game/dungeon/organiccontour';
 
 export interface GameState {
   // ── Screen ──
@@ -17,6 +18,9 @@ export interface GameState {
   seed: number;
   /** The whole stack of physically coexisting levels */
   world: WorldData | null;
+  /** Level-0 organic contour the engine collides with — shared with the
+   *  minimap/debug map so they never rebuild it on the main thread */
+  worldContour: OrganicContour | null;
   /** The level the player is currently on — what all the 2D UI shows */
   dungeon: DungeonData | null;
   /** Index of `dungeon` within the stack (0 = top) */
@@ -59,7 +63,7 @@ export interface GameState {
   setPlayerY: (y: number) => void;
   setPlayerFacing: (dir: Direction) => void;
   setPlayerYaw: (yaw: number) => void;
-  setWorld: (w: WorldData) => void;
+  setWorld: (w: WorldData, contour?: OrganicContour | null) => void;
   setCurrentLevel: (level: number) => void;
   setCurrentFloor: (f: number) => void;
   toggleAutoPlay: () => void;
@@ -83,6 +87,7 @@ export const useGameStore = create<GameState>((set) => ({
   playerYaw: 0,
   seed: Date.now(),
   world: null,
+  worldContour: null,
   dungeon: null,
   currentLevel: 0,
   currentFloor: 1,
@@ -102,8 +107,8 @@ export const useGameStore = create<GameState>((set) => ({
   setPlayerY: (playerY) => set({ playerY }),
   setPlayerFacing: (playerFacing) => set({ playerFacing }),
   setPlayerYaw: (playerYaw) => set({ playerYaw }),
-  setWorld: (world) =>
-    set({ world, currentLevel: 0, dungeon: world.levels[0] ?? null }),
+  setWorld: (world, contour = null) =>
+    set({ world, worldContour: contour, currentLevel: 0, dungeon: world.levels[0] ?? null }),
   setCurrentLevel: (currentLevel) =>
     set((s) => ({ currentLevel, dungeon: s.world?.levels[currentLevel] ?? null })),
   setCurrentFloor: (currentFloor) => set({ currentFloor }),
@@ -127,6 +132,7 @@ export const useGameStore = create<GameState>((set) => ({
     set({
       screen: 'menu',
       world: null,
+      worldContour: null,
       dungeon: null,
     }),
 }));

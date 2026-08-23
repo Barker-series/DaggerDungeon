@@ -6,11 +6,12 @@ import { SpriteManager } from './SpriteManager';
 import { KeyboardInput, type InputAction } from './InputManager';
 import { generateWorld } from '../game/DungeonGenerator';
 import { Movers } from './Movers';
-import { buildCornerField, sampleCornerField } from '../game/dungeon/heightfield';
+import { sampleCornerField } from '../game/dungeon/heightfield';
+import { prepareWindow, type WindowPrep } from '../game/dungeon/window-prep';
 import { spanAt } from '../game/dungeon/columns';
-import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
-import { buildPitContour, inPitCut, pitFillGround, type PitContour } from '../game/dungeon/pitcontour';
-import { buildRoadsContour, type RoadsContour } from '../game/dungeon/roadscontour';
+import { segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
+import { inPitCut, pitFillGround, type PitContour } from '../game/dungeon/pitcontour';
+import type { RoadsContour } from '../game/dungeon/roadscontour';
 import { FoldContour, contourTerrain, foldCutGround, foldFillGround, inFoldWedge } from '../game/dungeon/fold-contour';
 import { tileBiome, tileCrest, CELL_TILE_SIZE } from '../game/dungeon/cells';
 import { applyTunables, dirtyLevelFor, TUNABLES, type Tunables } from '../game/dungeon/tunables';
@@ -140,6 +141,8 @@ export class GameEngine {
   /** Dedicated lane for the exact window the player is approaching.
    * It must not wait behind speculative cardinal-neighbor generation. */
   private worldCache = new Map<string, WorldData>();
+  /** Worker-built contours/corner fields per cached window (same keys) */
+  private prepCache = new Map<string, WindowPrep>();
   private pendingWorlds = new Set<string>();
   private readonly maxCachedWorlds = 10;
 
@@ -157,6 +160,7 @@ export class GameEngine {
   /** Fold contour (smooth presets): cut wedges are air, fill wedges are
    *  solid, diagonals collide — the renderer's exact geometry */
   private foldContour: FoldContour | null = null;
+  private shadersWarmed = false;
   private roadsContour: RoadsContour | null = null;
   private seed = 0;
 
@@ -482,6 +486,7 @@ export class GameEngine {
       if (resetFrom === 'render') return;
       this.worldWorker.postMessage({ type: 'tunables', values, resetFrom });
       this.worldCache.clear();
+      this.prepCache.clear();
       this.pendingWorlds.clear();
       const stack = store.currentFloor;
       // Epoch-suffixed request key: results generated under OLD
@@ -532,6 +537,7 @@ export class GameEngine {
         this.seed = t.seed!;
         store.setSeed(t.seed!);
         this.worldCache.clear();
+        this.prepCache.clear();
         this.pendingWorlds.clear();
       }
       if (seedChanged || opx !== this.originPcx || opz !== this.originPcz
@@ -797,12 +803,21 @@ export class GameEngine {
   }
 
   private acceptPreparedWorld(
-    event: MessageEvent<{ key: string; world: WorldData; generationMs: number }>,
+    event: MessageEvent<{ key: string; world?: WorldData; prep?: WindowPrep; generationMs?: number }>,
   ): void {
-    const { key, world, generationMs } = event.data;
-    this.pendingWorlds.delete(key);
+    const { key, world, prep, generationMs = 0 } = event.data;
     // A seed can change while either worker is finishing an old request.
     if (!key.startsWith(`${this.seed}:`)) return;
+    if (!world) {
+      // First message of a pair: the worker-built contours, cached under
+      // the window's base key; the world follows and finds them
+      if (!prep) return;
+      if (key.includes('#t') && key !== this.awaitedTunablesKey) return;
+      const baseKey = key.includes('#t') ? key.slice(0, key.indexOf('#t')) : key;
+      this.prepCache.set(baseKey, prep);
+      return;
+    }
+    this.pendingWorlds.delete(key);
     // E3 tunables rebuilds: only the awaited epoch may land; results
     // from superseded epochs are discarded outright
     if (key.includes('#t')) {
@@ -821,6 +836,7 @@ export class GameEngine {
       const oldest = this.worldCache.keys().next().value as string | undefined;
       if (!oldest) break;
       this.worldCache.delete(oldest);
+      this.prepCache.delete(oldest);
     }
     if (import.meta.env.DEV) {
       console.debug(
@@ -893,8 +909,10 @@ export class GameEngine {
     this.movers?.dispose(this.scene);
     markPhase('clear');
     const preparedWorld = this.worldCache.get(key);
+    const preparedPrep = this.prepCache.get(key);
     if (preparedWorld) {
       this.worldCache.delete(key);
+      this.prepCache.delete(key);
       this.world = preparedWorld;
     } else {
       // Initial load (or movement faster than prefetch) retains a safe
@@ -908,14 +926,15 @@ export class GameEngine {
       }
     }
     markPhase('world');
-    this.cornerFloors = this.world.levels.map((l) =>
-      buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
-    const worldCols = this.world.columns;
-    this.contours = this.world.levels.map((l) => buildOrganicContour(l, worldCols));
-    this.pitContour = buildPitContour(this.world.levels[0]!, this.world.columns);
+    // Worker-prepared contours when the window was prefetched; the
+    // synchronous fallback builds them here
+    const prep = preparedWorld && preparedPrep ? preparedPrep : prepareWindow(this.world);
+    this.cornerFloors = prep.cornerFloors;
+    this.contours = prep.contours;
+    this.pitContour = prep.pitContour;
+    this.roadsContour = prep.roadsContour;
     // LAZY: tiles are evaluated on first query around the player
     this.foldContour = new FoldContour(this.world);
-    this.roadsContour = buildRoadsContour(this.world);
     markPhase('collision');
     // Adopt the window as the chunk data source. No geometry is built
     // here: chunks stream in via updateChunks each frame — surviving
@@ -931,8 +950,12 @@ export class GameEngine {
     this.movers = new Movers(this.world, this.scene);
     markPhase('movers');
     this.lighting.setup(this.world);
+    if (!this.shadersWarmed) {
+      this.shadersWarmed = true;
+      this.dungeonRenderer.precompile(this.renderer, this.threeCamera, this.scene);
+    }
     markPhase('lighting');
-    useGameStore.getState().setWorld(this.world);
+    useGameStore.getState().setWorld(this.world, this.contours[0] ?? null);
     this.prefetchAdjacentWindows(stack);
     markPhase('state');
     if (import.meta.env.DEV) {
@@ -1067,6 +1090,7 @@ export class GameEngine {
   loadStack(stack: number, seed: number): void {
     this.seed = seed;
     this.worldCache.clear();
+    this.prepCache.clear();
     this.pendingWorlds.clear();
     this.originPcx = 0;
     this.originPcz = 0;

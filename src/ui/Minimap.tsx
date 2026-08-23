@@ -21,7 +21,13 @@ export function Minimap() {
   const playerY = useGameStore((s) => s.playerY);
   const playerYaw = useGameStore((s) => s.playerYaw);
   // The same marching-squares contour the walls render and collide with
-  const contour = useMemo(() => (dungeon ? buildOrganicContour(dungeon) : null), [dungeon]);
+  const storeContour = useGameStore((s) => s.worldContour);
+  // Prefer the engine's contour (built off-thread with the world); the
+  // local rebuild is only a fallback for views without one
+  const contour = useMemo(
+    () => storeContour ?? (dungeon ? buildOrganicContour(dungeon) : null),
+    [storeContour, dungeon],
+  );
 
   useEffect(() => {
     const canvas = canvasRef.current;

@@ -375,14 +375,24 @@ interface RenderChunk {
    *  the built window's local frame land at the right absolute place. */
   builtPcx: number;
   builtPcz: number;
-  /** Remaining quarter-cell build jobs (window-local tile bounds) */
-  jobs: RenderBounds[];
+  /** Remaining jobs: sub-cell BUILD jobs (window-local tile bounds),
+   *  then one FLUSH job per accumulated material buffer */
+  jobs: ChunkJob[];
+  /** Geometry accumulated across build jobs, merged per (pass, material)
+   *  — one mesh per material per chunk instead of one per job (fewer
+   *  draw calls, and build jobs can be small without multiplying meshes) */
+  acc: Map<string, { buf: MeshBuffers; material: THREE.Material; name: string }>;
   complete: boolean;
   /** Accumulated build time across jobs (DEV telemetry) */
   buildMs: number;
 }
 
 type Contour = ReturnType<typeof buildOrganicContour>;
+type ChunkJob = { kind: 'build'; bounds: RenderBounds } | { kind: 'flush'; key: string };
+/** Build jobs per chunk edge: 4 → 16 jobs of 14x14 tiles. Smaller jobs
+ *  keep each budgeted frame near CHUNK_BUDGET_MS instead of overshooting
+ *  by a whole quarter cell (the 20-95 ms travel stutters, Aug 2026). */
+const JOBS_PER_EDGE = 4;
 
 /** Chunk edge = one pillar cell */
 const CHUNK_TILES = PILLAR_CELL_TILES;
@@ -666,22 +676,30 @@ export class DungeonRenderer {
     const w = this.chunkWorld!;
     const x0 = (acx - w.originPcx) * CHUNK_TILES;
     const z0 = (acz - w.originPcz) * CHUNK_TILES;
-    const half = CHUNK_TILES / 2;
-    return {
+    const step = CHUNK_TILES / JOBS_PER_EDGE;
+    const jobs: ChunkJob[] = [];
+    for (let jz = 0; jz < JOBS_PER_EDGE; jz++) {
+      for (let jx = 0; jx < JOBS_PER_EDGE; jx++) {
+        jobs.push({ kind: 'build', bounds: {
+          x0: x0 + jx * step, z0: z0 + jz * step,
+          x1: x0 + (jx + 1) * step, z1: z0 + (jz + 1) * step,
+        } });
+      }
+    }
+    const group = new THREE.Group();
+    const chunk: RenderChunk = {
       acx,
       acz,
-      group: new THREE.Group(),
+      group,
       builtPcx: w.originPcx,
       builtPcz: w.originPcz,
-      jobs: [
-        { x0, z0, x1: x0 + half, z1: z0 + half },
-        { x0: x0 + half, z0, x1: x0 + CHUNK_TILES, z1: z0 + half },
-        { x0, z0: z0 + half, x1: x0 + half, z1: z0 + CHUNK_TILES },
-        { x0: x0 + half, z0: z0 + half, x1: x0 + CHUNK_TILES, z1: z0 + CHUNK_TILES },
-      ],
+      jobs,
+      acc: new Map(),
       complete: false,
       buildMs: 0,
     };
+    this.accumulating.set(group, chunk);
+    return chunk;
   }
 
   /** Run ONE quarter-cell build job. On the last job the chunk becomes
@@ -690,9 +708,20 @@ export class DungeonRenderer {
   private runChunkJob(chunk: RenderChunk): void {
     const w = this.chunkWorld!;
     const ctx = this.chunkCtx!;
-    const bounds = chunk.jobs.shift();
-    if (!bounds) return;
+    const job = chunk.jobs.shift();
+    if (!job) return;
     const jobStart = performance.now();
+    if (job.kind === 'flush') {
+      // One accumulated material buffer → one mesh (the addMesh path
+      // proper: tint, splat weights, DEV triangle audit)
+      const entry = chunk.acc.get(job.key);
+      chunk.acc.delete(job.key);
+      if (entry) this.addMesh(chunk.group, entry.buf, entry.material, entry.name);
+      chunk.buildMs += performance.now() - jobStart;
+      if (chunk.jobs.length === 0) this.completeChunk(chunk);
+      return;
+    }
+    const bounds = job.bounds;
     for (let li = 0; li < w.levels.length; li++) {
       this.buildLevelSurfaces(
         w, li, ctx.cornerFloors[li]!, ctx.contours[li]!, this.materialsFor,
@@ -707,6 +736,18 @@ export class DungeonRenderer {
     this.buildRoadsWalls(w, ctx.roadsContour, ctx.cornerFloors[0]!, chunk.group, bounds);
     chunk.buildMs += performance.now() - jobStart;
     if (chunk.jobs.length === 0) {
+      // Build jobs done: queue one flush per accumulated buffer (each is
+      // its own budgeted job), then complete when the last has landed
+      for (const key of chunk.acc.keys()) chunk.jobs.push({ kind: 'flush', key });
+      if (chunk.jobs.length === 0) this.completeChunk(chunk);
+    }
+  }
+
+  /** The chunk enters the scene: if it was a rebuild it replaces the
+   *  stale chunk it shadowed. */
+  private completeChunk(chunk: RenderChunk): void {
+    this.accumulating.delete(chunk.group);
+    {
       chunk.complete = true;
       if (import.meta.env.DEV) {
         console.debug(`[chunk] ${chunk.acx},${chunk.acz} built in ${chunk.buildMs.toFixed(1)} ms`);
@@ -745,6 +786,7 @@ export class DungeonRenderer {
   }
 
   private disposeGroup(group: THREE.Group): void {
+    this.accumulating.delete(group);
     group.traverse((child) => {
       if (child instanceof THREE.Mesh) child.geometry.dispose();
     });
@@ -3336,8 +3378,51 @@ export class DungeonRenderer {
     }
   }
 
+  /** Chunk groups under construction: addMesh accumulates into the chunk
+   *  instead of creating a mesh per build job */
+  private accumulating = new Map<THREE.Group, RenderChunk>();
+
+  /** Warm the shader cache off the critical path: every material variant
+   *  this renderer can emit (regular + fold-detail, wall/floor/ceil) is
+   *  compiled in parallel (KHR_parallel_shader_compile) against the
+   *  live scene's lighting, so the first fold wall entering view does
+   *  not stall a frame on a ~100 ms program link. */
+  precompile(renderer: THREE.WebGLRenderer, camera: THREE.Camera, lit: THREE.Scene): void {
+    const probe = new THREE.Scene();
+    const geom = new THREE.PlaneGeometry(0.01, 0.01);
+    geom.setAttribute('splatWeight', new THREE.Float32BufferAttribute(new Float32Array(geom.attributes['position']!.count * 3).fill(1 / 3), 3));
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(geom.attributes['position']!.count * 3).fill(1), 3));
+    const mats: THREE.Material[] = [];
+    for (const key of ['tunnel', 'dungeon', 'cave', 'crypt', 'ember', 'outside'] as RegionKey[]) {
+      const m = this.materialsFor(key);
+      mats.push(m.wall, m.floor, m.ceil);
+    }
+    for (let p = 0; p < 4; p++) {
+      const m = this.foldMaterialsFor(p);
+      mats.push(m.wall, m.floor, m.ceil);
+    }
+    for (const m of mats) probe.add(new THREE.Mesh(geom, m));
+    void renderer.compileAsync(probe, camera, lit).catch(() => { /* warmup only */ });
+  }
+
   private addMesh(parent: THREE.Group, buf: MeshBuffers, material: THREE.Material, passName = ''): void {
     if (buf.verts.length === 0) return;
+    const chunk = this.accumulating.get(parent);
+    if (chunk) {
+      const key = `${passName}|${material.uuid}`;
+      let entry = chunk.acc.get(key);
+      if (!entry) {
+        entry = { buf: newBuffers(), material, name: passName };
+        chunk.acc.set(key, entry);
+      }
+      const base = entry.buf.verts.length / 3;
+      const eb = entry.buf;
+      for (let i = 0; i < buf.verts.length; i++) eb.verts.push(buf.verts[i]!);
+      for (let i = 0; i < buf.uvs.length; i++) eb.uvs.push(buf.uvs[i]!);
+      for (let i = 0; i < buf.norms.length; i++) eb.norms.push(buf.norms[i]!);
+      for (let i = 0; i < buf.idxs.length; i++) eb.idxs.push(buf.idxs[i]! + base);
+      return;
+    }
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(buf.verts, 3));
     geom.setAttribute('uv', new THREE.Float32BufferAttribute(buf.uvs, 2));

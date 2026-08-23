@@ -5,6 +5,7 @@
 // (~3-4x faster warm), and a revisited window is nearly free.
 import { generateWorldChunked, resetGenState, type GenResetLevel } from './gen/assemble';
 import { applyTunables, type Tunables } from './dungeon/tunables';
+import { prepareWindow } from './dungeon/window-prep';
 
 export interface WorldWorkerRequest {
   key: string;
@@ -32,6 +33,13 @@ self.onmessage = (event: MessageEvent<WorldWorkerRequest | TunablesMessage>) => 
   const request = event.data as WorldWorkerRequest;
   const started = performance.now();
   const world = generateWorldChunked(request);
+  // Contours/corner fields built here too — the adoption frame on the
+  // main thread only adopts. Shipped as TWO messages: the main thread
+  // deserializes each in its own task (~half the hitch each) instead
+  // of one long frame per prefetched window.
+  // Prep FIRST so it is already cached when the world lands (adoption
+  // never has to build it synchronously)
+  self.postMessage({ key: request.key, prep: prepareWindow(world) });
   self.postMessage({
     key: request.key,
     world,
