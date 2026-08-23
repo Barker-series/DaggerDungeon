@@ -24,7 +24,7 @@ export interface TunableDef {
   step: number;
   /** Shallowest generation layer this value dirties — regen resets it
    *  and downstream only (layers above stay cached = fast updates) */
-  dirties: 'tileBase' | 'transit' | 'height' | 'column';
+  dirties: 'tileBase' | 'transit' | 'height' | 'column' | 'render';
 }
 
 /** The live values. Gen code reads these INSIDE loops/functions (never
@@ -59,6 +59,25 @@ export const TUNABLES = {
    *  to the cell CREST and (in pits) their BOTTOMMOST moved down to the
    *  pit bottom (-300); everything between is untouched */
   foldCrestToAbyss: 1,
+  // ── Fold wall DETAIL (render-side, material only — no regen) ──
+  /** 1 = fold-owned walls carry a 2D kaleidoscopic-fold panel field
+   *  (grooves + bevel relief + crease shading) instead of formwork seams */
+  detailOn: 1,
+  /** Largest panel scale (world units, half-period of the base octave) */
+  detailScale: 9,
+  detailDecay: 0.5,
+  detailOffset: 0.7,
+  detailOctaves: 4,
+  /** Groove half-width (world units) */
+  detailGroove: 0.05,
+  /** Bevel width (world units) over which the relief ramps */
+  detailBevel: 0.2,
+  /** Relief strength (bump height units) */
+  detailRelief: 0.35,
+  /** Groove darkening (multiplier inside a groove) */
+  detailDark: 0.72,
+  /** Crease darkening on the recessed side of every panel edge */
+  detailCrease: 0.12,
 };
 
 export type Tunables = typeof TUNABLES;
@@ -80,12 +99,22 @@ export const TUNABLE_DEFS: TunableDef[] = [
   { key: 'foldTop', label: 'top (y)', group: 'fold', min: 10, max: 300, step: 5, dirties: 'column' },
   { key: 'foldDeep', label: 'deep (y)', group: 'fold', min: -300, max: 0, step: 5, dirties: 'column' },
   { key: 'foldCrestToAbyss', label: 'tops→crest, bottoms→pit bottom (city)', group: 'fold', min: 0, max: 1, step: 1, dirties: 'column' },
+  { key: 'detailOn', label: 'fold wall detail on', group: 'detail', min: 0, max: 1, step: 1, dirties: 'render' },
+  { key: 'detailScale', label: 'panel scale', group: 'detail', min: 1, max: 40, step: 0.5, dirties: 'render' },
+  { key: 'detailDecay', label: 'octave decay', group: 'detail', min: 0.2, max: 0.9, step: 0.01, dirties: 'render' },
+  { key: 'detailOffset', label: 'fold offset', group: 'detail', min: 0.3, max: 1.2, step: 0.01, dirties: 'render' },
+  { key: 'detailOctaves', label: 'octaves', group: 'detail', min: 1, max: 8, step: 1, dirties: 'render' },
+  { key: 'detailGroove', label: 'groove width', group: 'detail', min: 0, max: 0.3, step: 0.005, dirties: 'render' },
+  { key: 'detailBevel', label: 'bevel width', group: 'detail', min: 0.02, max: 1, step: 0.01, dirties: 'render' },
+  { key: 'detailRelief', label: 'relief', group: 'detail', min: 0, max: 2, step: 0.05, dirties: 'render' },
+  { key: 'detailDark', label: 'groove darkness', group: 'detail', min: 0.3, max: 1, step: 0.01, dirties: 'render' },
+  { key: 'detailCrease', label: 'crease shading', group: 'detail', min: 0, max: 0.5, step: 0.01, dirties: 'render' },
 ];
 
 /** Shallowest dirty layer for a set of changed keys. */
-export function dirtyLevelFor(keys: (keyof Tunables)[]): 'all' | 'tileBase' | 'transit' | 'height' | 'column' {
-  const rank = { tileBase: 0, transit: 1, height: 2, column: 3 } as const;
-  let level: 'tileBase' | 'transit' | 'height' | 'column' | null = null;
+export function dirtyLevelFor(keys: (keyof Tunables)[]): 'all' | 'tileBase' | 'transit' | 'height' | 'column' | 'render' {
+  const rank = { tileBase: 0, transit: 1, height: 2, column: 3, render: 4 } as const;
+  let level: 'tileBase' | 'transit' | 'height' | 'column' | 'render' | null = null;
   for (const k of keys) {
     const def = TUNABLE_DEFS.find((d) => d.key === k);
     if (!def) return 'all';

@@ -8,8 +8,9 @@ import { buildRoadsContour, ROAD_WALL_LEVELS, ROAD_WALL_MODULE, type RoadsContou
 import { buildPitContour, type PitContour } from '../game/dungeon/pitcontour';
 import { bridgeTiles, PIPE_BORE, CLEARANCE } from '../game/dungeon/pillar-bridges';
 import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
-import { foldColumnBand } from '../game/dungeon/fold-structure';
-import { buildFoldContour, contourTerrain, foldWedgesAt, terrainOr, type FoldContour } from '../game/dungeon/fold-contour';
+import { foldColumnBand, foldOrigin } from '../game/dungeon/fold-structure';
+import { TUNABLES } from '../game/dungeon/tunables';
+import { FoldContour, contourTerrain, foldWedgesAt, terrainOr } from '../game/dungeon/fold-contour';
 
 const loader = new THREE.TextureLoader();
 
@@ -68,11 +69,87 @@ const smooth01 = (t: number): number => t * t * (3 - 2 * t);
  * `splatWeight` RGB attribute. Offsetting and scaling the secondary samples
  * prevents their features from lining up with the base texture's repetition.
  */
+/** FOLD WALL DETAIL — shared live uniforms (all detail materials read
+ *  the same objects; syncDetailUniforms copies TUNABLES in each frame,
+ *  so the editor's 'detail' group is live with no regen) */
+const DETAIL_UNIFORMS = {
+  detailOn: { value: 1 },
+  detailScale: { value: 9 },
+  detailDecay: { value: 0.5 },
+  detailOffset: { value: 0.7 },
+  detailOctaves: { value: 4 },
+  detailGroove: { value: 0.05 },
+  detailBevel: { value: 0.2 },
+  detailRelief: { value: 0.35 },
+  detailDark: { value: 0.72 },
+  detailCrease: { value: 0.12 },
+  /** Per-world domain offset (the fold mass's own origin) */
+  detailOrigin: { value: new THREE.Vector2(0, 0) },
+};
+export function syncDetailUniforms(): void {
+  DETAIL_UNIFORMS.detailOn.value = TUNABLES.detailOn;
+  DETAIL_UNIFORMS.detailScale.value = TUNABLES.detailScale;
+  DETAIL_UNIFORMS.detailDecay.value = TUNABLES.detailDecay;
+  DETAIL_UNIFORMS.detailOffset.value = TUNABLES.detailOffset;
+  DETAIL_UNIFORMS.detailOctaves.value = Math.round(TUNABLES.detailOctaves);
+  DETAIL_UNIFORMS.detailGroove.value = TUNABLES.detailGroove;
+  DETAIL_UNIFORMS.detailBevel.value = TUNABLES.detailBevel;
+  DETAIL_UNIFORMS.detailRelief.value = TUNABLES.detailRelief;
+  DETAIL_UNIFORMS.detailDark.value = TUNABLES.detailDark;
+  DETAIL_UNIFORMS.detailCrease.value = TUNABLES.detailCrease;
+}
+/** Domain offset for the detail field: the world's fold origin, so the
+ *  wall pattern is a per-seed thing like the mass */
+function setDetailOrigin(world: WorldData): void {
+  const [ox, oz] = foldOrigin(world.seed + world.stack * 100000);
+  DETAIL_UNIFORMS.detailOrigin.value.set(ox, oz);
+}
+
+/** GLSL: 2D kaleidoscopic fold on the wall plane — the mass's own
+ *  construction (tile → mirror-fold → shrink, per-octave flip) restricted
+ *  to two axes. Returns a signed distance bound: |d| = distance to the
+ *  nearest panel edge, d < 0 = raised panel, d > 0 = recess. Octaves
+ *  stop once their scale falls under the pixel footprint (distance LOD:
+ *  far walls cost less and never shimmer). */
+const DETAIL_GLSL = `
+uniform float detailOn;
+uniform float detailScale;
+uniform float detailDecay;
+uniform float detailOffset;
+uniform float detailOctaves;
+uniform float detailGroove;
+uniform float detailBevel;
+uniform float detailRelief;
+uniform float detailDark;
+uniform float detailCrease;
+uniform vec2 detailOrigin;
+float foldDetailField(vec2 p, float pixelWidth) {
+  float d = -1e9;
+  float s = detailScale;
+  for (int k = 0; k < 8; k++) {
+    if (float(k) >= detailOctaves) break;
+    if (s < pixelWidth * 6.0) break;
+    float two = 2.0 * s;
+    vec2 c = mod(p, two) - s;
+    vec2 q = s * detailOffset - abs(c);
+    if (mod(float(k), 2.0) > 0.5) q.x = -q.x;
+    if (mod(float(k), 3.0) > 1.5) q.y = -q.y;
+    d = max(d, min(q.x, q.y));
+    p = q;
+    s *= detailDecay;
+  }
+  return d;
+}
+`;
+
 function makeConcreteMaterial(
   tint: number,
   emissive: number,
   roughness: number,
   constructionSeams = false,
+  /** Fold wall detail: the 2D fold panel field replaces formwork seams
+   *  (live-toggled by detailOn; seams return when it is off) */
+  foldDetail = false,
 ): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
@@ -93,6 +170,7 @@ function makeConcreteMaterial(
     shader.uniforms['concreteAggregate'] = { value: CONCRETE_AGGREGATE_TEX };
     shader.uniforms['concretePrecast'] = { value: CONCRETE_PRECAST_TEX };
     shader.uniforms['constructionSeams'] = { value: constructionSeams ? 1 : 0 };
+    if (foldDetail) Object.assign(shader.uniforms, DETAIL_UNIFORMS);
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
@@ -118,7 +196,9 @@ varying vec3 vConcretePosition;
 varying vec3 vConcreteNormal;
 uniform sampler2D concreteAggregate;
 uniform sampler2D concretePrecast;
-uniform float constructionSeams;`,
+uniform float constructionSeams;
+${foldDetail ? DETAIL_GLSL : ''}
+float foldDetailH = 0.0;`,
       )
       .replace(
         '#include <map_fragment>',
@@ -132,9 +212,32 @@ uniform float constructionSeams;`,
             + aggregateSample * weights.g
             + precastSample * weights.b;
 
+          ${foldDetail ? `
+          // FOLD WALL DETAIL: the mass's own fold, on the wall plane —
+          // grooves of exact width at every panel edge, a bevel ramp for
+          // the normal, crease shading on the recessed side.
+          bool foldDetailActive = detailOn > 0.5 && abs(vConcreteNormal.y) < 0.5;
+          if (foldDetailActive) {
+            vec3 axisWeight = abs(normalize(vConcreteNormal));
+            float wallU = axisWeight.x > axisWeight.z
+              ? vConcretePosition.z + detailOrigin.y
+              : vConcretePosition.x + detailOrigin.x;
+            float wallV = vConcretePosition.y;
+            float pixelWidth = max(fwidth(wallU), fwidth(wallV));
+            float d = foldDetailField(vec2(wallU, wallV), pixelWidth);
+            float feather = max(0.01, pixelWidth * 0.7);
+            float groove = 1.0 - smoothstep(detailGroove, detailGroove + feather, abs(d));
+            // crease: recessed side darkens toward the edge
+            float crease = (1.0 - smoothstep(0.0, detailBevel * 2.0, d)) * step(0.0, d);
+            diffuseColor.rgb *= mix(1.0, detailDark, groove);
+            diffuseColor.rgb *= 1.0 - detailCrease * crease;
+            // relief height for the bump: recess is lower
+            foldDetailH = -detailRelief * smoothstep(-detailBevel, detailBevel, d);
+          }
+          ` : ''}
           // Large staggered formwork panels are anchored in structure space,
           // not texture UVs, so joints continue across generated tile edges.
-          if (constructionSeams > 0.5) {
+          if (constructionSeams > 0.5${foldDetail ? ' && !foldDetailActive' : ''}) {
             vec3 axisWeight = abs(normalize(vConcreteNormal));
             float wallU = axisWeight.x > axisWeight.z
               ? vConcretePosition.z
@@ -179,9 +282,21 @@ uniform float constructionSeams;`,
           }
         #endif`,
       );
+    if (foldDetail) {
+      // Fold relief joins the albedo-bump derivative (same Mikkelsen
+      // screen-space path three.js uses for bumpMap)
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <normal_fragment_maps>',
+        `#ifdef USE_BUMPMAP
+          normal = perturbNormalArb( - vViewPosition, normal, dHdxy_fwd() + vec2(dFdx(foldDetailH), dFdy(foldDetailH)), faceDirection );
+        #else
+          #include <normal_fragment_maps>
+        #endif`,
+      );
+    }
   };
   material.customProgramCacheKey = () =>
-    constructionSeams ? 'rgb-concrete-splat-seams-v2' : 'rgb-concrete-splat-v2';
+    `${constructionSeams ? 'rgb-concrete-splat-seams-v2' : 'rgb-concrete-splat-v2'}${foldDetail ? '-folddetail-v1' : ''}`;
   return material;
 }
 
@@ -209,11 +324,12 @@ function newBuffers(): MeshBuffers {
   return { verts: [], idxs: [], uvs: [], norms: [] };
 }
 
-/** Fold contour per world window (chunks share one build) */
+/** Fold contour per world window (chunks share one LAZY instance — each
+ *  chunk ensures only its own tiles inside the chunk build budget) */
 const foldContourCache = new WeakMap<WorldData, FoldContour>();
 function foldContourFor(world: WorldData): FoldContour {
   let fc = foldContourCache.get(world);
-  if (!fc) { fc = buildFoldContour(world); foldContourCache.set(world, fc); }
+  if (!fc) { fc = new FoldContour(world); foldContourCache.set(world, fc); }
   return fc;
 }
 
@@ -357,7 +473,7 @@ export class DungeonRenderer {
       const FOLD_TINTS = [0x7fb0ff, 0xc08cff, 0xffb066, 0x8fe08f]; // blue, purple, orange, green
       const tint = FOLD_TINTS[preset % FOLD_TINTS.length]!;
       m = {
-        wall: makeConcreteMaterial(tint, 0x000000, 0.9, true),
+        wall: makeConcreteMaterial(tint, 0x000000, 0.9, true, true),
         floor: makeConcreteMaterial(tint, 0x000000, 0.94),
         ceil: makeConcreteMaterial(tint, 0x000000, 0.97),
       };
@@ -390,6 +506,7 @@ export class DungeonRenderer {
    */
   build(world: WorldData): void {
     this.tintWorld = world;
+    setDetailOrigin(world);
     const cornerFloors = world.levels.map((l) =>
       buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
 
@@ -420,13 +537,21 @@ export class DungeonRenderer {
     this.configEpoch++;
   }
 
-  setWindow(world: WorldData): void {
+  setWindow(
+    world: WorldData,
+    /** The engine's already-built collision authorities for this window
+     *  (corner fields, contours) — ONE build per adoption, shared by
+     *  physics and rendering; without it the adoption frame paid for
+     *  every contour twice (~100 ms of the travel hitch, Aug 2026) */
+    shared?: { cornerFloors: number[][][]; contours: Contour[]; roadsContour: RoadsContour; pitContour: PitContour },
+  ): void {
     const stamp = `${world.seed}:${world.levels[0]?.floor ?? 0}:${this.configEpoch}`;
     if (stamp !== this.chunkStamp) this.clearChunks();
     this.chunkStamp = stamp;
     this.chunkWorld = world;
     this.tintWorld = world;
-    this.chunkCtx = {
+    setDetailOrigin(world);
+    this.chunkCtx = shared ?? {
       cornerFloors: world.levels.map((l) =>
         buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround)),
       contours: world.levels.map((l) => buildOrganicContour(l, world.columns)),
@@ -1029,6 +1154,10 @@ export class DungeonRenderer {
     // undersides are clipped at cut corners; diagonals and wedge caps
     // are drawn from the contour data. ──
     const foldContour = foldContourFor(world);
+    // Chunk-local evaluation: the face pass reads cut bands of solid
+    // tiles one outside the bounds, so ensure a 2-tile apron
+    if (bounds) foldContour.ensureTiles(bounds.x0 - 2, bounds.z0 - 2, bounds.x1 + 2, bounds.z1 + 2);
+    else foldContour.ensureAll();
     /** Flat cap of tile (x,z) at height y with corner wedges (mask) removed */
     const emitCutCap = (buf: MeshBuffers, x: number, z: number, y: number, mask: number, up: boolean): void => {
       const wx = x * TILE_SIZE;
@@ -1980,16 +2109,21 @@ export class DungeonRenderer {
     // wedge tile), wedge caps
     {
       const x0b = bounds?.x0 ?? 0, z0b = bounds?.z0 ?? 0, x1b = bounds?.x1 ?? w, z1b = bounds?.z1 ?? h;
-      const owned = (tile: number): boolean => {
-        const tx = tile % w, tz = Math.floor(tile / w);
-        return tx >= x0b && tx < x1b && tz >= z0b && tz < z1b;
-      };
+      const segsHere: import('../game/dungeon/fold-contour').FoldSeg[] = [];
+      const capsHere: import('../game/dungeon/fold-contour').FoldWedgeCap[] = [];
+      for (let tz = z0b; tz < z1b; tz++) {
+        for (let tx = x0b; tx < x1b; tx++) {
+          const so = foldContour.segsOwned.get(tz * w + tx);
+          if (so) segsHere.push(...so);
+          const cp = foldContour.capsByTile.get(tz * w + tx);
+          if (cp) capsHere.push(...cp);
+        }
+      }
       // Terrain heights: level-0 corner field (bilinear-exact at tile
       // corners and edge midpoints — every contour point lies on one)
       const cf0 = cornerFloors[0]!;
       const terrainAt = (px: number, pz: number): number => contourTerrain(cf0, world.levels[0]!.baseY, px, pz);
-      for (const sg of foldContour.segs) {
-        if (!owned(sg.tile)) continue;
+      for (const sg of segsHere) {
         const b = foldBuf(foldWallsBy, sg.preset);
         // A band resting on terrain: the diagonal bottoms out on the
         // corner-blended ground, exactly as the XOR faces do via refine
@@ -2002,11 +2136,8 @@ export class DungeonRenderer {
         b.uvs.push(0, b0 / TILE_SIZE, ul, b1 / TILE_SIZE, ul, sg.yHi / TILE_SIZE, 0, sg.yHi / TILE_SIZE);
         addOrientedQuad(b, vi, sg.nx, 0, sg.nz);
       }
-      for (const cap of foldContour.caps) {
+      for (const cap of capsHere) {
         const [p0, p1, p2] = cap.pts;
-        const ctx = Math.floor((p0![0] + p1![0] + p2![0]) / 3 / TILE_SIZE);
-        const ctz = Math.floor((p0![1] + p1![1] + p2![1]) / 3 / TILE_SIZE);
-        if (!owned(ctz * w + ctx)) continue;
         const b = foldBuf(foldTopsBy, cap.preset);
         const vi = b.verts.length / 3;
         for (const [px, pz] of cap.pts) { b.verts.push(px, cap.terrain ? terrainOr(terrainAt(px, pz), cap.y) : cap.y, pz); b.norms.push(0, cap.up ? 1 : -1, 0); b.uvs.push(px / TILE_SIZE, pz / TILE_SIZE); }

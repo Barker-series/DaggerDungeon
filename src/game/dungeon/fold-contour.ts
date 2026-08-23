@@ -24,6 +24,12 @@
  * and wall solids are never touched, the same way pit rims decline on
  * arches and occupied pits. Effect distance: one tile (2x2 groups).
  * Corner indices: 0=NW 1=NE 2=SW 3=SE (the roads/pit convention).
+ *
+ * LAZY by construction: evaluating the fold intervals of every tile in
+ * a window costs as much as generating the fold again, so nothing is
+ * computed until asked — the renderer ensures a chunk's tiles inside
+ * its frame budget, the engine ensures the 3x3 around the player, and
+ * every group/tile is computed once (memoized). Tools call ensureAll().
  */
 
 import { TILE_SIZE, type WorldData } from '../types';
@@ -66,17 +72,6 @@ export interface FoldWedgeCap {
   preset: number;
   /** Vertex heights come from the terrain corner field, not y */
   terrain: boolean;
-}
-export interface FoldContour {
-  w: number;
-  /** Per SOLID tile: bands whose corner wedges are CUT (air) */
-  cuts: Map<number, FoldWedgeBand[]>;
-  /** Per AIR tile: bands whose corner wedges are FILLED (solid) */
-  fills: Map<number, FoldWedgeBand[]>;
-  /** Segments registered to every tile of their group (3x3 queries) */
-  segsByTile: Map<number, FoldSeg[]>;
-  segs: FoldSeg[];
-  caps: FoldWedgeCap[];
 }
 
 /** Is (x,z) inside the corner-c wedge of tile (tx,tz) — the triangle
@@ -167,175 +162,237 @@ export function wedgePlaneHeight(
   return h0 + b1 * (h1 - h0) + b2 * (h2 - h0);
 }
 
-export function buildFoldContour(world: WorldData): FoldContour {
-  const L = world.levels[0]!;
-  const w = L.width;
-  const h = L.height;
-  const stackSeed = world.seed + world.stack * 100000;
-  const absTx0 = world.originPcx * PILLAR_CELL_TILES;
-  const absTz0 = world.originPcz * PILLAR_CELL_TILES;
-  const out: FoldContour = { w, cuts: new Map(), fills: new Map(), segsByTile: new Map(), segs: [], caps: [] };
+// Group tiles: 0=TL (gx,gz) 1=TR 2=BL 3=BR. The group-centre corner of
+// each: TL→SE(3) TR→SW(2) BL→NE(1) BR→NW(0). Diagonal endpoints are
+// the two edge midpoints flanking that corner (em: 0 top, 1 right,
+// 2 bottom, 3 left of the group centre).
+const CENTRE_CORNER = [3, 2, 1, 0];
+const DIAG: [number, number][] = [[3, 0], [0, 1], [2, 3], [1, 2]];
 
-  // Fold-made intervals per tile (smooth presets only), memoized
-  const memo = new Map<string, boolean>();
-  const ivCache = new Map<number, { bands: [number, number][]; preset: number } | null>();
-  const foldIvs = (tx: number, tz: number): { bands: [number, number][]; preset: number } | null => {
-    if (tx < 0 || tz < 0 || tx >= w || tz >= h) return null;
-    const k = tz * w + tx;
-    let v = ivCache.get(k);
-    if (v === undefined) {
-      const t = foldTileIntervals(L.tiles, L.floorHeights, L.cellBiomes, w, stackSeed, absTx0, absTz0, tx, tz, L.pillarGround, L.pillarWall, memo);
-      v = t && FOLD_PRESETS[t.preset]!.smooth ? { bands: t.bands, preset: t.preset } : null;
-      ivCache.set(k, v);
-    }
-    return v;
-  };
-  const foldMadeAt = (iv: { bands: [number, number][] } | null, y: number): boolean =>
-    !!iv && iv.bands.some(([a, b]) => y > a + 1e-9 && y < b - 1e-9);
-  /** Column-data solidity: no air span covers y (off-map = solid) */
-  const colSolidAt = (tx: number, tz: number, y: number): boolean => {
-    if (tx < 0 || tz < 0 || tx >= w || tz >= h) return true;
-    const col = world.columns[tz * w + tx]!;
-    return !col.some((sp) => sp.floor <= y && sp.ceil >= y);
-  };
+type FoldIvs = { bands: [number, number][]; preset: number } | null;
 
-  const s = TILE_SIZE;
-  const addBand = (m: Map<number, FoldWedgeBand[]>, tile: number, yLo: number, yHi: number, corner: number, terrain: boolean): void => {
-    let list = m.get(tile);
-    if (!list) { list = []; m.set(tile, list); }
-    const same = list.find((b) => Math.abs(b.yLo - yLo) < 1e-9 && Math.abs(b.yHi - yHi) < 1e-9);
-    if (same) { same.corners |= 1 << corner; if (terrain) same.terrain |= 1 << corner; }
-    else list.push({ yLo, yHi, corners: 1 << corner, terrain: terrain ? 1 << corner : 0, ground: 0 });
-  };
-  /** Does (tx,tz) carry a TERRAIN (owner 0) span floor at y? */
-  const terrainFloorAt = (tx: number, tz: number, y: number): boolean =>
-    world.columns[tz * w + tx]!.some((sp) => sp.owner === 0 && Math.abs(sp.floor - y) < 0.02);
-  const register = (tile: number, seg: FoldSeg): void => {
-    let sl = out.segsByTile.get(tile);
-    if (!sl) { sl = []; out.segsByTile.set(tile, sl); }
-    sl.push(seg);
-  };
+export class FoldContour {
+  readonly w: number;
+  readonly h: number;
+  /** Per SOLID tile: bands whose corner wedges are CUT (air) */
+  readonly cuts = new Map<number, FoldWedgeBand[]>();
+  /** Per AIR tile: bands whose corner wedges are FILLED (solid) */
+  readonly fills = new Map<number, FoldWedgeBand[]>();
+  /** Segments registered to every tile of their group (3x3 queries) */
+  readonly segsByTile = new Map<number, FoldSeg[]>();
+  /** Segments by their WEDGE tile (chunk ownership for emission) */
+  readonly segsOwned = new Map<number, FoldSeg[]>();
+  /** Wedge caps by tile */
+  readonly capsByTile = new Map<number, FoldWedgeCap[]>();
 
-  // Group tiles: 0=TL (gx,gz) 1=TR 2=BL 3=BR. The group-centre corner of
-  // each: TL→SE(3) TR→SW(2) BL→NE(1) BR→NW(0). Diagonal endpoints are
-  // the two edge midpoints flanking that corner (em: 0 top, 1 right,
-  // 2 bottom, 3 left of the group centre).
-  const CENTRE_CORNER = [3, 2, 1, 0];
-  const DIAG: [number, number][] = [[3, 0], [0, 1], [2, 3], [1, 2]];
-  for (let gz = 0; gz + 1 < h; gz++) {
-    for (let gx = 0; gx + 1 < w; gx++) {
-      const ivs = [foldIvs(gx, gz), foldIvs(gx + 1, gz), foldIvs(gx, gz + 1), foldIvs(gx + 1, gz + 1)];
-      if (!ivs[0] && !ivs[1] && !ivs[2] && !ivs[3]) continue;
-      const txs = [gx, gx + 1, gx, gx + 1];
-      const tzs = [gz, gz, gz + 1, gz + 1];
-      // Band breaks: fold interval ends + every span boundary of the four
-      // columns inside the fold range (solidity can change at any of them)
-      let fLo = Infinity, fHi = -Infinity;
-      const ys = new Set<number>();
-      for (const iv of ivs) if (iv) for (const [a, b] of iv.bands) { ys.add(a); ys.add(b); fLo = Math.min(fLo, a); fHi = Math.max(fHi, b); }
-      for (let i = 0; i < 4; i++) {
-        for (const sp of world.columns[tzs[i]! * w + txs[i]!]!) {
-          if (sp.floor > fLo && sp.floor < fHi) ys.add(sp.floor);
-          if (sp.ceil > fLo && sp.ceil < fHi) ys.add(sp.ceil);
-        }
-      }
-      const breaks = [...ys].sort((p, q) => p - q);
-      const cx = (gx + 1) * s;
-      const cz = (gz + 1) * s;
-      const em: [number, number][] = [[cx, cz - s / 2], [cx + s / 2, cz], [cx, cz + s / 2], [cx - s / 2, cz]];
-      for (let i = 0; i + 1 < breaks.length; i++) {
-        const yLo = breaks[i]!;
-        const yHi = breaks[i + 1]!;
-        if (yHi - yLo < 1e-6) continue;
-        const ym = (yLo + yHi) / 2;
-        const solid = [0, 1, 2, 3].map((k) => colSolidAt(txs[k]!, tzs[k]!, ym));
-        const n = solid.filter(Boolean).length;
-        if (n !== 1 && n !== 3) continue; // straight / empty / full / saddle: square faces are exact
-        // every solid here must be FOLD-MADE (smooth preset)
-        let ok = true;
-        for (let k = 0; k < 4; k++) if (solid[k] && !foldMadeAt(ivs[k] ?? null, ym)) { ok = false; break; }
-        if (!ok) continue;
-        const kind: 'cut' | 'fill' = n === 1 ? 'cut' : 'fill';
-        // wedge tile: the lone solid (cut) or the lone air (fill)
-        const k = solid.findIndex((v) => v === (kind === 'cut'));
-        const tx = txs[k]!, tz = tzs[k]!;
-        const corner = CENTRE_CORNER[k]!;
-        const tile = tz * w + tx;
-        // preset: cut → the wedge tile's own; fill → any solid neighbour's
-        const preset = kind === 'cut' ? ivs[k]!.preset : ivs[solid.findIndex(Boolean)]!.preset;
-        const [e0, e1] = DIAG[k]!;
-        const p0 = em[e0]!, p1 = em[e1]!;
-        // normal toward air: away from the wedge tile centre for cuts,
-        // toward it for fills
-        let nx = -(p1[1] - p0[1]);
-        let nz = p1[0] - p0[0];
-        const nl = Math.hypot(nx, nz) || 1;
-        nx /= nl; nz /= nl;
-        const tcx = (tx + 0.5) * s, tcz = (tz + 0.5) * s;
-        const mx = (p0[0] + p1[0]) / 2, mz = (p0[1] + p1[1]) / 2;
-        const towardCentre = (tcx - mx) * nx + (tcz - mz) * nz > 0;
-        if (towardCentre === (kind === 'cut')) { nx = -nx; nz = -nz; }
-        // Band bottom on terrain: an air tile of the group has its
-        // terrain floor exactly here (cut: any of the three; fill: A)
-        let terrain = false;
-        for (let q = 0; q < 4; q++) if (!solid[q] && terrainFloorAt(txs[q]!, tzs[q]!, yLo)) { terrain = true; break; }
-        const seg: FoldSeg = { x0: p0[0], z0: p0[1], x1: p1[0], z1: p1[1], nx, nz, yLo, yHi, kind, tile, corner, preset, terrain };
-        out.segs.push(seg);
-        for (let q = 0; q < 4; q++) register(tzs[q]! * w + txs[q]!, seg);
-        addBand(kind === 'cut' ? out.cuts : out.fills, tile, yLo, yHi, corner, terrain);
-      }
-    }
+  private readonly world: WorldData;
+  private readonly stackSeed: number;
+  private readonly absTx0: number;
+  private readonly absTz0: number;
+  private readonly memo = new Map<string, boolean>();
+  private readonly ivCache = new Map<number, FoldIvs>();
+  /** Group (gz*w+gx) computed */
+  private readonly groupDone: Uint8Array;
+  /** Tile caps computed (requires its 4 corner groups) */
+  private readonly tileDone: Uint8Array;
+
+  constructor(world: WorldData) {
+    const L = world.levels[0]!;
+    this.world = world;
+    this.w = L.width;
+    this.h = L.height;
+    this.stackSeed = world.seed + world.stack * 100000;
+    this.absTx0 = world.originPcx * PILLAR_CELL_TILES;
+    this.absTz0 = world.originPcz * PILLAR_CELL_TILES;
+    this.groupDone = new Uint8Array(this.w * this.h);
+    this.tileDone = new Uint8Array(this.w * this.h);
   }
 
-  // Wedge caps — every band edge where the wedge's horizontal area is
-  // exposed: CUT wedge (air) under/over continuing uncut solid; FILL
-  // wedge (solid) under/over air that is not filled.
-  const continues = (list: FoldWedgeBand[], b: FoldWedgeBand, c: number, up: boolean): boolean =>
-    list.some((o) => o !== b && (o.corners & (1 << c))
-      && (up ? (o.yLo <= b.yHi + 1e-9 && o.yHi > b.yHi + 1e-9) : (o.yHi >= b.yLo - 1e-9 && o.yLo < b.yLo - 1e-9)));
-  const presetOf = (tx: number, tz: number): number => {
-    const iv = foldIvs(tx, tz);
+  /** Fold-made intervals per tile (smooth presets only), memoized */
+  private foldIvs(tx: number, tz: number): FoldIvs {
+    if (tx < 0 || tz < 0 || tx >= this.w || tz >= this.h) return null;
+    const k = tz * this.w + tx;
+    let v = this.ivCache.get(k);
+    if (v === undefined) {
+      const L = this.world.levels[0]!;
+      const t = foldTileIntervals(L.tiles, L.floorHeights, L.cellBiomes, this.w, this.stackSeed, this.absTx0, this.absTz0, tx, tz, L.pillarGround, L.pillarWall, this.memo);
+      v = t && FOLD_PRESETS[t.preset]!.smooth ? { bands: t.bands, preset: t.preset } : null;
+      this.ivCache.set(k, v);
+    }
+    return v;
+  }
+  /** Column-data solidity: no air span covers y (off-map = solid) */
+  private colSolidAt(tx: number, tz: number, y: number): boolean {
+    if (tx < 0 || tz < 0 || tx >= this.w || tz >= this.h) return true;
+    const col = this.world.columns[tz * this.w + tx]!;
+    return !col.some((sp) => sp.floor <= y && sp.ceil >= y);
+  }
+  /** Does (tx,tz) carry a TERRAIN (owner 0) span floor at y? */
+  private terrainFloorAt(tx: number, tz: number, y: number): boolean {
+    return this.world.columns[tz * this.w + tx]!.some((sp) => sp.owner === 0 && Math.abs(sp.floor - y) < 0.02);
+  }
+  private presetOf(tx: number, tz: number): number {
+    const iv = this.foldIvs(tx, tz);
     if (iv) return iv.preset;
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-      const n = foldIvs(tx + dx, tz + dz);
+      const n = this.foldIvs(tx + dx, tz + dz);
       if (n) return n.preset;
     }
     return 0;
-  };
-  for (const [tile, list] of out.cuts) {
-    list.sort((a, b) => a.yLo - b.yLo);
-    const tx = tile % w, tz = Math.floor(tile / w);
-    const preset = presetOf(tx, tz);
-    for (const b of list) {
-      for (let c = 0; c < 4; c++) {
-        if (!(b.corners & (1 << c))) continue;
-        if (colSolidAt(tx, tz, b.yHi + 1e-3) && !continues(list, b, c, true)) out.caps.push({ pts: wedgeTriangle(tx, tz, c), y: b.yHi, up: false, preset, terrain: false });
-        if (colSolidAt(tx, tz, b.yLo - 1e-3) && !continues(list, b, c, false)) {
-          // the wedge floor: standable ground, on terrain where the band
-          // bottom is a terrain floor (the cap follows the ground)
-          b.ground |= 1 << c;
-          out.caps.push({ pts: wedgeTriangle(tx, tz, c), y: b.yLo, up: true, preset, terrain: (b.terrain & (1 << c)) !== 0 });
+  }
+
+  /** Compute one 2x2 group (TL = gx,gz) — its bands and segments */
+  ensureGroup(gx: number, gz: number): void {
+    if (gx < 0 || gz < 0 || gx + 1 >= this.w || gz + 1 >= this.h) return;
+    const gi = gz * this.w + gx;
+    if (this.groupDone[gi]) return;
+    this.groupDone[gi] = 1;
+    const w = this.w;
+    const ivs = [this.foldIvs(gx, gz), this.foldIvs(gx + 1, gz), this.foldIvs(gx, gz + 1), this.foldIvs(gx + 1, gz + 1)];
+    if (!ivs[0] && !ivs[1] && !ivs[2] && !ivs[3]) return;
+    const txs = [gx, gx + 1, gx, gx + 1];
+    const tzs = [gz, gz, gz + 1, gz + 1];
+    // Band breaks: fold interval ends + every span boundary of the four
+    // columns inside the fold range (solidity can change at any of them)
+    let fLo = Infinity, fHi = -Infinity;
+    const ys = new Set<number>();
+    for (const iv of ivs) if (iv) for (const [a, b] of iv.bands) { ys.add(a); ys.add(b); fLo = Math.min(fLo, a); fHi = Math.max(fHi, b); }
+    for (let i = 0; i < 4; i++) {
+      for (const sp of this.world.columns[tzs[i]! * w + txs[i]!]!) {
+        if (sp.floor > fLo && sp.floor < fHi) ys.add(sp.floor);
+        if (sp.ceil > fLo && sp.ceil < fHi) ys.add(sp.ceil);
+      }
+    }
+    const breaks = [...ys].sort((p, q) => p - q);
+    const s = TILE_SIZE;
+    const cx = (gx + 1) * s;
+    const cz = (gz + 1) * s;
+    const em: [number, number][] = [[cx, cz - s / 2], [cx + s / 2, cz], [cx, cz + s / 2], [cx - s / 2, cz]];
+    const foldMadeAt = (iv: FoldIvs, y: number): boolean =>
+      !!iv && iv.bands.some(([a, b]) => y > a + 1e-9 && y < b - 1e-9);
+    for (let i = 0; i + 1 < breaks.length; i++) {
+      const yLo = breaks[i]!;
+      const yHi = breaks[i + 1]!;
+      if (yHi - yLo < 1e-6) continue;
+      const ym = (yLo + yHi) / 2;
+      const solid = [0, 1, 2, 3].map((k) => this.colSolidAt(txs[k]!, tzs[k]!, ym));
+      const n = solid.filter(Boolean).length;
+      if (n !== 1 && n !== 3) continue; // straight / empty / full / saddle: square faces are exact
+      // every solid here must be FOLD-MADE (smooth preset)
+      let ok = true;
+      for (let k = 0; k < 4; k++) if (solid[k] && !foldMadeAt(ivs[k] ?? null, ym)) { ok = false; break; }
+      if (!ok) continue;
+      const kind: 'cut' | 'fill' = n === 1 ? 'cut' : 'fill';
+      // wedge tile: the lone solid (cut) or the lone air (fill)
+      const k = solid.findIndex((v) => v === (kind === 'cut'));
+      const tx = txs[k]!, tz = tzs[k]!;
+      const corner = CENTRE_CORNER[k]!;
+      const tile = tz * w + tx;
+      // preset: cut → the wedge tile's own; fill → any solid neighbour's
+      const preset = kind === 'cut' ? ivs[k]!.preset : ivs[solid.findIndex(Boolean)]!.preset;
+      const [e0, e1] = DIAG[k]!;
+      const p0 = em[e0]!, p1 = em[e1]!;
+      // normal toward air: away from the wedge tile centre for cuts,
+      // toward it for fills
+      let nx = -(p1[1] - p0[1]);
+      let nz = p1[0] - p0[0];
+      const nl = Math.hypot(nx, nz) || 1;
+      nx /= nl; nz /= nl;
+      const tcx = (tx + 0.5) * s, tcz = (tz + 0.5) * s;
+      const mx = (p0[0] + p1[0]) / 2, mz = (p0[1] + p1[1]) / 2;
+      const towardCentre = (tcx - mx) * nx + (tcz - mz) * nz > 0;
+      if (towardCentre === (kind === 'cut')) { nx = -nx; nz = -nz; }
+      // Band bottom on terrain: an air tile of the group has its
+      // terrain floor exactly here (cut: any of the three; fill: A)
+      let terrain = false;
+      for (let q = 0; q < 4; q++) if (!solid[q] && this.terrainFloorAt(txs[q]!, tzs[q]!, yLo)) { terrain = true; break; }
+      const seg: FoldSeg = { x0: p0[0], z0: p0[1], x1: p1[0], z1: p1[1], nx, nz, yLo, yHi, kind, tile, corner, preset, terrain };
+      for (let q = 0; q < 4; q++) {
+        const t2 = tzs[q]! * w + txs[q]!;
+        let sl = this.segsByTile.get(t2);
+        if (!sl) { sl = []; this.segsByTile.set(t2, sl); }
+        sl.push(seg);
+      }
+      let so = this.segsOwned.get(tile);
+      if (!so) { so = []; this.segsOwned.set(tile, so); }
+      so.push(seg);
+      const m = kind === 'cut' ? this.cuts : this.fills;
+      let list = m.get(tile);
+      if (!list) { list = []; m.set(tile, list); }
+      const same = list.find((b) => Math.abs(b.yLo - yLo) < 1e-9 && Math.abs(b.yHi - yHi) < 1e-9);
+      if (same) { same.corners |= 1 << corner; if (terrain) same.terrain |= 1 << corner; }
+      else list.push({ yLo, yHi, corners: 1 << corner, terrain: terrain ? 1 << corner : 0, ground: 0 });
+    }
+  }
+
+  /** Ensure a tile is COMPLETE: its four corner groups plus its wedge
+   *  caps (every band edge where the wedge's horizontal area is
+   *  exposed: CUT wedge (air) under/over continuing uncut solid; FILL
+   *  wedge (solid) under/over air that is not filled). */
+  ensureTile(tx: number, tz: number): void {
+    if (tx < 0 || tz < 0 || tx >= this.w || tz >= this.h) return;
+    const tile = tz * this.w + tx;
+    if (this.tileDone[tile]) return;
+    this.ensureGroup(tx - 1, tz - 1);
+    this.ensureGroup(tx, tz - 1);
+    this.ensureGroup(tx - 1, tz);
+    this.ensureGroup(tx, tz);
+    this.tileDone[tile] = 1;
+    const continues = (list: FoldWedgeBand[], b: FoldWedgeBand, c: number, up: boolean): boolean =>
+      list.some((o) => o !== b && (o.corners & (1 << c))
+        && (up ? (o.yLo <= b.yHi + 1e-9 && o.yHi > b.yHi + 1e-9) : (o.yHi >= b.yLo - 1e-9 && o.yLo < b.yLo - 1e-9)));
+    const caps: FoldWedgeCap[] = [];
+    const cutList = this.cuts.get(tile);
+    if (cutList) {
+      cutList.sort((a, b) => a.yLo - b.yLo);
+      const preset = this.presetOf(tx, tz);
+      for (const b of cutList) {
+        for (let c = 0; c < 4; c++) {
+          if (!(b.corners & (1 << c))) continue;
+          if (this.colSolidAt(tx, tz, b.yHi + 1e-3) && !continues(cutList, b, c, true)) caps.push({ pts: wedgeTriangle(tx, tz, c), y: b.yHi, up: false, preset, terrain: false });
+          if (this.colSolidAt(tx, tz, b.yLo - 1e-3) && !continues(cutList, b, c, false)) {
+            // the wedge floor: standable ground, on terrain where the band
+            // bottom is a terrain floor (the cap follows the ground)
+            b.ground |= 1 << c;
+            caps.push({ pts: wedgeTriangle(tx, tz, c), y: b.yLo, up: true, preset, terrain: (b.terrain & (1 << c)) !== 0 });
+          }
         }
       }
     }
-  }
-  for (const [tile, list] of out.fills) {
-    list.sort((a, b) => a.yLo - b.yLo);
-    const tx = tile % w, tz = Math.floor(tile / w);
-    const preset = presetOf(tx, tz);
-    for (const b of list) {
-      for (let c = 0; c < 4; c++) {
-        if (!(b.corners & (1 << c))) continue;
-        if (!colSolidAt(tx, tz, b.yHi + 1e-3) && !continues(list, b, c, true)) out.caps.push({ pts: wedgeTriangle(tx, tz, c), y: b.yHi, up: true, preset, terrain: false });
-        if (!colSolidAt(tx, tz, b.yLo - 1e-3) && !continues(list, b, c, false)) out.caps.push({ pts: wedgeTriangle(tx, tz, c), y: b.yLo, up: false, preset, terrain: false });
+    const fillList = this.fills.get(tile);
+    if (fillList) {
+      fillList.sort((a, b) => a.yLo - b.yLo);
+      const preset = this.presetOf(tx, tz);
+      for (const b of fillList) {
+        for (let c = 0; c < 4; c++) {
+          if (!(b.corners & (1 << c))) continue;
+          if (!this.colSolidAt(tx, tz, b.yHi + 1e-3) && !continues(fillList, b, c, true)) caps.push({ pts: wedgeTriangle(tx, tz, c), y: b.yHi, up: true, preset, terrain: false });
+          if (!this.colSolidAt(tx, tz, b.yLo - 1e-3) && !continues(fillList, b, c, false)) caps.push({ pts: wedgeTriangle(tx, tz, c), y: b.yLo, up: false, preset, terrain: false });
+        }
       }
     }
+    if (caps.length > 0) this.capsByTile.set(tile, caps);
   }
-  return out;
+
+  /** Ensure every tile in [x0,x1)×[z0,z1) (clamped) */
+  ensureTiles(x0: number, z0: number, x1: number, z1: number): void {
+    const ax0 = Math.max(0, x0), az0 = Math.max(0, z0);
+    const ax1 = Math.min(this.w, x1), az1 = Math.min(this.h, z1);
+    for (let tz = az0; tz < az1; tz++) for (let tx = ax0; tx < ax1; tx++) this.ensureTile(tx, tz);
+  }
+  ensureAll(): this {
+    this.ensureTiles(0, 0, this.w, this.h);
+    return this;
+  }
+}
+
+/** Fully-evaluated contour (tools / whole-window builds) */
+export function buildFoldContour(world: WorldData): FoldContour {
+  return new FoldContour(world).ensureAll();
 }
 
 /** Ground from a FILL wedge top at (x,z): the highest exposed fill top
- *  at or below limitY (+0.6 step), or null */
+ *  at or below limitY (+0.6 step), or null. Caller ensures the tile. */
 export function foldFillGround(fc: FoldContour, tx: number, tz: number, x: number, z: number, limitY: number): number | null {
   const list = fc.fills.get(tz * fc.w + tx);
   if (!list) return null;
@@ -354,7 +411,7 @@ export function foldFillGround(fc: FoldContour, tx: number, tz: number, x: numbe
 
 /** Ground inside a CUT wedge at (x,z): the wedge floor cap (terrain
  *  plane where the band rests on terrain, else flat yLo), highest at or
- *  below limitY (+0.6 step), or null */
+ *  below limitY (+0.6 step), or null. Caller ensures the tile. */
 export function foldCutGround(
   fc: FoldContour, tx: number, tz: number, x: number, z: number, limitY: number,
   heightAt: (px: number, pz: number) => number,

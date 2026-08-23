@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { DungeonRenderer } from './DungeonRenderer';
+import { DungeonRenderer, syncDetailUniforms } from './DungeonRenderer';
 import { GridCamera } from './Camera';
 import { LightingSystem } from './LightingSystem';
 import { SpriteManager } from './SpriteManager';
@@ -11,7 +11,7 @@ import { spanAt } from '../game/dungeon/columns';
 import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
 import { buildPitContour, inPitCut, pitFillGround, type PitContour } from '../game/dungeon/pitcontour';
 import { buildRoadsContour, type RoadsContour } from '../game/dungeon/roadscontour';
-import { buildFoldContour, contourTerrain, foldCutGround, foldFillGround, inFoldWedge, type FoldContour } from '../game/dungeon/fold-contour';
+import { FoldContour, contourTerrain, foldCutGround, foldFillGround, inFoldWedge } from '../game/dungeon/fold-contour';
 import { tileBiome, tileCrest, CELL_TILE_SIZE } from '../game/dungeon/cells';
 import { applyTunables, dirtyLevelFor, TUNABLES, type Tunables } from '../game/dungeon/tunables';
 import { sliceAt } from '../game/mapslice';
@@ -477,6 +477,9 @@ export class GameEngine {
       if (changed.length === 0) return;
       const resetFrom = dirtyLevelFor(changed);
       applyTunables(values);
+      // Render-only tunables (material detail): no regeneration — the
+      // shader uniforms read the live values every frame
+      if (resetFrom === 'render') return;
       this.worldWorker.postMessage({ type: 'tunables', values, resetFrom });
       this.worldCache.clear();
       this.pendingWorlds.clear();
@@ -910,13 +913,19 @@ export class GameEngine {
     const worldCols = this.world.columns;
     this.contours = this.world.levels.map((l) => buildOrganicContour(l, worldCols));
     this.pitContour = buildPitContour(this.world.levels[0]!, this.world.columns);
-    this.foldContour = buildFoldContour(this.world);
+    // LAZY: tiles are evaluated on first query around the player
+    this.foldContour = new FoldContour(this.world);
     this.roadsContour = buildRoadsContour(this.world);
     markPhase('collision');
     // Adopt the window as the chunk data source. No geometry is built
     // here: chunks stream in via updateChunks each frame — surviving
     // core chunks carry across, rim chunks rebuild in the background.
-    this.dungeonRenderer.setWindow(this.world);
+    this.dungeonRenderer.setWindow(this.world, {
+      cornerFloors: this.cornerFloors,
+      contours: this.contours,
+      roadsContour: this.roadsContour,
+      pitContour: this.pitContour,
+    });
     if (this.editorGridOn) this.rebuildEditorGrid();
     markPhase('geometry-adopt');
     this.movers = new Movers(this.world, this.scene);
@@ -1197,6 +1206,7 @@ export class GameEngine {
       this.processMovement(dt);
     }
     this.prefetchApproachingWindow(store.currentFloor);
+    syncDetailUniforms();
     this.syncGridPos(store);
     this.gridCamera.update();
     // Vertical camera smoothing: while grounded, the eye eases toward
@@ -1314,6 +1324,7 @@ export class GameEngine {
       if (!rimCut && s.owner < 0 && this.foldContour) {
         const ftx = Math.floor(x / TILE_SIZE);
         const ftz = Math.floor(z / TILE_SIZE);
+        this.foldContour.ensureTile(ftx, ftz);
         const bands = this.foldContour.cuts.get(ftz * this.foldContour.w + ftx);
         if (bands) {
           for (const b of bands) {
@@ -1346,6 +1357,7 @@ export class GameEngine {
     // Fold contour, fill side: an exposed fill-wedge top is real drawn
     // floor — stand on its exact plane
     if (this.foldContour) {
+      this.foldContour.ensureTile(tx, tz);
       const fg = foldFillGround(this.foldContour, tx, tz, x, z, limitY);
       if (fg !== null && fg > best) best = fg;
       // ...and a cut wedge's floor cap (terrain plane or flat band bottom)
@@ -1755,6 +1767,7 @@ export class GameEngine {
             // point lies in a cut wedge at body height, the diagonal
             // segment (below) decides instead of the square box
             let inWedge = false;
+            this.foldContour?.ensureTile(tx, tz);
             const fbands = this.foldContour?.cuts.get(tz * w + tx);
             if (fbands && spans) {
               for (const b of fbands) {
@@ -1770,6 +1783,7 @@ export class GameEngine {
         }
         // Fold contour diagonals over the body's height band (cut and
         // fill alike — the segment IS the drawn wall)
+        this.foldContour?.ensureTile(tx, tz);
         const fsegs = this.foldContour?.segsByTile.get(tz * w + tx);
         if (fsegs) {
           const bodyH = this.input.hasMovementOverride()
