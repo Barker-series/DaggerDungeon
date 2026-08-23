@@ -716,7 +716,9 @@ export class DungeonRenderer {
       // proper: tint, splat weights, DEV triangle audit)
       const entry = chunk.acc.get(job.key);
       chunk.acc.delete(job.key);
-      if (entry) this.addMesh(chunk.group, entry.buf, entry.material, entry.name);
+      // emitMesh, not addMesh: the chunk is still accumulating and
+      // addMesh would swallow the flush back into the accumulator
+      if (entry) this.emitMesh(chunk.group, entry.buf, entry.material, entry.name);
       chunk.buildMs += performance.now() - jobStart;
       if (chunk.jobs.length === 0) this.completeChunk(chunk);
       return;
@@ -3407,7 +3409,11 @@ export class DungeonRenderer {
 
   private addMesh(parent: THREE.Group, buf: MeshBuffers, material: THREE.Material, passName = ''): void {
     if (buf.verts.length === 0) return;
-    const chunk = this.accumulating.get(parent);
+    // Passes may nest their own sub-groups under the chunk group: walk
+    // up to find the accumulating chunk (flushed meshes land flat on
+    // the chunk group)
+    let chunk: RenderChunk | undefined;
+    for (let p: THREE.Object3D | null = parent; p && !chunk; p = p.parent) chunk = this.accumulating.get(p as THREE.Group);
     if (chunk) {
       const key = `${passName}|${material.uuid}`;
       let entry = chunk.acc.get(key);
@@ -3423,6 +3429,12 @@ export class DungeonRenderer {
       for (let i = 0; i < buf.idxs.length; i++) eb.idxs.push(buf.idxs[i]! + base);
       return;
     }
+    this.emitMesh(parent, buf, material, passName);
+  }
+
+  /** Create the mesh proper (tint, splat weights, DEV triangle audit) */
+  private emitMesh(parent: THREE.Group, buf: MeshBuffers, material: THREE.Material, passName = ''): void {
+    if (buf.verts.length === 0) return;
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(buf.verts, 3));
     geom.setAttribute('uv', new THREE.Float32BufferAttribute(buf.uvs, 2));
