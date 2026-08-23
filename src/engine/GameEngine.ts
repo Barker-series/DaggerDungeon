@@ -144,6 +144,10 @@ export class GameEngine {
   /** Worker-built contours/corner fields per cached window (same keys) */
   private prepCache = new Map<string, WindowPrep>();
   private pendingWorlds = new Set<string>();
+  /** Windows generated and parked in the worker (deliverable on demand) */
+  private readyInWorker = new Set<string>();
+  /** Delivery requests in flight (payload not yet received) */
+  private pendingDeliver = new Set<string>();
   private readonly maxCachedWorlds = 10;
 
   /** Frame-limiter period in ms; 0 = present at native refresh */
@@ -488,6 +492,8 @@ export class GameEngine {
       this.worldCache.clear();
       this.prepCache.clear();
       this.pendingWorlds.clear();
+      this.readyInWorker.clear();
+      this.pendingDeliver.clear();
       const stack = store.currentFloor;
       // Epoch-suffixed request key: results generated under OLD
       // tunables (posted before this change) can never adopt
@@ -497,6 +503,7 @@ export class GameEngine {
       this.worldWorker.postMessage({
         key, seed: this.seed, stack,
         originPcx: this.originPcx, originPcz: this.originPcz,
+        deliver: true,
       });
       this.tunablesRebuildPending = true;
       store.setEditorRegenerating(true);
@@ -539,6 +546,8 @@ export class GameEngine {
         this.worldCache.clear();
         this.prepCache.clear();
         this.pendingWorlds.clear();
+        this.readyInWorker.clear();
+        this.pendingDeliver.clear();
       }
       if (seedChanged || opx !== this.originPcx || opz !== this.originPcz
         || stack !== store.currentFloor) {
@@ -803,11 +812,20 @@ export class GameEngine {
   }
 
   private acceptPreparedWorld(
-    event: MessageEvent<{ key: string; world?: WorldData; prep?: WindowPrep; generationMs?: number }>,
+    event: MessageEvent<{ key: string; world?: WorldData; prep?: WindowPrep; ready?: boolean; generationMs?: number }>,
   ): void {
-    const { key, world, prep, generationMs = 0 } = event.data;
+    const { key, world, prep, ready, generationMs = 0 } = event.data;
     // A seed can change while either worker is finishing an old request.
     if (!key.startsWith(`${this.seed}:`)) return;
+    if (ready) {
+      // Generated and parked worker-side; nothing crossed the thread yet
+      this.pendingWorlds.delete(key);
+      this.readyInWorker.add(key);
+      if (import.meta.env.DEV) {
+        console.debug(`[stream] ready ${key} (worker-side) in ${generationMs.toFixed(1)} ms`);
+      }
+      return;
+    }
     if (!world) {
       // First message of a pair: the worker-built contours, cached under
       // the window's base key; the world follows and finds them
@@ -818,6 +836,8 @@ export class GameEngine {
       return;
     }
     this.pendingWorlds.delete(key);
+    this.pendingDeliver.delete(key);
+    this.readyInWorker.delete(key);
     // E3 tunables rebuilds: only the awaited epoch may land; results
     // from superseded epochs are discarded outright
     if (key.includes('#t')) {
@@ -845,9 +865,11 @@ export class GameEngine {
     }
   }
 
+  /** Generate (and park worker-side) — no payload crosses the thread */
   private requestWorld(stack: number, originPcx: number, originPcz: number): void {
     const key = this.worldKey(stack, originPcx, originPcz);
-    if (this.worldCache.has(key) || this.pendingWorlds.has(key)) return;
+    if (this.worldCache.has(key) || this.pendingWorlds.has(key) || this.readyInWorker.has(key)
+      || this.pendingDeliver.has(key)) return;
     this.pendingWorlds.add(key);
     const request: WorldWorkerRequest = {
       key,
@@ -859,29 +881,69 @@ export class GameEngine {
     this.worldWorker.postMessage(request);
   }
 
+  /** Deliver the payload of a window we are about to walk into
+   *  (generating first if it isn't parked yet) */
+  private requestDelivery(stack: number, originPcx: number, originPcz: number): void {
+    const key = this.worldKey(stack, originPcx, originPcz);
+    if (this.worldCache.has(key) || this.pendingDeliver.has(key)) return;
+    this.pendingDeliver.add(key);
+    this.pendingWorlds.delete(key);
+    const request: WorldWorkerRequest = {
+      key,
+      seed: this.seed,
+      stack,
+      originPcx,
+      originPcz,
+      deliver: true,
+    };
+    this.worldWorker.postMessage(request);
+  }
+
   /** ONE worker lane (since milestone B): the worker's chunk cache
    *  makes adjacent-window prep ~400ms warm, so a second "urgent"
    *  worker — whose separate module state meant a COLD chunk cache —
    *  was slower than just queueing on the warm one. Urgency is now
    *  simply "request it if nothing has yet". */
   private requestUrgentWorld(stack: number, originPcx: number, originPcz: number): void {
-    this.requestWorld(stack, originPcx, originPcz);
+    this.requestDelivery(stack, originPcx, originPcz);
   }
 
   /** Watch actual player position, including diagonal movement and sudden
    * direction changes. The exact next window gets a dedicated worker lane
    * well before the recenter threshold. */
+  /** Two tiers: GENERATE (park worker-side) while still well inside the
+   *  window — generation takes ~0.4-2.7 s; DELIVER (the ~25 ms
+   *  structured-clone onto the main thread) only close to the boundary
+   *  — delivery of a parked window takes one frame, so the narrow
+   *  margin still leaves seconds of travel. Windows never approached
+   *  never cross the thread. */
   private prefetchApproachingWindow(stack: number): void {
-    const margin = PCELL * 0.65;
     const pos = this.gridCamera.position;
-    let dx = 0;
-    let dz = 0;
-    if (pos.x < PCELL + margin) dx = -1;
-    else if (pos.x >= 3 * PCELL - margin) dx = 1;
-    if (pos.z < PCELL + margin) dz = -1;
-    else if (pos.z >= 3 * PCELL - margin) dz = 1;
+    const tier = (margin: number): [number, number] => {
+      let dx = 0;
+      let dz = 0;
+      if (pos.x < PCELL + margin) dx = -1;
+      else if (pos.x >= 3 * PCELL - margin) dx = 1;
+      if (pos.z < PCELL + margin) dz = -1;
+      else if (pos.z >= 3 * PCELL - margin) dz = 1;
+      return [dx, dz];
+    };
+    const [gx, gz] = tier(PCELL * 0.65);
+    if (gx !== 0 || gz !== 0) {
+      this.requestWorld(stack, this.originPcx + gx, this.originPcz + gz);
+      if (gx !== 0 && gz !== 0) {
+        this.requestWorld(stack, this.originPcx + gx, this.originPcz);
+        this.requestWorld(stack, this.originPcx, this.originPcz + gz);
+      }
+    }
+    const [dx, dz] = tier(PCELL * 0.3);
     if (dx !== 0 || dz !== 0) {
       this.requestUrgentWorld(stack, this.originPcx + dx, this.originPcz + dz);
+      // near a corner, both axis neighbours are plausible next windows
+      if (dx !== 0 && dz !== 0) {
+        this.requestUrgentWorld(stack, this.originPcx + dx, this.originPcz);
+        this.requestUrgentWorld(stack, this.originPcx, this.originPcz + dz);
+      }
     }
   }
 
@@ -1092,6 +1154,8 @@ export class GameEngine {
     this.worldCache.clear();
     this.prepCache.clear();
     this.pendingWorlds.clear();
+    this.readyInWorker.clear();
+    this.pendingDeliver.clear();
     this.originPcx = 0;
     this.originPcz = 0;
     this.buildWindow(stack);
