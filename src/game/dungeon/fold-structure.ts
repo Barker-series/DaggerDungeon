@@ -46,8 +46,13 @@ import { TUNABLES } from './tunables';
 const CELL = 14;
 
 // ── PRESETS — faithful ports of the reference recipes (RedKef's
-// Megastructure series; SETTINGS ported as starting points per the
-// license doctrine in docs/PLAN.md — the code is ours). Per-octave op
+// Megastructure series on Shadertoy; SETTINGS ported as starting points
+// per the license doctrine in docs/PLAN.md — the code is ours).
+// NO-INFRINGEMENT NOTE: nothing here is copied or transliterated from
+// the reference shaders (CC BY-NC-SA covers their GLSL, which this
+// project does not contain); this file is an independent implementation
+// of the public kaleidoscopic-fold technique, using the reference only
+// as concept + parameter values. Per-octave op
 // order matches the reference: rotate about Y → tile → fold → permute
 // (swaps, then sign flips) → d = max(d, min(q)). Selected live via
 // TUNABLES.foldPreset; the destination is a preset per district. ──

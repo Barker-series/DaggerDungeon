@@ -123,6 +123,15 @@ explicitly a guess until the day it's real work.
   thing. Credit to RedKef's Megastructure series is given as a
   courtesy, not an obligation. Faithful-port-first: no invented
   variants before the user has seen the reference reproduced.
+  **No-infringement note (audited Aug 22 2026):** the repository
+  contains none of the reference's GLSL or any transliteration of it.
+  The fold is an independent TypeScript implementation of the public
+  kaleidoscopic-IFS technique (src/game/dungeon/fold-structure.ts,
+  fold-contour.ts) built around our column model; only the CONCEPT and
+  the SETTINGS (parameter values — facts) were taken from the reference.
+  CC BY-NC-SA covers their code (expression), which we do not use, so
+  its NC/SA terms do not attach to this project. Shadertoy is referenced
+  here as inspiration and credit only.
 
 - **The subway (plan-8 rail, design sketch — user + design conversation,
   Aug 3 2026).** Endless point-to-point tunnels, done the LayerProcGen way:
