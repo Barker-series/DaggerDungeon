@@ -9,6 +9,7 @@ import { buildPitContour, type PitContour } from '../game/dungeon/pitcontour';
 import { bridgeTiles, PIPE_BORE, CLEARANCE } from '../game/dungeon/pillar-bridges';
 import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
 import { foldColumnBand } from '../game/dungeon/fold-structure';
+import { buildFoldContour, contourTerrain, foldWedgesAt, terrainOr, type FoldContour } from '../game/dungeon/fold-contour';
 
 const loader = new THREE.TextureLoader();
 
@@ -206,6 +207,14 @@ interface MeshBuffers {
 
 function newBuffers(): MeshBuffers {
   return { verts: [], idxs: [], uvs: [], norms: [] };
+}
+
+/** Fold contour per world window (chunks share one build) */
+const foldContourCache = new WeakMap<WorldData, FoldContour>();
+function foldContourFor(world: WorldData): FoldContour {
+  let fc = foldContourCache.get(world);
+  if (!fc) { fc = buildFoldContour(world); foldContourCache.set(world, fc); }
+  return fc;
 }
 
 interface RegionBuffers {
@@ -1014,6 +1023,44 @@ export class DungeonRenderer {
       const b = foldBandOf(tx, tz);
       return b !== null && y >= b.yLo - 0.01 && y <= b.yHi + 0.01 ? b.preset : -1;
     };
+    // ── FOLD CONTOUR (smooth presets): marching-squares cut + fill per
+    // solid band — the shared authority the engine collides against.
+    // Square half-faces a cut replaces are suppressed; fold tops and
+    // undersides are clipped at cut corners; diagonals and wedge caps
+    // are drawn from the contour data. ──
+    const foldContour = foldContourFor(world);
+    /** Flat cap of tile (x,z) at height y with corner wedges (mask) removed */
+    const emitCutCap = (buf: MeshBuffers, x: number, z: number, y: number, mask: number, up: boolean): void => {
+      const wx = x * TILE_SIZE;
+      const wz = z * TILE_SIZE;
+      const half = TILE_SIZE / 2;
+      const ring: [number, number][] = [];
+      const pushPt = (px: number, pz: number): void => {
+        const last = ring[ring.length - 1];
+        if (last && Math.abs(last[0] - px) < 1e-6 && Math.abs(last[1] - pz) < 1e-6) return;
+        ring.push([px, pz]);
+      };
+      // NW -> NE -> SE -> SW (corner bits 0,1,3,2)
+      if (mask & 1) { pushPt(wx, wz + half); pushPt(wx + half, wz); } else pushPt(wx, wz);
+      if (mask & 2) { pushPt(wx + half, wz); pushPt(wx + TILE_SIZE, wz + half); } else pushPt(wx + TILE_SIZE, wz);
+      if (mask & 8) { pushPt(wx + TILE_SIZE, wz + half); pushPt(wx + half, wz + TILE_SIZE); } else pushPt(wx + TILE_SIZE, wz + TILE_SIZE);
+      if (mask & 4) { pushPt(wx + half, wz + TILE_SIZE); pushPt(wx, wz + half); } else pushPt(wx, wz + TILE_SIZE);
+      if (ring.length < 3) return;
+      const vi = buf.verts.length / 3;
+      for (const [px, pz] of ring) {
+        buf.verts.push(px, y, pz);
+        buf.norms.push(0, up ? 1 : -1, 0);
+        buf.uvs.push(px / TILE_SIZE, pz / TILE_SIZE);
+      }
+      for (let i = 1; i + 1 < ring.length; i++) {
+        const ax = ring[i]![0] - ring[0]![0], az = ring[i]![1] - ring[0]![1];
+        const bx = ring[i + 1]![0] - ring[0]![0], bz = ring[i + 1]![1] - ring[0]![1];
+        const area = az * bx - ax * bz;
+        if (Math.abs(area) < 1e-9) continue;
+        if ((area >= 0) === up) buf.idxs.push(vi, vi + i, vi + i + 1);
+        else buf.idxs.push(vi, vi + i + 1, vi + i);
+      }
+    };
 
     const bufferFor = (key: RegionKey): MeshBuffers => {
       let b = buffers.get(key);
@@ -1203,15 +1250,24 @@ export class DungeonRenderer {
           || roadsContour.cutTileCorners.has(cutBase + 3);
         for (const s of a) {
           if (s.owner === -1 && s.floor > ABYSS_FLOOR) {
-            if (topCut) emitClippedTop(x, z, s.floor);
-            else want(s.floor, true, foldOwned(x, z, s.floor));
+            const fpTop = foldOwned(x, z, s.floor);
+            // a cut wedge just below this top is air: clip the cap there
+            const cutBelow = fpTop >= 0 ? foldWedgesAt(foldContour.cuts, z * w + x, s.floor - 0.05) : 0;
+            if (cutBelow !== 0) emitCutCap(foldBuf(foldTopsBy, fpTop), x, z, s.floor, cutBelow, true);
+            else if (topCut) emitClippedTop(x, z, s.floor);
+            else want(s.floor, true, fpTop);
           }
           // Arch void ceilings included: DATA-EXACT flat pieces (the
           // corner-field intrados and every smoothed successor read
           // wrong from below — removed Aug 2026; a from-scratch arch
           // underside can rebuild on layer6-heights' archSpanAt /
           // archDepthAt shape authority).
-          if (s.ceilOwner === -1 && s.ceil < SKY_CEIL) want(s.ceil, false, foldOwned(x, z, s.ceil));
+          if (s.ceilOwner === -1 && s.ceil < SKY_CEIL) {
+            const fpCeil = foldOwned(x, z, s.ceil);
+            const cutAbove = fpCeil >= 0 ? foldWedgesAt(foldContour.cuts, z * w + x, s.ceil + 0.05) : 0;
+            if (cutAbove !== 0) emitCutCap(foldBuf(foldTopsBy, fpCeil), x, z, s.ceil, cutAbove, false);
+            else want(s.ceil, false, fpCeil);
+          }
         }
         // The world's top plane is WATERTIGHT: every column either opens
         // to sky or carries a roof slab at its crown (the crest
@@ -1767,9 +1823,66 @@ export class DungeonRenderer {
               );
               addOrientedQuad(buf, vi, -nrmX, 0, -nrmZ);
             };
+            /** Fold contour: sub-ranges of [lo,hi] where the solid tile's
+             *  corner at this half is CUT (the diagonal replaces the face) */
+            const foldCutRanges = (k: 0 | 1): [number, number][] => {
+              if (!(solidX >= 0 && solidZ >= 0 && solidX < w && solidZ < h)) return [];
+              const bands = foldContour.cuts.get(solidZ * w + solidX);
+              if (!bands) return [];
+              const c = k === 0 ? c0 : c1;
+              const ci = (c.cz - solidZ) * 2 + (c.cx - solidX);
+              if (ci < 0 || ci > 3) return [];
+              const out: [number, number][] = [];
+              for (const b of bands) {
+                if (!(b.corners & (1 << ci))) continue;
+                const a = Math.max(lo, b.yLo), bb = Math.min(hi, b.yHi);
+                if (bb - a > 1e-6) out.push([a, bb]);
+              }
+              return out;
+            };
+            /** Half over an explicit y range. Ends that coincide with the
+             *  segment's own bounds keep the REFINED (corner-blended)
+             *  heights the full face would have had — a fold standing on
+             *  terrain meets the ground exactly as before; interior cut
+             *  ends are flat (fold bands are data-exact). */
+            const emitFlatY = (s0: number, s1: number, a: number, b: number): void => {
+              const atLo = Math.abs(a - lo) < 1e-6;
+              const atHi = Math.abs(b - hi) < 1e-6;
+              const ext = atHi && topOverride !== null ? extLimit : 0;
+              const bA = atLo ? lerp(lo0, lo1, s0) : a;
+              const bB = atLo ? lerp(lo0, lo1, s1) : a;
+              const tA = atHi ? lerp(hi0, hi1, s0) + ext : b;
+              const tB = atHi ? lerp(hi0, hi1, s1) + ext : b;
+              const vi = buf.verts.length / 3;
+              buf.verts.push(
+                lerp(ex0, ex1, s0), bA, lerp(ez0, ez1, s0),
+                lerp(ex0, ex1, s1), bB, lerp(ez0, ez1, s1),
+                lerp(ex0, ex1, s1), tB, lerp(ez0, ez1, s1),
+                lerp(ex0, ex1, s0), tA, lerp(ez0, ez1, s0),
+              );
+              for (let k = 0; k < 4; k++) buf.norms.push(nrmX, 0, nrmZ);
+              buf.uvs.push(s0, bA / TILE_SIZE, s1, bB / TILE_SIZE, s1, tB / TILE_SIZE, s0, tA / TILE_SIZE);
+              addOrientedQuad(buf, vi, nrmX, 0, nrmZ);
+            };
+            /** Emit the half minus its cut sub-ranges; true if handled */
+            const emitFlatMinusCuts = (k: 0 | 1): boolean => {
+              const cuts2 = foldCutRanges(k);
+              if (cuts2.length === 0) return false;
+              cuts2.sort((p, q) => p[0] - q[0]);
+              const s0 = k === 0 ? 0 : 0.5, s1 = k === 0 ? 0.5 : 1;
+              let cur = lo;
+              for (const [a, b] of cuts2) {
+                if (a - cur > 0.02) emitFlatY(s0, s1, cur, a);
+                cur = Math.max(cur, b);
+              }
+              if (hi - cur > 0.02) emitFlatY(s0, s1, cur, hi);
+              return true;
+            };
             if (!emitOctagonal) {
               if (pitCovered(0)) {
                 // covered by the pit-rim diagonal band
+              } else if (emitFlatMinusCuts(0)) {
+                // fold contour: the diagonal replaces the cut sub-range
               } else if (cov0) {
                 emitCapTransom(0, 0.5);
               } else if (rcov0) {
@@ -1783,6 +1896,8 @@ export class DungeonRenderer {
               }
               if (pitCovered(1)) {
                 // covered by the pit-rim diagonal band
+              } else if (emitFlatMinusCuts(1)) {
+                // fold contour: the diagonal replaces the cut sub-range
               } else if (cov1) {
                 emitCapTransom(0.5, 1);
               } else if (rcov1) {
@@ -1861,6 +1976,44 @@ export class DungeonRenderer {
       this.addMesh(group, buf, materialsFor(key).wall, `faces:xor-walls:${key}`);
     }
     this.addMesh(group, rockFloors, materialsFor('tunnel').floor, 'faces:rock-tops+roofs');
+    // Fold contour: diagonal walls over their bands (chunk-owned by the
+    // wedge tile), wedge caps
+    {
+      const x0b = bounds?.x0 ?? 0, z0b = bounds?.z0 ?? 0, x1b = bounds?.x1 ?? w, z1b = bounds?.z1 ?? h;
+      const owned = (tile: number): boolean => {
+        const tx = tile % w, tz = Math.floor(tile / w);
+        return tx >= x0b && tx < x1b && tz >= z0b && tz < z1b;
+      };
+      // Terrain heights: level-0 corner field (bilinear-exact at tile
+      // corners and edge midpoints — every contour point lies on one)
+      const cf0 = cornerFloors[0]!;
+      const terrainAt = (px: number, pz: number): number => contourTerrain(cf0, world.levels[0]!.baseY, px, pz);
+      for (const sg of foldContour.segs) {
+        if (!owned(sg.tile)) continue;
+        const b = foldBuf(foldWallsBy, sg.preset);
+        // A band resting on terrain: the diagonal bottoms out on the
+        // corner-blended ground, exactly as the XOR faces do via refine
+        const b0 = sg.terrain ? terrainOr(terrainAt(sg.x0, sg.z0), sg.yLo) : sg.yLo;
+        const b1 = sg.terrain ? terrainOr(terrainAt(sg.x1, sg.z1), sg.yLo) : sg.yLo;
+        const vi = b.verts.length / 3;
+        b.verts.push(sg.x0, b0, sg.z0, sg.x1, b1, sg.z1, sg.x1, sg.yHi, sg.z1, sg.x0, sg.yHi, sg.z0);
+        for (let k = 0; k < 4; k++) b.norms.push(sg.nx, 0, sg.nz);
+        const ul = Math.hypot(sg.x1 - sg.x0, sg.z1 - sg.z0) / TILE_SIZE;
+        b.uvs.push(0, b0 / TILE_SIZE, ul, b1 / TILE_SIZE, ul, sg.yHi / TILE_SIZE, 0, sg.yHi / TILE_SIZE);
+        addOrientedQuad(b, vi, sg.nx, 0, sg.nz);
+      }
+      for (const cap of foldContour.caps) {
+        const [p0, p1, p2] = cap.pts;
+        const ctx = Math.floor((p0![0] + p1![0] + p2![0]) / 3 / TILE_SIZE);
+        const ctz = Math.floor((p0![1] + p1![1] + p2![1]) / 3 / TILE_SIZE);
+        if (!owned(ctz * w + ctx)) continue;
+        const b = foldBuf(foldTopsBy, cap.preset);
+        const vi = b.verts.length / 3;
+        for (const [px, pz] of cap.pts) { b.verts.push(px, cap.terrain ? terrainOr(terrainAt(px, pz), cap.y) : cap.y, pz); b.norms.push(0, cap.up ? 1 : -1, 0); b.uvs.push(px / TILE_SIZE, pz / TILE_SIZE); }
+        const area = (p1![1] - p0![1]) * (p2![0] - p0![0]) - (p1![0] - p0![0]) * (p2![1] - p0![1]);
+        if ((area >= 0) === cap.up) b.idxs.push(vi, vi + 1, vi + 2); else b.idxs.push(vi, vi + 2, vi + 1);
+      }
+    }
     for (const [preset, b] of foldTopsBy) this.addMesh(group, b, this.foldMaterialsFor(preset).floor, `faces:fold-tops:${preset}`);
     for (const [preset, b] of foldWallsBy) this.addMesh(group, b, this.foldMaterialsFor(preset).wall, `faces:fold-walls:${preset}`);
   }

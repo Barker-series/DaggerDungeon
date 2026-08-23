@@ -72,6 +72,9 @@ export interface FoldPreset {
    *  surface outward — thin members survive tile quantization as
    *  connected beams instead of floating cubes */
   thicken?: number;
+  /** Marching-squares smoothing of this preset's mass (fold-contour.ts):
+   *  convex corners cut, concave notches filled, per solid band */
+  smooth?: boolean;
 }
 export const FOLD_PRESETS: FoldPreset[] = [
   // "city" — OURS: #5's recipe pushed toward #7 (rot TAU/6, offset 0.7,
@@ -83,7 +86,7 @@ export const FOLD_PRESETS: FoldPreset[] = [
     swapXY: 0, swapXZ: 0, flipX: 2, flipY: 8, flipZ: 2, fullHeight: true },
   // #6 "industrial girders": base 200, decay 0.25, offset 0.95, TAU/16, swaps xy k&1 / xz k&2, flips x k&4, y k&8, z k&16
   { name: 'girders (#6)', base: 200, decay: 0.25, offset: 0.95, rot: Math.PI / 8, maxOctaves: 8,
-    swapXY: 1, swapXZ: 2, flipX: 4, flipY: 8, flipZ: 16, thicken: 1.5 },
+    swapXY: 1, swapXZ: 2, flipX: 4, flipY: 8, flipZ: 16, thicken: 1.5, smooth: true },
   // #7 "carved interior": base 500, decay 0.5, offset 0.75, TAU/8, #5's flips
   { name: 'interior (#7)', base: 500, decay: 0.5, offset: 0.75, rot: Math.PI / 4, maxOctaves: 12,
     swapXY: 0, swapXZ: 0, flipX: 2, flipY: 8, flipZ: 2 },

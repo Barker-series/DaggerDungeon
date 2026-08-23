@@ -11,6 +11,7 @@ import { spanAt } from '../game/dungeon/columns';
 import { buildOrganicContour, segmentDistSq, type OrganicContour } from '../game/dungeon/organiccontour';
 import { buildPitContour, inPitCut, pitFillGround, type PitContour } from '../game/dungeon/pitcontour';
 import { buildRoadsContour, type RoadsContour } from '../game/dungeon/roadscontour';
+import { buildFoldContour, contourTerrain, foldCutGround, foldFillGround, inFoldWedge, type FoldContour } from '../game/dungeon/fold-contour';
 import { tileBiome, tileCrest, CELL_TILE_SIZE } from '../game/dungeon/cells';
 import { applyTunables, dirtyLevelFor, TUNABLES, type Tunables } from '../game/dungeon/tunables';
 import { sliceAt } from '../game/mapslice';
@@ -153,6 +154,9 @@ export class GameEngine {
   /** Pit rim contour (level 0) — smoothed hole edges; the cut wedge of
    *  a rim tile has NO ground (fall exactly where the hole is drawn) */
   private pitContour: PitContour | null = null;
+  /** Fold contour (smooth presets): cut wedges are air, fill wedges are
+   *  solid, diagonals collide — the renderer's exact geometry */
+  private foldContour: FoldContour | null = null;
   private roadsContour: RoadsContour | null = null;
   private seed = 0;
 
@@ -906,6 +910,7 @@ export class GameEngine {
     const worldCols = this.world.columns;
     this.contours = this.world.levels.map((l) => buildOrganicContour(l, worldCols));
     this.pitContour = buildPitContour(this.world.levels[0]!, this.world.columns);
+    this.foldContour = buildFoldContour(this.world);
     this.roadsContour = buildRoadsContour(this.world);
     markPhase('collision');
     // Adopt the window as the chunk data source. No geometry is built
@@ -1303,7 +1308,22 @@ export class GameEngine {
           this.pitContour, this.world!.levels[0]!.width,
           Math.floor(x / TILE_SIZE), Math.floor(z / TILE_SIZE), x, z,
         );
-      if (!rimCut) {
+      // Fold contour: a fold top whose solid is CUT at this corner has no
+      // floor on the wedge (the drawn cap is clipped there)
+      let foldCut = false;
+      if (!rimCut && s.owner < 0 && this.foldContour) {
+        const ftx = Math.floor(x / TILE_SIZE);
+        const ftz = Math.floor(z / TILE_SIZE);
+        const bands = this.foldContour.cuts.get(ftz * this.foldContour.w + ftx);
+        if (bands) {
+          for (const b of bands) {
+            if (Math.abs(b.yHi - s.floor) > 0.05) continue;
+            for (let c = 0; c < 4; c++) if ((b.corners & (1 << c)) && inFoldWedge(ftx, ftz, c, x, z)) { foldCut = true; break; }
+            if (foldCut) break;
+          }
+        }
+      }
+      if (!rimCut && !foldCut) {
         best = s.owner < 0
           ? s.floor
           : this.world!.levels[s.owner]!.baseY + sampleCornerField(this.cornerFloors[s.owner]!, x, z);
@@ -1322,6 +1342,19 @@ export class GameEngine {
         (px, pz) => sampleCornerField(this.cornerFloors[0]!, px, pz),
       );
       if (fg !== null && fg <= limitY + 0.6 && fg > best) best = fg;
+    }
+    // Fold contour, fill side: an exposed fill-wedge top is real drawn
+    // floor — stand on its exact plane
+    if (this.foldContour) {
+      const fg = foldFillGround(this.foldContour, tx, tz, x, z, limitY);
+      if (fg !== null && fg > best) best = fg;
+      // ...and a cut wedge's floor cap (terrain plane or flat band bottom)
+      const L0 = this.world!.levels[0]!;
+      const cg = foldCutGround(
+        this.foldContour, tx, tz, x, z, limitY,
+        (px, pz) => contourTerrain(this.cornerFloors[0]!, L0.baseY, px, pz),
+      );
+      if (cg !== null && cg > best) best = cg;
     }
     for (let li = 0; li < this.world!.levels.length; li++) {
       const g = this.pocketGround(li, tx, tz, x, z);
@@ -1675,6 +1708,7 @@ export class GameEngine {
     const cz = Math.floor(z / TILE_SIZE);
     const seen = new Set<unknown>();
     const seenRoads = new Set<unknown>();
+    const seenFold = new Set<unknown>();
     for (let tz = cz - 1; tz <= cz + 1; tz++) {
       for (let tx = cx - 1; tx <= cx + 1; tx++) {
         // Solidity comes from the column model: a column blocks the body
@@ -1717,7 +1751,42 @@ export class GameEngine {
             const ddx = x - closestX;
             const ddz = z - closestZ;
             const d2 = ddx * ddx + ddz * ddz;
-            if (d2 < r * r) consider(d2, closestX, closestZ);
+            // FOLD CONTOUR: a cut wedge is AIR — if the box's closest
+            // point lies in a cut wedge at body height, the diagonal
+            // segment (below) decides instead of the square box
+            let inWedge = false;
+            const fbands = this.foldContour?.cuts.get(tz * w + tx);
+            if (fbands && spans) {
+              for (const b of fbands) {
+                if (b.yHi < feetY + 0.2 || b.yLo > feetY + bodyHeight) continue;
+                for (let c = 0; c < 4; c++) {
+                  if ((b.corners & (1 << c)) && inFoldWedge(tx, tz, c, closestX, closestZ)) { inWedge = true; break; }
+                }
+                if (inWedge) break;
+              }
+            }
+            if (!inWedge && d2 < r * r) consider(d2, closestX, closestZ);
+          }
+        }
+        // Fold contour diagonals over the body's height band (cut and
+        // fill alike — the segment IS the drawn wall)
+        const fsegs = this.foldContour?.segsByTile.get(tz * w + tx);
+        if (fsegs) {
+          const bodyH = this.input.hasMovementOverride()
+            ? CROUCH_HEIGHT
+            : STAND_HEIGHT - (STAND_HEIGHT - CROUCH_HEIGHT) * this.crouchAmount;
+          for (const seg of fsegs) {
+            if (seenFold.has(seg)) continue;
+            seenFold.add(seg);
+            if (seg.yHi < feetY + 0.2 || seg.yLo > feetY + bodyH) continue;
+            const sdx = seg.x1 - seg.x0;
+            const sdz = seg.z1 - seg.z0;
+            const ll = sdx * sdx + sdz * sdz || 1;
+            const t = Math.max(0, Math.min(1, ((x - seg.x0) * sdx + (z - seg.z0) * sdz) / ll));
+            const px = seg.x0 + sdx * t;
+            const pz = seg.z0 + sdz * t;
+            const d2 = (x - px) * (x - px) + (z - pz) * (z - pz);
+            if (d2 < r * r) consider(d2, px, pz);
           }
         }
         // Contour segments registered to this tile (exact visual walls)

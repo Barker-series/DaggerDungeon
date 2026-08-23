@@ -19,6 +19,7 @@
 
 const THREE = await import('three');
 const { generateWorld } = await import('../src/game/DungeonGenerator');
+const { buildFoldContour, foldWedgesAt, inFoldWedge } = await import('../src/game/dungeon/fold-contour');
 // --tunables=key=val,key=val — apply live gen tunables before generating
 {
   const tunArg = process.argv.find((a) => a.startsWith('--tunables='));
@@ -53,6 +54,9 @@ let totalHoles = 0;
 for (const seed of SEEDS) {
   const world = generateWorld({ seed, stack: 1 });
   const L = world.levels[0]!;
+  // Fold contour: cut wedges are data-solid but render-AIR by design
+  // (collision follows the contour too) — not leaks
+  const foldContour = buildFoldContour(world);
   const scene = new THREE.Scene();
   new DungeonRenderer(scene).build(world);
 
@@ -130,7 +134,10 @@ for (const seed of SEEDS) {
       const top = spans[spans.length - 1];
       if (top && top.ceil >= SKY_CEIL && y > top.floor - 0.2) return null; // open sky
       if (!spans.some((s) => y >= s.floor - 0.01 && y <= s.ceil + 0.01)) {
-        return `${prev} -> ${tx},${tz} @y=${y.toFixed(1)}`;
+        const wm = foldWedgesAt(foldContour.cuts, tz * L.width + tx, y);
+        let inWedge = false;
+        for (let c = 0; c < 4 && wm !== 0; c++) if ((wm & (1 << c)) && inFoldWedge(tx, tz, c, x, z)) inWedge = true;
+        if (!inWedge) return `${prev} -> ${tx},${tz} @y=${y.toFixed(1)}`;
       }
       prev = `${tx},${tz}`;
     }
@@ -166,7 +173,8 @@ for (const seed of SEEDS) {
   for (const n of holes.values()) count += n;
   totalHoles += count;
   console.log(`seed ${seed}: origins=${origins} rays=${rays} escapedRays=${count}`);
-  for (const [k, n] of [...holes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)) {
+  const showAll = process.argv.includes('--all');
+  for (const [k, n] of [...holes.entries()].sort((a, b) => b[1] - a[1]).slice(0, showAll ? Infinity : 5)) {
     console.log(`    ${n}x  ${k}`);
   }
 }
