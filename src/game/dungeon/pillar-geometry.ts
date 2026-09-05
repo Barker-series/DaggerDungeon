@@ -26,7 +26,7 @@
 import type { PillarSpec, PlacedChunk } from './pillar-layer';
 import { crossingHallAir, crossingHallRampSurface } from './crossing-hall';
 import { serviceGalleryAir } from './service-gallery';
-import { frameBuildingAir } from './frame-building';
+import { frameBuildingAir, FRAME_ROOF_CLEARANCE } from './frame-building';
 import {
   isResidentialRoomDoor,
   isWindowBay,
@@ -442,7 +442,7 @@ function collectSolids(spec: PillarSpec, flattenCrownRamp = false): Map<string, 
         else addAllow(solids,x,z,spec.frame!.rotation,floor,ceil);
         cursor = ceil;
       }
-      const cap = spec.totalHeight + CROWN_HEADROOM;
+      const cap = spec.totalHeight + FRAME_ROOF_CLEARANCE;
       if (cursor < cap) addSolid(solids,x,z,spec.frame!.rotation,cursor,cap);
     });
     return solids;
@@ -534,7 +534,7 @@ export function pillarAirSpans(
   flattenCrownRamp = false,
 ): Map<string, AirSpanLite[]> {
   const out = new Map<string, AirSpanLite[]>();
-  const capTop = spec.totalHeight + CROWN_HEADROOM;
+  const capTop = spec.totalHeight + (spec.frame ? FRAME_ROOF_CLEARANCE : CROWN_HEADROOM);
   const foundationBottom = Math.min(FOUNDATION_BOTTOM, spec.baseDepth - 8);
   for (const [k, t] of collectSolids(spec, flattenCrownRamp)) {
     const [lx, lz] = k.split(',').map(Number);

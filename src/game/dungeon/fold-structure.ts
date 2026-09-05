@@ -43,6 +43,7 @@ import { sampleNoise } from './noise';
 import { siloIntervalsAt, siloFootprintTiles, siloMaxTop, SILO_BASE_Y, type SiloPlacement, type SiloSpec } from './silo-structure';
 import { cellCrest } from './layer6-heights';
 import { TUNABLES } from './tunables';
+import { TRANSIT_CLEARANCE } from './clearance';
 
 /** Cell size in tiles (mirrors CELL_TILE_SIZE without an import cycle) */
 const CELL = 14;
@@ -223,7 +224,7 @@ function foldDeep(): number { return TUNABLES.foldDeep; }
 export function foldBandRange(): [number, number] { return [foldDeep(), foldTop()]; }
 
 /** Walk clearance bored through fold mass on permanent transit tiles */
-const TRANSIT_CLEAR = 3.5;
+const TRANSIT_CLEAR = TRANSIT_CLEARANCE;
 /** ABYSS floor for crest-to-abyss mode: pits render to worldBottom
  *  (RENDER_ABYSS_DROP = 300 below the deepest base); fold below that is
  *  never seen */

@@ -75,6 +75,7 @@ Seen bugs become reproducible bugs:
 ## Game Features
 
 - **Megastructure traversal** — internal stair cores, recessed galleries, atrium crossings, roof terraces, legacy exterior climbs, rolling caves and open-sky canyons
+- **Taller occupied spaces** — generous framed-storey clearance, taller framed doorways, six-unit ordinary transit, and taller biome chambers; fixed-width openings and deliberately tight ducts retain contrast ([height standards](docs/spatial-scale.md))
 - **Vertical transit shafts** — rare elevator pillars replace the exterior-stair kebab and connect bottom, ground, and crown stops
 - **Split-level crossing halls** — low service passages open onto raised catwalks, recessed chambers, and observation edges; internal return stairs make both levels explorable, including in deep foundations
 - **Service galleries** — dogleg entries, solid machine bays, overhead service trunks, and two-door exterior ledge loops add regional variations without reshuffling tower heights or bridge connections

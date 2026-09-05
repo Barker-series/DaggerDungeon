@@ -9,8 +9,12 @@ import type { PillarSpec, PlacedChunk, ResolvedSocket } from './pillar-layer';
 import type { PillarRoomSocket } from './pillar-rooms';
 import type { SocketFace } from './pillar-chunks';
 
-export const FRAME_PITCH = 6;
+export const FRAME_PITCH = 9;
 export const FRAME_SLAB = 1.5;
+export const FRAME_ROOF_CLEARANCE = 6;
+/** A fixed opening proportion for the taller occupied storeys; width stays
+ *  two tiles and the remaining lintel/floor band stays structural. */
+export const FRAME_DOOR_HEIGHT = 6;
 const BEAM_DEPTH = 2.5;
 const MIN_AIR = 1.5;
 const POSTS = [15, 20, 25, 31, 36, 40];
@@ -94,25 +98,26 @@ export function frameBuildingAir(
 ): [number, number][] {
   const bottom = frameFloorY(-p.belowLevels);
   const top = frameFloorY(p.aboveLevels);
-  const cap = top + 4;
+  const cap = top + FRAME_ROOF_CLEARANCE;
   const solids: [number, number][] = [];
   const slab = (y: number, depth = FRAME_SLAB): void => {
     solids.push([y - depth, y]);
   };
-  const inCore = x >= 18 && x <= 23 && z >= 18 && z <= 26;
-  const coreWall = x >= 17 && x <= 24 && z >= 17 && z <= 27 && !inCore;
+  const inCore = x >= 18 && x <= 23 && z >= 18 && z <= 29;
+  const coreWall = x >= 17 && x <= 24 && z >= 17 && z <= 30 && !inCore;
 
   if (inCore) {
-    // The well is open between flights. Each repeated stair slab has 4.5
-    // units of headroom to the flight above; no exterior strip is involved.
+    // A taller storey needs more treads, not larger risers. Seven rises on
+    // the outward flight and eight on the return keep the fixed 0.6 step;
+    // the final outward tread joins a generous flat turning landing.
     slab(bottom);
     const lastFlight = p.aboveLevels - (roofClosed ? 2 : 1);
     for (let level = -p.belowLevels; level <= lastFlight; level++) {
       const y = frameFloorY(level);
       if (z <= 19) slab(y);
-      else if (z >= 25) slab(y + 3);
-      else if (x <= 19) slab(y + (z - 19) * 0.6);
-      else if (x >= 22) slab(y + 3 + (25 - z) * 0.6);
+      else if (z >= 28) slab(y + 4.2);
+      else if (x <= 19) slab(y + Math.min(7, z - 19) * 0.6);
+      else if (x >= 22) slab(y + 4.2 + (28 - z) * 0.6);
     }
     // Only the arrival landing closes the top. A plate over the entire well
     // would block the last flight; the surrounding roof is reached here.
@@ -134,7 +139,7 @@ export function frameBuildingAir(
         // One deliberate landing entrance per storey, opening onto the
         // atrium-side internal circulation spine.
         const door = x === 24 && (z === 18 || z === 19);
-        solids.push([door ? y + 3.5 : y, frameFloorY(level + 1)]);
+        solids.push([door ? y + FRAME_DOOR_HEIGHT : y, frameFloorY(level + 1)]);
       }
     } else {
       // Occupied room bays behind the open/recessed facade galleries. Fixed
@@ -148,7 +153,7 @@ export function frameBuildingAir(
           const level = levels[i]!;
           if (level === 0) continue; // double-height entrance lobby
           const y = frameFloorY(level);
-          solids.push([backWall && door ? y + 3.5 : y, frameFloorY(levels[i + 1]!)]);
+          solids.push([backWall && door ? y + FRAME_DOOR_HEIGHT : y, frameFloorY(levels[i + 1]!)]);
         }
       }
     }

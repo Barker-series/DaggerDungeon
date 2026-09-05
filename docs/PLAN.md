@@ -62,6 +62,13 @@ the wider vocabulary. See `docs/framed-buildings.md` for the implementation,
 ownership, verification and playtest views. This is not another room variant
 inside the same universal exterior circulation system.
 
+Ceiling-height direction: ordinary occupied spaces must feel spacious, not just
+fit the controller. Frame storeys now use a taller pitch with longer stair
+flights, and ordinary ground/bridge/fold transit shares a taller bore. Framed
+doorways now receive the height lift too; doorway widths, slab mass and
+deliberately tight ducts remain unchanged. Current ranges
+and reproduction views live in `docs/spatial-scale.md`.
+
 ## Non-Negotiable Discipline
 
 Every generation feature is a **pure function of `(seed, cellX, cellZ)` plus a

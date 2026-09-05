@@ -18,9 +18,14 @@ Elevator shafts remain a separate building type.
   north wing retreats to make supported roof terraces rather than projecting
   another thin platform into empty space.
 - Floor slabs are 1.5 world units thick, with 2.5-unit downstand/transfer beams.
+  Storeys use a 9-unit pitch, providing 7.5-unit ordinary clearance and 6.5
+  beneath beams. The stair flights lengthen rather than steepen. See
+  `spatial-scale.md` for the wider ceiling-height pass.
   Corner buttresses and repeated piers connect to the foundation. Facades are
   open/recessed structural bays, not a uniform thick wall full of tiny punches.
 - Fixed-size room doors open from circulation galleries into occupied bays.
+  Core and room openings are 6 units high and two tiles wide, with substantial
+  lintel mass retained above them.
   The ordinary family has closer floor spacing; machine buildings skip wing
   floors to form double-height spaces while retaining every internal landing.
 - Selected transfer levels carry cross-atrium links and actual bridge portals.
@@ -63,11 +68,11 @@ buildings do not invoke the old winding-ramp emitter.
 Seed 1234, building at absolute pillar cell `(1,0)`, atrium transfer level:
 
 ```text
-DDSNAP1{"seed":1234,"stack":1,"opx":0,"opz":-1,"x":232.5,"y":12.5,"z":250.5,"yaw":-1.5707963267948966,"pitch":0.2}
+DDSNAP1{"seed":1234,"stack":1,"opx":0,"opz":-1,"x":232.5,"y":18.5,"z":250.5,"yaw":-1.5707963267948966,"pitch":0.2}
 ```
 
 Internal switchback, facing the ascending flight:
 
 ```text
-DDSNAP1{"seed":1234,"stack":1,"opx":0,"opz":-1,"x":280.5,"y":12.5,"z":277.5,"yaw":0,"pitch":0.1}
+DDSNAP1{"seed":1234,"stack":1,"opx":0,"opz":-1,"x":280.5,"y":18.5,"z":277.5,"yaw":0,"pitch":0.1}
 ```

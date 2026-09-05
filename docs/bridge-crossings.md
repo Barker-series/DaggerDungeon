@@ -15,7 +15,9 @@ connectivity system. Ordinary open bridges and pipe crossings remain.
 - The surrounding world still matters: a crossing inside rock remains a
   tunnel, and a housing cannot promise an open vista where none exists.
 
-All use the existing three-tile-wide deck and fixed 3.5-unit walk clearance.
+All use the existing three-tile-wide deck and shared 6-unit ordinary transit
+clearance (`clearance.ts`; see `spatial-scale.md`). Explicit pipe bores remain
+2.6 units high.
 The added walls sit one tile outside each deck edge. Roofs overlap adjacent
 sloped sections; their thickness accounts for the per-tile height change.
 No renderer-only walls, invisible colliders, or new mesh emission path.

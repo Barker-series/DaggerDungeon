@@ -20,6 +20,7 @@
 import type { ColumnSpan } from '../types';
 import { cellSeed, mulberry32 } from './rng';
 import { regionAtCell } from './region-layer';
+import { TRANSIT_CLEARANCE } from './clearance';
 import { PILLAR_FACTOR, type PillarSpec, type ResolvedSocket } from './pillar-layer';
 
 const MAX_BRIDGES_PER_PAIR = 2;
@@ -45,7 +46,7 @@ const BRIDGE_CHANCE = 0.65;
 const BRIDGE_SALT = 5252;
 
 const SLAB = 0.5;
-export const CLEARANCE = 3.5;
+export const CLEARANCE = TRANSIT_CLEARANCE;
 /** Enclosed PIPE crossings — sewer-scale ducts between pillars. Tighter
  *  bore than an open walkway, sealed by a roof slab. */
 const PIPE_CHANCE = 0.35;

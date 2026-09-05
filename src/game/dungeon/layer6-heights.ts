@@ -27,8 +27,9 @@ import { getCell, isOrganicBiome, CELL_TILE_SIZE, type BiomeType } from './cells
 import { sampleNoise, sampleNoise3D } from './noise';
 import { TUNABLES } from './tunables';
 import { windowOrigin } from './cells';
+import { TRANSIT_CLEARANCE } from './clearance';
 
-const TUNNEL_CLEARANCE = 3.5;
+const TUNNEL_CLEARANCE = TRANSIT_CLEARANCE;
 const HEIGHT_STEP = 0.5; // built-biome clearances quantize to this
 const FLOOR_SMOOTH_PASSES = 2;
 
@@ -76,11 +77,11 @@ interface BiomeHeightProfile {
 // path and forced bridges as the guaranteed crossings.
 const PROFILES: Record<BiomeType, BiomeHeightProfile> = {
   // Even built floors breach — the structure is failing
-  dungeon: { rollAmp: 0, pitThreshold: 0.2, clearMin: 18, clearMax: 30 },
-  crypt: { rollAmp: 0, pitThreshold: 0.14, clearMin: 12, clearMax: 20 },
-  cave: { rollAmp: 1.2, pitThreshold: 0.36, clearMin: 10, clearMax: 28 },
+  dungeon: { rollAmp: 0, pitThreshold: 0.2, clearMin: 24, clearMax: 42 },
+  crypt: { rollAmp: 0, pitThreshold: 0.14, clearMin: 18, clearMax: 30 },
+  cave: { rollAmp: 1.2, pitThreshold: 0.36, clearMin: 16, clearMax: 40 },
   // Ember is hole country
-  ember: { rollAmp: 1.2, pitThreshold: 0.48, clearMin: 24, clearMax: 44 },
+  ember: { rollAmp: 1.2, pitThreshold: 0.48, clearMin: 30, clearMax: 56 },
   // Crest BASE range: 66..96 after quantization. Tall districts boost
   // far beyond it (cellCrest heavy tail) — the DATA ceiling written to
   // outside floors stays pinned at CREST_DATA_CEIL_MAX, under the 100
@@ -341,11 +342,11 @@ export function computeHeightFields(
   }
 
   // ── INTERIOR MOUTH SWEEP: a transit corridor meeting tall interior
-  // space (a biome chamber) must not butt its 3.5 lid against the
+  // space (a biome chamber) must not butt its lower lid against the
   // room as a floating slab — the same problem the cave-mouth sweep
   // solves at outside rims. Corridor ceilings within MOUTH_RANGE of a
   // BIOME-tall walkable tile ramp from that ceiling down to the bore
-  // clearance, landing at 3.5 BY CONSTRUCTION — no open-ended
+  // clearance, landing at TUNNEL_CLEARANCE BY CONSTRUCTION — no open-ended
   // relaxation, so a bore chained to a chamber re-roofs a fixed few
   // tiles in instead of hollowing to an arbitrary frontier shelf.
   // Seeds are biome tiles only (their ceilings are profile-derived,
