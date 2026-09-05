@@ -26,6 +26,7 @@
 import type { PillarSpec, PlacedChunk } from './pillar-layer';
 import { crossingHallAir, crossingHallRampSurface } from './crossing-hall';
 import { serviceGalleryAir } from './service-gallery';
+import { frameBuildingAir } from './frame-building';
 import {
   isResidentialRoomDoor,
   isWindowBay,
@@ -432,6 +433,20 @@ function chunkSolids(
 function collectSolids(spec: PillarSpec, flattenCrownRamp = false): Map<string, TileSolids> {
   if (spec.elevator) return collectElevatorSolids(spec);
   const solids = new Map<string, TileSolids>();
+  if (spec.frame) {
+    eachTile(RING.lo, RING.hi, (x,z) => {
+      let cursor = spec.baseDepth - 2;
+      for (const [floor,ceil] of frameBuildingAir(spec.frame!,x,z,flattenCrownRamp)) {
+        if (floor > cursor) addSolid(solids,x,z,spec.frame!.rotation,cursor,floor);
+        if (floor < 0) addClear(solids,x,z,spec.frame!.rotation,floor,ceil,true);
+        else addAllow(solids,x,z,spec.frame!.rotation,floor,ceil);
+        cursor = ceil;
+      }
+      const cap = spec.totalHeight + CROWN_HEADROOM;
+      if (cursor < cap) addSolid(solids,x,z,spec.frame!.rotation,cursor,cap);
+    });
+    return solids;
+  }
   spec.chunks.forEach((placed, i) => chunkSolids(
     placed, solids, spec.chunks[i - 1],
     flattenCrownRamp && i === spec.chunks.length - 1,

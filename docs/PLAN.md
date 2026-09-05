@@ -48,6 +48,20 @@ The end state: improve it, then **demystify the build for the common man**, so
 this can be used the way a standard terrain generator is used in mainline game
 engines. The game is the proof; the generator is the product.
 
+## Building-first architecture
+
+User direction: the universal exterior winding path made it easy to stack box
+interiors, but ease of generation is not the design goal. Thin projecting floors
+beside extremely thick walls and deeply punched windows do not meet the bar.
+
+The current upgrade is a whole-building frame family: internal switchback cores,
+unequal occupied wings around tall atria, thick supported floor/beam bands,
+recessed facade galleries, roof terraces and selected transfer levels. It replaces
+the spiral default in city and machine regions; legacy buildings remain part of
+the wider vocabulary. See `docs/framed-buildings.md` for the implementation,
+ownership, verification and playtest views. This is not another room variant
+inside the same universal exterior circulation system.
+
 ## Non-Negotiable Discipline
 
 Every generation feature is a **pure function of `(seed, cellX, cellZ)` plus a

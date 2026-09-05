@@ -101,7 +101,8 @@ export function applyPillarSpans(
   }
 
   const groundAt = (lx: number, lz: number): number =>
-    topFloors[baseTz + lz]?.[baseTx + lx] ?? 0;
+    spec.frame ? Math.min(0.5, topFloors[baseTz + lz]?.[baseTx + lx] ?? 0)
+      : topFloors[baseTz + lz]?.[baseTx + lx] ?? 0;
   const capAt = (lx: number, lz: number): number | null => {
     const gx = baseTx + lx;
     const gz = baseTz + lz;
@@ -154,6 +155,16 @@ export function applyPillarSpans(
     // span actually sits at terrain height.
     for (const span of spans) {
       const f0 = span.floor;
+      if (spec.frame && Math.abs(f0 - 0.5) < 0.01) {
+        // The framed building owns a flat podium, not rooms that rolling
+        // terrain may fill. Its ground joins the shared corner field so the
+        // outside ground banks into it. Upstairs/basement floors stay owned
+        // by the structure; only the declared grade floor gets this rule.
+        span.owner = 0;
+        topFloors[gz]![gx] = 0.5;
+        pillarGround[gz]![gx] = true;
+        break;
+      }
       if (f0 < -100 || f0 > 30) continue;
       let near = false;
       for (let dz = -1; dz <= 1 && !near; dz++) {

@@ -34,6 +34,7 @@ import {
   roomSocketsForChunks,
   type PillarRoomSocket,
 } from './pillar-rooms';
+import { createFramePlan, createFrameSpec, type FrameBuildingPlan } from './frame-building';
 
 // ── The coarse grid ──
 
@@ -166,6 +167,8 @@ export interface PillarSpec {
   /** This cell is a purpose-built bottom/ground/crown transit shaft,
    *  replacing the exterior-stair kebab rather than decorating it. */
   elevator: boolean;
+  /** Whole-building frame with internal circulation; no exterior spiral. */
+  frame?: FrameBuildingPlan;
   chunks: PlacedChunk[];
   sockets: ResolvedSocket[];
   /** Authored navigation contract for gallery/residential interiors. */
@@ -275,6 +278,16 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   }
   if (targetDown > 0 && wellRoll < wellChance) {
     targetDown *= 1.4 + wellMult * (WELL_TAIL_MAX_MULT - 1.4);
+  }
+
+  // The city and machine districts now build whole framed buildings, not
+  // boxes constrained by a universal exterior spiral. Elsewhere both
+  // architectural families coexist. This choice owns only this pillar cell.
+  const frameRng = mulberry32(cellSeed(pcx, pcz, worldSeed, 11011));
+  const framed = !elevator && (district === 'city' || district === 'machine' || frameRng() < 0.6);
+  if (framed) {
+    return createFrameSpec(createFramePlan(targetHeight, targetDown,
+      Math.floor(frameRng() * 4), district === 'machine'), pcx, pcz);
   }
 
   const crown = CHUNK_BY_ID.get('crown')!;

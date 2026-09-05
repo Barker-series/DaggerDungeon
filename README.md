@@ -8,18 +8,31 @@ A first-person megastructure exploration game built with Three.js and React on t
 
 The end state is to **demystify the build** so this baseline can be used the way a standard terrain generator is used in mainline game engines. The concepts that make it work — the column model, layered generation, deterministic ownership, the seam doctrine — are documented in [`docs/`](docs/) and enforced by invariants (`tools/verify-world.ts`), because a generator you can't verify or explain isn't a baseline, it's a demo.
 
-## The Pillar Kebab System
+## Building Architecture
 
-The core world idea, inspired by the brilliant procgen in **Lorne's Lure**: instead of forcing a 2D generator to fake verticality with stacked levels (we tried — endless edge cases), verticality is *content*, not generation.
+Verticality is authored structure inside the LayerProcGen hierarchy, not a stack
+of unrelated maps. The historical `pillar` names describe the coarse ownership
+grid, not a requirement that every building be a box wrapped in stairs.
 
-- The world has ONE ground-level procedural floor.
-- On a **coarse grid** (one pillar cell = 4×4 dungeon cells = 56×56 tiles), a deterministic region-aware field decides whether each cell is empty or holds a **pillar**: a massive monument built as a vertical **kebab of authored chunks** — plain shaft segments, terrace plazas, hollow galleries, a crown — skewered bottom to top.
-- Ordinary kebabs carry a **winding ramp** up one face, and the ramp face advances a quarter-turn per chunk, so a continuous spiral staircase wraps each pillar from grade to crown.
-- Rare occupied cells replace the kebab with a purpose-built **elevator shaft**: an internal car links bottom, ground, and crown stops at practical transit speed. Press F beside a large red call box to summon it, then press F while aboard to depart. Travel time comes from vertical distance, not an artificially slow platform.
-- **Bridges** connect neighboring pillars where their sockets (plaza edges, gallery doorways) align in height — a pure neighbor-pair computation, with a local degree guarantee so no pillar is ever unreachable by air.
-- Terrace plazas omit their slab over the arriving stairs (open-air climbs) and grow corbel brackets under their cantilevered edges.
+- On a **coarse grid** (one pillar cell = 4×4 dungeon cells = 56×56 tiles), a
+  deterministic region-aware field chooses empty space or a building.
+- **Framed buildings** are the non-elevator default in city and machine regions:
+  internal switchback cores, occupied wings around tall atria, unequal wing
+  heights, supported roof terraces, thick floor/beam bands and continuous piers.
+  They do not generate the exterior spiral. Other regions mix both families.
+- **Legacy kebabs**, inspired by **Lorne's Lure**, retain their winding exterior
+  route and authored room vocabulary. They are one building family, not the
+  organizing rule for the whole megastructure.
+- Rare **elevator shafts** connect bottom, ground and crown stops. Press F beside
+  a red call box to summon the car, then F aboard to depart.
+- **Bridges** connect actual neighboring building portals at compatible heights.
+  Framed buildings publish selected transfer levels rather than a socket on
+  every floor. The existing local connectivity guarantee remains.
+- The authoritative columns own every room, stair, slab and opening. Small
+  mounted landing lights make internal routes visible using the fixed light pool.
 
-Every pillar is a **pure function of (seed, cellX, cellZ)** and bridges read only a 1-cell neighbor radius — the endgame is an infinite streamed world, and the bounded map is just a window over the same functions.
+Each building remains a **pure function of (seed, absolute cell)**. Planning,
+circulation and proportions: [framed buildings](docs/framed-buildings.md).
 
 ## Dungeon Generation — LayerProcGen
 
@@ -30,7 +43,7 @@ The generator uses a **LayerProcGen** architecture — layered procedural genera
 | Layer | Name | What it does |
 |-------|------|-------------|
 | Region | **Coarse region layer** | City, machine, canyon, frontier, and roads districts constrain biome palettes, pillar density, height, depth, and chunk vocabulary. |
-| Pillar | **Coarse pillar layer** | Region-weighted occupancy and kebab composition, pure in absolute pillar-cell coordinates. Empty cells create courts, cuts, and breathing room. |
+| Pillar | **Coarse building layer** | Region-weighted occupancy, framed-building plans and legacy kebab composition, pure in absolute pillar-cell coordinates. Empty cells create courts, cuts, and breathing room. |
 | 0 | **Noise** | Noise field defines which dungeon cells are active. Deterministic seeding via FNV-1a + mulberry32. |
 | 1 | **Tile Grid + Fine Noise** | Active cells become floor; organic biomes get noise-sculpted edges. |
 | 2 | **Biome** | Per-cell biome assignment: dungeon, crypt, cave, ember, outside. |
@@ -61,7 +74,7 @@ Seen bugs become reproducible bugs:
 
 ## Game Features
 
-- **Megastructure traversal** — climb spiral stairs around monuments, cross high bridges, drop into rolling caves, emerge into open-sky canyons
+- **Megastructure traversal** — internal stair cores, recessed galleries, atrium crossings, roof terraces, legacy exterior climbs, rolling caves and open-sky canyons
 - **Vertical transit shafts** — rare elevator pillars replace the exterior-stair kebab and connect bottom, ground, and crown stops
 - **Split-level crossing halls** — low service passages open onto raised catwalks, recessed chambers, and observation edges; internal return stairs make both levels explorable, including in deep foundations
 - **Service galleries** — dogleg entries, solid machine bays, overhead service trunks, and two-door exterior ledge loops add regional variations without reshuffling tower heights or bridge connections

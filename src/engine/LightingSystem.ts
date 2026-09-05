@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { TILE_SIZE, WALL_HEIGHT, TileType } from '../game/types';
+import { TILE_SIZE, WALL_HEIGHT, TileType, SKY_CEIL } from '../game/types';
 import type { DungeonData, WorldData } from '../game/types';
 import { tileBiome, type BiomeType } from '../game/dungeon/cells';
+import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
 
 const FOG_COLOR = 0x0f0e12;
 /** SOLVED, not eyeballed: FogExp2 transmittance exp(-(d*rho)^2) should
@@ -55,6 +56,30 @@ interface Fixture {
   distance: number;
 }
 
+export interface FrameFixture {
+  x: number; y: number; z: number; ceilingY: number; rotation: number;
+}
+
+/** Building landing fixtures derive from actual columns, including roofline
+ *  clipping. A roofless landing never receives a floating ceiling light. */
+export function collectFrameFixtures(world: WorldData): FrameFixture[] {
+  const out: FrameFixture[] = [];
+  const w = world.levels[0]!.width;
+  for (const p of world.pillars.values()) {
+    if (!p.frame) continue;
+    for (const entry of p.roomSockets) {
+      if (entry.role !== 'entry') continue;
+      const tx = p.cx * PILLAR_CELL_TILES + entry.lx;
+      const tz = p.cz * PILLAR_CELL_TILES + entry.lz;
+      const span = world.columns[tz * w + tx]?.find(s => Math.abs(s.floor-entry.y)<0.7 && s.ceil-s.floor>=2);
+      if (!span || span.ceil >= SKY_CEIL) continue;
+      out.push({x:(tx+0.5)*TILE_SIZE,y:span.ceil-0.28,z:(tz+0.5)*TILE_SIZE,
+        ceilingY:span.ceil,rotation:p.frame.rotation});
+    }
+  }
+  return out;
+}
+
 export class LightingSystem {
   private scene: THREE.Scene;
   private globalLights: THREE.Light[] = [];
@@ -66,6 +91,7 @@ export class LightingSystem {
   private pool: THREE.PointLight[] = [];
   private halos: THREE.Sprite[] = [];
   private haloTexture: THREE.Texture | null = null;
+  private frameMounts: THREE.InstancedMesh<THREE.BoxGeometry, THREE.MeshBasicMaterial> | null = null;
   private activeLevel = -1;
   private lastCullX = Infinity;
   private lastCullY = Infinity;
@@ -114,6 +140,13 @@ export class LightingSystem {
   }
 
   clear(): void {
+    if (this.frameMounts) {
+      this.scene.remove(this.frameMounts);
+      this.frameMounts.geometry.dispose();
+      this.frameMounts.material.dispose();
+      this.frameMounts.dispose();
+      this.frameMounts = null;
+    }
     for (const light of this.globalLights) {
       this.scene.remove(light);
       light.dispose();
@@ -146,6 +179,26 @@ export class LightingSystem {
 
     this.ensurePool();
     this.levelFixtures = world.levels.map((level) => this.collectFixtures(level));
+    const frameFixtures = collectFrameFixtures(world);
+    if (frameFixtures.length) {
+      this.frameMounts = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(1.8,0.12,0.25),
+        new THREE.MeshBasicMaterial({color:0xffd5a3}),frameFixtures.length);
+      const matrix = new THREE.Matrix4();
+      const q = new THREE.Quaternion();
+      const position = new THREE.Vector3();
+      const scale = new THREE.Vector3(1,1,1);
+      const up = new THREE.Vector3(0,1,0);
+      frameFixtures.forEach((f,i) => {
+        position.set(f.x,f.ceilingY-0.06,f.z);
+        q.setFromAxisAngle(up,f.rotation*Math.PI/2);
+        this.frameMounts!.setMatrixAt(i,matrix.compose(position,q,scale));
+        this.levelFixtures[0]!.push({x:f.x,y:f.y,z:f.z,color:0xffd5a3,intensity:2.5,distance:24});
+      });
+      this.frameMounts.instanceMatrix.needsUpdate = true;
+      this.frameMounts.computeBoundingSphere();
+      this.scene.add(this.frameMounts);
+    }
     this.setActiveLevel(0);
   }
 

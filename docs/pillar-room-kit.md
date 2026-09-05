@@ -1,8 +1,9 @@
 # Pillar Room Kit
 
-The pillar kebab is a vertical building assembler, not a solid trunk with random
-boxes subtracted from it. Every enterable chunk must be assembled from this
-shared room kit and must satisfy the circulation contract below.
+The legacy pillar kebab is a vertical building assembler, not a solid trunk with
+random boxes subtracted from it. Its room modules use the kit below. Whole framed
+buildings now have their own internal circulation and structural plan; see
+`framed-buildings.md`. Exterior ramp access is not a universal building rule.
 
 ## Scale
 
@@ -29,7 +30,8 @@ dimensions and sockets must remain unchanged.
 
 An interior is valid only when:
 
-1. Its primary entry directly meets a flat exterior stair landing.
+1. Its primary entry directly meets a flat circulation landing (exterior stairs
+   for the legacy kit, internal core/gallery for framed buildings).
 2. The entry and landing floors differ by no more than the player's step height.
 3. Every room connects to the primary corridor through a standard door opening.
 4. The corridor never narrows below two tiles.
