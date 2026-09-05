@@ -85,6 +85,22 @@ export interface BridgeSpec {
   yB: number;
   /** Enclosed pipe crossing: tight bore, roofed — a duct, not a walkway */
   pipe: boolean;
+  /** Short enclosed approaches separated by an exposed crossing. Absent on
+   *  plain/forced bridges and pipes; never changes the connection or deck. */
+  housing?: 'gatehouse' | 'service';
+}
+
+/** Architectural choice on its own random stream: adding a housing must not
+ *  reshuffle the socket selection or the existing open/pipe decisions. */
+function bridgeHousing(
+  worldSeed: number, a: PillarSpec, dir: 'east' | 'south', yA: number, yB: number,
+): BridgeSpec['housing'] {
+  const salt = 9292 + (dir === 'east' ? 0 : 1) + Math.round(yA * 10) * 31 + Math.round(yB * 10);
+  const rng = mulberry32(cellSeed(a.acx, a.acz, worldSeed, salt));
+  if (rng() < 0.25) return undefined;
+  const district = regionAtCell(worldSeed, a.acx * PILLAR_FACTOR + 2, a.acz * PILLAR_FACTOR + 2);
+  const serviceChance = district === 'machine' || district === 'city' ? 0.8 : 0.25;
+  return rng() < serviceChance ? 'service' : 'gatehouse';
 }
 
 /** Workable socket pairings for a pair, best height match first */
@@ -135,7 +151,12 @@ export function planBridges(
       Math.abs(br.yA - c.sa.yAbs) < MIN_SEPARATION ||
       Math.abs(br.yB - c.sb.yAbs) < MIN_SEPARATION)) continue;
     if (rng() > BRIDGE_CHANCE) continue;
-    bridges.push({ cx: a.cx, cz: a.cz, acx: a.acx, acz: a.acz, dir, yA: c.sa.yAbs, yB: c.sb.yAbs, pipe: rng() < PIPE_CHANCE });
+    const pipe = rng() < PIPE_CHANCE;
+    bridges.push({
+      cx: a.cx, cz: a.cz, acx: a.acx, acz: a.acz, dir,
+      yA: c.sa.yAbs, yB: c.sb.yAbs, pipe,
+      housing: pipe ? undefined : bridgeHousing(worldSeed, a, dir, c.sa.yAbs, c.sb.yAbs),
+    });
   }
   return bridges;
 }
@@ -400,6 +421,74 @@ export function addBridgeEndSupport(spans: ColumnSpan[], h: number): ColumnSpan[
   return spans.filter((s) => s !== supportSpan);
 }
 
+/** Insert structural mass without inventing air or changing existing floors.
+ *  Side openings are the air LEFT between sill and lintel, not decals. */
+function housingSolid(spans: ColumnSpan[], lo: number, hi: number): ColumnSpan[] {
+  const out: ColumnSpan[] = [];
+  for (const s of spans) {
+    if (hi <= s.floor || lo >= s.ceil) {
+      out.push(s);
+      continue;
+    }
+    if (lo - s.floor >= MIN_AIR) out.push({ floor: s.floor, ceil: lo, owner: s.owner, ceilOwner: -1 });
+    if (s.ceil - hi >= MIN_AIR) out.push({ floor: hi, ceil: s.ceil, owner: -1, ceilOwner: s.ceilOwner });
+  }
+  return out;
+}
+
+/** Pair-owned bridge housings. Same along-axis reach as the deck, only one
+ *  extra tile on either side (cross-axis 26..30): owner radius stays one.
+ *  Eligibility reads a five-tile cross-section, covered by PAD_COLUMN. Each
+ *  section yields as a whole when it would obstruct an existing floor; the
+ *  original three-wide bridge remains the guaranteed route in that case.
+ *
+ *  Called BEFORE the deck carve so eligibility sees original floors, not
+ *  the bridge surface we're about to create. Deck clearance gets final say.
+ */
+function carveBridgeHousing(
+  columns: ColumnSpan[][], w: number, br: BridgeSpec,
+  txOff: number, tzOff: number, slabDepth: number,
+): void {
+  if (!br.housing || br.pipe) return;
+  const roofDepth = Math.abs(br.yB - br.yA) / GAP_TILES + 0.5;
+  for (let i = 2; i < GAP_TILES - 2; i++) {
+    const nearEnd = i <= (br.housing === 'service' ? 10 : 6);
+    const farEnd = i >= GAP_TILES - 7;
+    if (!nearEnd && !farEnd) continue;
+    const h = br.yA + (br.yB - br.yA) * (i + 0.5) / GAP_TILES;
+    const roofLo = h + CLEARANCE;
+    const roofHi = roofLo + roofDepth;
+    const along = (br.dir === 'east' ? br.cx : br.cz) * CELL + RING_HI + 1 + i;
+    const section: number[] = [];
+    for (let c = 26; c <= 30; c++) {
+      const cross = (br.dir === 'east' ? br.cz : br.cx) * CELL + c;
+      const tx = (br.dir === 'east' ? along : cross) + txOff;
+      const tz = (br.dir === 'east' ? cross : along) + tzOff;
+      if (tx < 0 || tz < 0 || tx >= w || tz >= w) continue;
+      section.push(tz * w + tx);
+    }
+    // Generation's input padding contains the whole cross-section for every
+    // retained tile. Incomplete sections can only lie in discarded padding.
+    if (section.length !== 5) continue;
+    if (section.some(k => columns[k]!.some(s =>
+      s.floor > h - slabDepth - 1.8 && s.floor < roofHi + 0.01))) continue;
+    const window = br.housing === 'service' && nearEnd && (i === 5 || i === 6 || i === 8 || i === 9);
+    for (let c = 0; c < section.length; c++) {
+      const k = section[c]!;
+      if (c === 0 || c === 4) {
+        if (window) {
+          columns[k] = housingSolid(columns[k]!, h - slabDepth, h + 1);
+          columns[k] = housingSolid(columns[k]!, h + 3, roofHi);
+        } else {
+          columns[k] = housingSolid(columns[k]!, h - slabDepth, roofHi);
+        }
+      } else {
+        columns[k] = housingSolid(columns[k]!, roofLo, roofHi);
+      }
+    }
+  }
+}
+
 /**
  * Carve a planned set of structures into a window's columns, in the
  * canonical order (arches, subways, then bridges TOP-DOWN so a lower
@@ -441,6 +530,7 @@ export function carveStructures(
     // next tread's top or the steps float apart with air slits between.
     const tread = Math.abs(br.yB - br.yA) / GAP_TILES;
     const slabDepth = Math.max(0.5, tread + 0.15);
+    carveBridgeHousing(columns, gridTiles, br, txOff, tzOff, slabDepth);
     for (const t of bridgeTiles(br)) {
       const tx = t.tx + txOff;
       const tz = t.tz + tzOff;

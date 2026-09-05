@@ -59,6 +59,32 @@ export const TUNABLES = {
    *  to the cell CREST and (in pits) their BOTTOMMOST moved down to the
    *  pit bottom (-300); everything between is untouched */
   foldCrestToAbyss: 1,
+  /** Canyon GUEST girders: fraction of canyon pit area that carries
+   *  girders (low-frequency noise gate; 1 = every pit, 0 = none) */
+  canyonGirderCover: 0.45,
+  /** Canyon SKY girders: lattices slung high between the outer walls of
+   *  canyon districts — look up and see them. Band [lo, hi] above
+   *  grade, coverage gate, max distance (tiles) from an outer wall */
+  canyonSkyCover: 1,
+  canyonSkyLo: 100,
+  canyonSkyHi: 200,
+  canyonSkyReach: 0,
+  // ── SILOS (the green slot: giant tanks on legs + fallen cylinders) ──
+  /** Chance a dungeon cell in a silo district places one silo */
+  siloDensity: 0.35,
+  /** Tank radius (tiles) */
+  siloRadius: 5,
+  /** Standing tube height (world units) */
+  siloHeight: 90,
+  /** Fallen tube length (world units) — a broken segment; kept short so
+   *  the whole footprint fits the generation padding (seam-free) */
+  siloFallenLength: 45,
+  /** Fraction of silos lying on the ground */
+  siloFallenFraction: 0.3,
+  /** How far a fallen tank sinks into the ground (world units) */
+  siloFallenSink: 1.5,
+  /** Tube wall thickness (tiles) — silos are HOLLOW concrete tubes */
+  siloWall: 1.5,
   // ── Fold wall DETAIL (render-side, material only — no regen) ──
   /** 1 = fold-owned walls carry a 2D kaleidoscopic-fold panel field
    *  (grooves + bevel relief + crease shading) instead of formwork seams */
@@ -95,10 +121,22 @@ export const TUNABLE_DEFS: TunableDef[] = [
   { key: 'transitNoiseWeight', label: 'route wander', group: 'transit', min: 0, max: 8, step: 0.1, dirties: 'transit' },
   { key: 'transitTurnPenalty', label: 'route straightness', group: 'transit', min: 0, max: 8, step: 0.1, dirties: 'transit' },
   { key: 'transitReuseDiscount', label: 'tunnel merging', group: 'transit', min: 0.05, max: 1, step: 0.05, dirties: 'transit' },
-  { key: 'foldPreset', label: 'preset (-1 per district, 0 city 1 girders 2 interior 3 rodrigues)', group: 'fold', min: -1, max: 3, step: 1, dirties: 'column' },
+  { key: 'foldPreset', label: 'preset (-1 per district, 0 city 1 girders 2 interior 3 silos)', group: 'fold', min: -1, max: 3, step: 1, dirties: 'column' },
   { key: 'foldTop', label: 'top (y)', group: 'fold', min: 10, max: 300, step: 5, dirties: 'column' },
   { key: 'foldDeep', label: 'deep (y)', group: 'fold', min: -300, max: 0, step: 5, dirties: 'column' },
   { key: 'foldCrestToAbyss', label: 'tops→crest, bottoms→pit bottom (city)', group: 'fold', min: 0, max: 1, step: 1, dirties: 'column' },
+  { key: 'canyonGirderCover', label: 'canyon PIT girder coverage', group: 'fold', min: 0, max: 1, step: 0.05, dirties: 'column' },
+  { key: 'canyonSkyCover', label: 'canyon SKY girder coverage', group: 'fold', min: 0, max: 1, step: 0.05, dirties: 'column' },
+  { key: 'canyonSkyLo', label: 'sky girders from (y)', group: 'fold', min: 10, max: 300, step: 5, dirties: 'column' },
+  { key: 'canyonSkyHi', label: 'sky girders to (y)', group: 'fold', min: 20, max: 400, step: 5, dirties: 'column' },
+  { key: 'canyonSkyReach', label: 'sky girders wall reach (tiles)', group: 'fold', min: 0, max: 20, step: 1, dirties: 'column' },
+  { key: 'siloDensity', label: 'silo chance per cell', group: 'silos', min: 0, max: 1, step: 0.05, dirties: 'column' },
+  { key: 'siloRadius', label: 'tank radius (tiles)', group: 'silos', min: 2, max: 14, step: 0.5, dirties: 'column' },
+  { key: 'siloHeight', label: 'tube height', group: 'silos', min: 20, max: 400, step: 5, dirties: 'column' },
+  { key: 'siloFallenLength', label: 'fallen length (context-padded)', group: 'silos', min: 10, max: 120, step: 5, dirties: 'column' },
+  { key: 'siloFallenFraction', label: 'fallen fraction', group: 'silos', min: 0, max: 1, step: 0.05, dirties: 'column' },
+  { key: 'siloFallenSink', label: 'fallen sink', group: 'silos', min: 0, max: 10, step: 0.5, dirties: 'column' },
+  { key: 'siloWall', label: 'tube wall thickness (tiles)', group: 'silos', min: 0.5, max: 6, step: 0.5, dirties: 'column' },
   { key: 'detailOn', label: 'fold wall detail on', group: 'detail', min: 0, max: 1, step: 1, dirties: 'render' },
   { key: 'detailScale', label: 'panel scale', group: 'detail', min: 1, max: 40, step: 0.5, dirties: 'render' },
   { key: 'detailDecay', label: 'octave decay', group: 'detail', min: 0.2, max: 0.9, step: 0.01, dirties: 'render' },

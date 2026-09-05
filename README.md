@@ -63,6 +63,9 @@ Seen bugs become reproducible bugs:
 
 - **Megastructure traversal** — climb spiral stairs around monuments, cross high bridges, drop into rolling caves, emerge into open-sky canyons
 - **Vertical transit shafts** — rare elevator pillars replace the exterior-stair kebab and connect bottom, ground, and crown stops
+- **Split-level crossing halls** — low service passages open onto raised catwalks, recessed chambers, and observation edges; internal return stairs make both levels explorable, including in deep foundations
+- **Service galleries** — dogleg entries, solid machine bays, overhead service trunks, and two-door exterior ledge loops add regional variations without reshuffling tower heights or bridge connections
+- **Sheltered bridge crossings** — region-weighted gatehouses and windowed service approaches alternate enclosure with exposed middle spans; plain bridges and ducts remain in the mix ([design and inspection view](docs/bridge-crossings.md))
 - **Five regions / five biomes** — city, machine, canyon, frontier, and roads districts restrict dungeon, crypt, cave, ember, and outside terrain into distinct identities
 - **Street-vein roads districts** — arterial streets that squeeze to lone tunnels and flood open basins with side streets, flowing with the terrain; the blocks between become courts and plinth building sites at quantized heights
 - **Bottomless pits** — deep voids and open-sky drops break the slab; R respawns

@@ -34,6 +34,7 @@ import { regionAtCell } from './dungeon/region-layer';
 import { connectPermanentTransit, permanentTransitTiles, hallwayCells } from './dungeon/layer4-connect';
 import { computeHeightFields, computePitMask, carvePitArches, levelPitDecks, cellCrest } from './dungeon/layer6-heights';
 import { applyFoldStructures } from './dungeon/fold-structure';
+import { legacyWindowPaddingPc } from './gen/layers';
 import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
 import { applyPillarSpans } from './dungeon/pillar-marry';
@@ -57,11 +58,9 @@ const GRID_TILES = CELL_GRID_SIZE * CELL_TILE_SIZE;
  * discarded padding, so the core is rim-exact: any two windows agree
  * on every shared column. This is the docs' "input bounds always
  * exceed output bounds" rule applied to the window as a whole
- * (docs/layerprocgen/EffectDistance.md). One pillar cell (56 tiles)
- * exceeds the largest compound effect distance in the pipeline
- * (pit-deck leveling SPAN 12 + pit-mask opening ~4, mouth sweep 4 +
- * biome buffer 3 + relax 4, CA 3+1, smoothing 2) with 2x headroom. */
-const PAD_PC = 1;
+ * (docs/layerprocgen/EffectDistance.md). legacyWindowPaddingPc composes
+ * the live silo diameter with the upstream Height/TileBase stencils,
+ * rounding up to whole pillar cells instead of fixing a maximum pad. */
 
 // ── Public API ──
 
@@ -78,13 +77,14 @@ interface GenerateOpts {
 }
 
 export function generateWorld(opts: GenerateOpts): WorldData {
+  const PAD_PC = legacyWindowPaddingPc();
   const { seed, stack } = opts;
   const originPcx = opts.originPcx ?? 0;
   const originPcz = opts.originPcz ?? 0;
   const stackSeed = seed + stack * 100000;
 
-  // ── Padded generation frame: everything below runs on a window one
-  // pillar cell larger on every side, anchored one cell northwest.
+  // ── Padded generation frame: the live dependency guard extends the
+  // window on every side, with its origin shifted northwest.
   // The crop back to the core happens once, at the very end. ──
   const genPcx = originPcx - PAD_PC;
   const genPcz = originPcz - PAD_PC;
@@ -207,7 +207,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
   applyFoldStructures(
     columns, level.tiles, level.floorHeights, level.cellBiomes, genTiles,
     stackSeed, genPcx * PILLAR_CELL_TILES, genPcz * PILLAR_CELL_TILES,
-    // Core only: pointwise pass, the guard ring is cropped anyway
+    // Core only: the guard ring supplies the full silo eligibility context.
     { x0: padTiles, z0: padTiles, x1: padTiles + GRID_TILES, z1: padTiles + GRID_TILES },
     level.pillarGround, permanentTransitTiles, pillarWall,
   );

@@ -11,6 +11,7 @@ import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
 import { foldColumnBand, foldOrigin } from '../game/dungeon/fold-structure';
 import { TUNABLES } from '../game/dungeon/tunables';
 import { FoldContour, contourTerrain, foldWedgesAt, terrainOr } from '../game/dungeon/fold-contour';
+import { floorEdgeSegments } from './floor-edge';
 
 const loader = new THREE.TextureLoader();
 
@@ -1179,7 +1180,7 @@ export class DungeonRenderer {
       const i = tz * w + tx;
       let v = foldBandCache[i]!;
       if (Number.isNaN(v)) {
-        const b = foldColumnBand(foldL.tiles, foldL.floorHeights, foldL.cellBiomes, foldL.pillarGround, foldSeed, foldAbsTx0, foldAbsTz0, tx, tz);
+        const b = foldColumnBand(foldL.tiles, foldL.floorHeights, foldL.cellBiomes, foldL.pillarGround, foldSeed, foldAbsTx0, foldAbsTz0, tx, tz, foldL.pillarWall);
         v = b === null ? -Infinity : b.yLo;
         foldBandCache[i] = v;
         foldTopCache[i] = b === null ? 0 : b.yHi;
@@ -1504,6 +1505,47 @@ export class DungeonRenderer {
             const c1 = dx !== 0
               ? { cx: dx === 1 ? x + 1 : x, cz: z + 1 }
               : { cx: x + 1, cz: dz === 1 ? z + 1 : z };
+            // A foundation's flat floor and neighboring blended terrain can
+            // reverse order at the drawn edge. Restoring raw tile heights
+            // here resurrects a riser ABOVE the ground (DDSNAP seed 1,
+            // window -8,-5). Resolve the actual profiles, including the small
+            // oppositely-facing skirt when terrain dips below the slab.
+            const lowerFloor = airSpans.find(s => Math.abs(clipY(s.floor) - lo) < 0.02);
+            const upperFloor = otherSpans.find(s => Math.abs(clipY(s.floor) - hi) < 0.02);
+            const blendedFloor = (s: ColumnSpan | undefined, tx: number, tz: number): boolean =>
+              s !== undefined && s.owner >= 0 && !world.levels[s.owner]!.pillarGround[tz]?.[tx];
+            if (lowerFloor && upperFloor
+              && (L0.pillarWall[z]?.[x] || L0.pillarWall[nz]?.[nx])
+              && (blendedFloor(lowerFloor, inA ? x : nx, inA ? z : nz)
+                || blendedFloor(upperFloor, inA ? nx : x, inA ? nz : z))) {
+              const ax = inA ? x : nx, az = inA ? z : nz;
+              const bx = inA ? nx : x, bz = inA ? nz : z;
+              const floorAt = (s: ColumnSpan, tx: number, tz: number, c: { cx: number; cz: number }): number => {
+                if (s.owner < 0 || world.levels[s.owner]!.pillarGround[tz]?.[tx]) return clipY(s.floor);
+                return refine(clipY(s.floor), [s], [], c.cx, c.cz);
+              };
+              for (const edge of floorEdgeSegments(
+                floorAt(lowerFloor, ax, az, c0), floorAt(lowerFloor, ax, az, c1),
+                floorAt(upperFloor, bx, bz, c0), floorAt(upperFloor, bx, bz, c1),
+              )) {
+                const ex0 = (c0.cx + (c1.cx - c0.cx) * edge.start) * TILE_SIZE;
+                const ez0 = (c0.cz + (c1.cz - c0.cz) * edge.start) * TILE_SIZE;
+                const ex1 = (c0.cx + (c1.cx - c0.cx) * edge.end) * TILE_SIZE;
+                const ez1 = (c0.cz + (c1.cz - c0.cz) * edge.end) * TILE_SIZE;
+                const sign = (inA ? -1 : 1) * (edge.towardA ? 1 : -1);
+                const nnx = dx * sign, nnz = dz * sign;
+                const buf = bufferFor(faceRegion(edge.towardA ? airSpans : otherSpans,
+                  lo, hi, edge.towardA ? ax : bx, edge.towardA ? az : bz));
+                const vi = buf.verts.length / 3;
+                buf.verts.push(ex0, edge.lo0, ez0, ex1, edge.lo1, ez1,
+                  ex1, edge.hi1, ez1, ex0, edge.hi0, ez0);
+                for (let q = 0; q < 4; q++) buf.norms.push(nnx, 0, nnz);
+                buf.uvs.push(edge.start, edge.lo0 / TILE_SIZE, edge.end, edge.lo1 / TILE_SIZE,
+                  edge.end, edge.hi1 / TILE_SIZE, edge.start, edge.hi0 / TILE_SIZE);
+                addOrientedQuad(buf, vi, nnx, 0, nnz);
+              }
+              continue;
+            }
             let lo0 = refine(lo, airSpans, otherSpans, c0.cx, c0.cz);
             let lo1 = refine(lo, airSpans, otherSpans, c1.cx, c1.cz);
             let hi0 = refine(hi, airSpans, otherSpans, c0.cx, c0.cz);

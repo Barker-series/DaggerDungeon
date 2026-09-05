@@ -27,6 +27,7 @@ import { connectPermanentTransit, permanentTransitTiles, hallwayCells } from '..
 import { placePillars } from '../dungeon/layer45-pillars';
 import { computeHeightFields, computePitMask, carvePitArches, levelPitDecks } from '../dungeon/layer6-heights';
 import { applyFoldStructures } from '../dungeon/fold-structure';
+import { siloMaxReachTiles } from '../dungeon/silo-structure';
 import { buildColumns } from '../dungeon/columns';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from '../dungeon/pillar-layer';
 import { pillarFootprint } from '../dungeon/pillar-geometry';
@@ -48,10 +49,20 @@ const PAD_TILEBASE = CELL;
  *  the largest (smoothing 2; mouth sweeps 4; border buffer 3+4),
  *  rounded to two cells. */
 const PAD_HEIGHT = 2 * CELL;
-/** Column working pad: arch span 12 + marry ring 1 + corner sampling,
- *  rounded to one cell. Bridge/arch planning uses the pure pillar
- *  field (radius 2 pillar cells), not chunk data. */
-const PAD_COLUMN = CELL;
+/** Column working pad: at least arch span 12 + marry ring 1 + corner
+ *  sampling, and the full silo eligibility diameter at live settings.
+ *  Bridge/arch planning uses the pure pillar
+ *  field (radius 2 pillar cells), not chunk data. Bridge housing eligibility
+ *  reads at most four tiles across its section, also covered by this pad. */
+export function columnPaddingTiles(): number {
+  return Math.max(CELL, Math.ceil(2 * siloMaxReachTiles() / CELL) * CELL);
+}
+
+/** Legacy guard covers composed input dependencies, not just silo diameter.
+ *  Transit is cell-local; Height and TileBase add their stencil distances. */
+export function legacyWindowPaddingPc(): number {
+  return Math.max(1, Math.ceil((columnPaddingTiles() + PAD_HEIGHT + PAD_TILEBASE) / CT));
+}
 
 export interface TileBaseChunk {
   tiles: TileType[][]; // 56², pre-transit
@@ -286,6 +297,8 @@ export class HeightLayer extends ChunkedLayer<HeightChunk> {
 }
 
 export class ColumnLayer extends ChunkedLayer<ColumnChunk> {
+  /** Snapshot: dependency declarations and working grids must agree. */
+  readonly padTiles = columnPaddingTiles();
   constructor(
     private stackSeed: number,
     private tileBase: TileBaseLayer,
@@ -293,12 +306,14 @@ export class ColumnLayer extends ChunkedLayer<ColumnChunk> {
     private height: HeightLayer,
   ) {
     super('column', CT);
+    const PAD_COLUMN = this.padTiles;
     this.dependsOn(transit, PAD_COLUMN);
     this.dependsOn(tileBase, PAD_COLUMN);
     this.dependsOn(height, PAD_COLUMN);
   }
 
   protected create(ccx: number, ccz: number): ColumnChunk {
+    const PAD_COLUMN = this.padTiles;
     const b: ChunkBounds = {
       tx0: ccx * CT - PAD_COLUMN, tz0: ccz * CT - PAD_COLUMN,
       tx1: (ccx + 1) * CT + PAD_COLUMN, tz1: (ccz + 1) * CT + PAD_COLUMN,
@@ -360,7 +375,7 @@ export class ColumnLayer extends ChunkedLayer<ColumnChunk> {
     applyFoldStructures(
       columns, tiles, floors, cellBiomes, gridTiles,
       this.stackSeed, ccx * CT - PAD_COLUMN, ccz * CT - PAD_COLUMN,
-      // Core only: pointwise pass, padding is discarded anyway (2.25×)
+      // Core only: the silo eligibility diameter is in the discarded padding.
       { x0: PAD_COLUMN, z0: PAD_COLUMN, x1: PAD_COLUMN + CT, z1: PAD_COLUMN + CT },
       pillarGround, transitSetFor(this.transit, b), pillarWall,
     );

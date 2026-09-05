@@ -7,6 +7,8 @@
  */
 
 import type { PlacedChunk } from './pillar-layer';
+import { CROSSING_HALL_SOCKETS } from './crossing-hall';
+import { SERVICE_GALLERY_SOCKETS } from './service-gallery';
 
 export const ROOM_MODULE = {
   /** Structural perimeter/partition thickness. */
@@ -31,7 +33,7 @@ export const ROOM_MODULE = {
   windowHeight: 2,
 } as const;
 
-export type PillarRoomLayoutId = 'gallery-hall' | 'residential-corridor';
+export type PillarRoomLayoutId = 'gallery-hall' | 'residential-corridor' | 'crossing-hall' | 'service-gallery';
 
 export interface PillarRoomLayout {
   id: PillarRoomLayoutId;
@@ -61,6 +63,22 @@ export interface PillarRoomSocket {
  * sockets without changing world generation.
  */
 export const PILLAR_ROOM_LIBRARY: readonly PillarRoomLayout[] = [
+  {
+    id: 'service-gallery',
+    description: 'Dogleg service entry, equipment bays, overhead trunks, and a two-door exterior ledge.',
+    clearWidthTiles: 20,
+    clearDepthTiles: 20,
+    entry: 'stair-landing',
+    windows: true,
+  },
+  {
+    id: 'crossing-hall',
+    description: 'Low service entry, offset raised crossing, open balcony, and a stair to the lower hall.',
+    clearWidthTiles: 20,
+    clearDepthTiles: 20,
+    entry: 'stair-landing',
+    windows: true,
+  },
   {
     id: 'gallery-hall',
     description: 'One tall public hall entered directly from the stair landing.',
@@ -147,7 +165,17 @@ export function roomSocketsForChunks(chunks: readonly PlacedChunk[]): PillarRoom
       sockets.push({ lx: x, lz: z, y, group, role });
     };
 
-    if (placed.def.id === 'gallery') {
+    if (placed.def.id === 'crossing-hall') {
+      for (const socket of CROSSING_HALL_SOCKETS) {
+        publish(socket.x, socket.z, placed.baseY + socket.y,
+          `crossing-hall-${chunkIndex}`, socket.role);
+      }
+    } else if (placed.def.id === 'service-gallery') {
+      for (const socket of SERVICE_GALLERY_SOCKETS) {
+        publish(socket.x, socket.z, placed.baseY + socket.y,
+          `service-gallery-${chunkIndex}`, socket.role);
+      }
+    } else if (placed.def.id === 'gallery') {
       const group = `gallery-${chunkIndex}`;
       // Start on the guaranteed interior threshold and require the exterior
       // apron as one of the reachable authored targets.

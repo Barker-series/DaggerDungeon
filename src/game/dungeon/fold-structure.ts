@@ -39,6 +39,8 @@ import { PIT_LEVEL } from './heightfield';
 import { tileBiome, type BiomeType } from './cells';
 import { regionCellAt, regionType, foldDistrictPreset, type RegionType } from './region-layer';
 import { cellSeed, mulberry32 } from './rng';
+import { sampleNoise } from './noise';
+import { siloIntervalsAt, siloFootprintTiles, siloMaxTop, SILO_BASE_Y, type SiloPlacement, type SiloSpec } from './silo-structure';
 import { cellCrest } from './layer6-heights';
 import { TUNABLES } from './tunables';
 
@@ -80,6 +82,9 @@ export interface FoldPreset {
   /** Marching-squares smoothing of this preset's mass (fold-contour.ts):
    *  convex corners cut, concave notches filled, per solid band */
   smooth?: boolean;
+  /** 'silo' = not a fold at all: silo-structure.ts supplies the mass
+   *  (tanks on legs + fallen cylinders); fold params unused */
+  kind?: 'silo';
 }
 export const FOLD_PRESETS: FoldPreset[] = [
   // "city" — OURS: #5's recipe pushed toward #7 (rot TAU/6, offset 0.7,
@@ -95,20 +100,109 @@ export const FOLD_PRESETS: FoldPreset[] = [
   // #7 "carved interior": base 500, decay 0.5, offset 0.75, TAU/8, #5's flips
   { name: 'interior (#7)', base: 500, decay: 0.5, offset: 0.75, rot: Math.PI / 4, maxOctaves: 12,
     swapXY: 0, swapXZ: 0, flipX: 2, flipY: 8, flipZ: 2 },
-  // "Rodrigues Rotation": base 250, decay 0.75, offset: 0.9, 0.5 rad, no permute
-  { name: 'rodrigues', base: 250, decay: 0.75, offset: 0.9, rot: 0.5, maxOctaves: 24,
-    swapXY: 0, swapXZ: 0, flipX: 0, flipY: 0, flipZ: 0 },
+  // SILOS (replaced 'rodrigues' — noise by construction; user, Aug 22
+  // 2026): giant tanks on legs with X-braces + fallen cylinders. Fold
+  // params are placeholders; silo-structure.ts owns the shape.
+  { name: 'silos', base: 250, decay: 0.75, offset: 0.9, rot: 0, maxOctaves: 1,
+    swapXY: 0, swapXZ: 0, flipX: 0, flipY: 0, flipZ: 0, kind: 'silo', smooth: true },
 ];
 /** PRESET PER DISTRICT — the destination of the preset work: each
  *  region gets its own generated architecture. PLACEHOLDER MAPPING
  *  pending the user's in-game picks (Aug 22 2026). Roads districts are
  *  excluded (plinths are their own architecture). */
 export const DISTRICT_PRESET: Partial<Record<RegionType, number>> = {
-  canyon: 0, // city canyon (#5)
+  // Canyon keeps its pits readable: only the sparse girders (purple) —
+  // no city/interior/rodrigues mass in canyon (user, Aug 22 2026)
+  canyon: 1,
   machine: 1, // girders (#6) — pits only (no open-sky cells)
-  frontier: 3, // rodrigues
+  frontier: 3, // silos
   city: 2, // carved interior (#7) — pits only
 };
+/** The silo preset's index in FOLD_PRESETS */
+export const SILO_PRESET = 3;
+/** Which dungeon cells may PLACE silos: cells whose preset is the silo
+ *  slot (memoized per stackSeed for the hot per-tile footprint scan) */
+const siloCellMemo = new Map<string, Map<string, boolean>>();
+function cellHasSilos(stackSeed: number): (acx: number, acz: number) => boolean {
+  // keyed by seed AND the live preset override (it changes which cells place)
+  const mk = `${stackSeed}|${Math.round(TUNABLES.foldPreset)}`;
+  let m = siloCellMemo.get(mk);
+  if (!m) { if (siloCellMemo.size > 8) siloCellMemo.clear(); m = new Map(); siloCellMemo.set(mk, m); }
+  const memo = m;
+  return (acx, acz) => {
+    const k = `${acx},${acz}`;
+    let v = memo.get(k);
+    if (v === undefined) {
+      v = presetIndexFor(stackSeed, acx, acz) === SILO_PRESET;
+      if (memo.size >= 50000) memo.clear();
+      memo.set(k, v);
+    }
+    return v;
+  };
+}
+/** Is a tile OPEN for a silo footprint: no pillar, and either open
+ *  ground / pit in an outside cell, or the no-biome filler between cells
+ *  (Wall tiles there are ground-level slabs). Real walls and interiors
+ *  are not open. */
+function siloTileOpen(
+  tiles: TileType[][], floorHeights: number[][], cellBiomes: (BiomeType | null)[][],
+  pillarGround: boolean[][] | undefined, pillarWall: boolean[][] | undefined,
+  tx: number, tz: number,
+): boolean {
+  if (pillarGround?.[tz]?.[tx] || pillarWall?.[tz]?.[tx]) return false;
+  // ANY Wall tile blocks: claiming a wall adds no visible mass but makes
+  // the fold contour treat the wall as fold-made and chamfer whatever
+  // room/corridor it borders (DDSNAP, Aug 23 2026 — 45° slivers in a
+  // tunnel corridor next to a tube footprint)
+  if (tiles[tz]![tx] === TileType.Wall) return false;
+  const biome = tileBiome(cellBiomes, tx, tz);
+  const f0 = floorHeights[tz]![tx] ?? 0;
+  return f0 <= PIT_LEVEL || biome === 'outside' || biome === null;
+}
+/** Placement context for this immutable input frame. Retained generation
+ *  tiles have a full diameter of terrain padding. A cropped render query
+ *  without that context must not accept an unverified footprint. */
+// Input grids are immutable during fold evaluation. Weak ownership releases
+// each frame's memo with its grids; replacement terrain/masks start fresh.
+const siloOpenMemo = new WeakMap<TileType[][], {
+  floorHeights: number[][]; cellBiomes: (BiomeType | null)[][];
+  pillarGround: boolean[][] | undefined; pillarWall: boolean[][] | undefined;
+  memo: Map<string, boolean>;
+}>();
+function siloPlacement(
+  tiles: TileType[][], floorHeights: number[][], cellBiomes: (BiomeType | null)[][],
+  pillarGround: boolean[][] | undefined, pillarWall: boolean[][] | undefined,
+  stackSeed: number, absTx0: number, absTz0: number,
+): SiloPlacement {
+  const gridTiles = tiles.length;
+  const frame = `${stackSeed}|${absTx0},${absTz0}|${gridTiles}|${Math.round(TUNABLES.foldPreset)}`;
+  let context = siloOpenMemo.get(tiles);
+  if (!context || context.floorHeights !== floorHeights || context.cellBiomes !== cellBiomes
+    || context.pillarGround !== pillarGround || context.pillarWall !== pillarWall) {
+    context = { floorHeights, cellBiomes, pillarGround, pillarWall, memo: new Map() };
+    siloOpenMemo.set(tiles, context);
+  }
+  const memo = context.memo;
+  return {
+    cellHasSilos: cellHasSilos(stackSeed),
+    footprintOpen: (spec: SiloSpec): boolean => {
+      const key = `${frame}|${JSON.stringify([spec.acx, spec.acz, spec.cx, spec.cz, spec.r, spec.h, spec.fallen, spec.yaw])}`;
+      let v = memo.get(key);
+      if (v === undefined) {
+        if (memo.size >= 50000) memo.clear();
+        v = true;
+        for (const [ax, az] of siloFootprintTiles(spec)) {
+          const tx = ax - absTx0;
+          const tz = az - absTz0;
+          if (tx < 0 || tz < 0 || tx >= gridTiles || tz >= gridTiles) { v = false; break; }
+          if (!siloTileOpen(tiles, floorHeights, cellBiomes, pillarGround, pillarWall, tx, tz)) { v = false; break; }
+        }
+        memo.set(key, v);
+      }
+      return v;
+    },
+  };
+}
 /** Preset index for a dungeon cell: the global override when TUNABLES.
  *  foldPreset >= 0; in a FOLD district the district's own preset (pure
  *  per region cell); elsewhere the sprinkle mapping (undefined = none) */
@@ -141,6 +235,8 @@ function crestToAbyss(P: FoldPreset): boolean {
 }
 /** Interior-pit rim search radius (tiles) — bounded effect distance */
 const RIM_SCAN = 6;
+/** Canyon guest girders: how far below the rim their tops stop */
+const GUEST_DROP = 2;
 /** Octave floor: features below ~a tile come from texture, not geometry
  *  (the human-scale vocabulary never scales) — the ONE cut we make in
  *  the reference octave stacks (grid Nyquist) */
@@ -165,6 +261,15 @@ const STEP = FOLD_STEP;
 const FOLD_MODULE = 0;
 
 const FOLD_SALT = 9797;
+
+/** Per-world horizontal shift for SKY girders (quarter..three-quarter of
+ *  the girder base period, so overhead never mirrors the ground) */
+export function skyShift(stackSeed: number): [number, number] {
+  const rng = mulberry32(cellSeed(23, 29, stackSeed, FOLD_SALT + 1));
+  const P = FOLD_PRESETS[1]!;
+  const period = P.base * 2;
+  return [period * (0.25 + rng() * 0.5), period * (0.25 + rng() * 0.5)];
+}
 
 /** Per-world domain offset so every seed gets a different fold city */
 export function foldOrigin(stackSeed: number): [number, number] {
@@ -359,38 +464,101 @@ export function foldColumnBand(
   absTz0: number,
   tx: number,
   tz: number,
-): { yLo: number; yHi: number; fLo: number; fHi: number; preset: number } | null {
-  if (tiles[tz]![tx] === TileType.Wall) return null;
+  /** Pillar footprints — exempt from every structure (monument territory) */
+  pillarWall?: boolean[][],
+): { yLo: number; yHi: number; fLo: number; fHi: number; preset: number; sky?: boolean } | null {
   if (pillarGround?.[tz]?.[tx]) return null;
   const absTx = absTx0 + tx;
   const absTz = absTz0 + tz;
   const acx = Math.floor(absTx / CELL);
   const acz = Math.floor(absTz / CELL);
+  const isWall = tiles[tz]![tx] === TileType.Wall;
+  const biome = tileBiome(cellBiomes, tx, tz);
+  // SILO FOOTPRINT CLAIM (before every gate but pillars): a silo placed
+  // by any silo-district cell owns every tile under it — open ground,
+  // pits, other districts, the no-biome filler between cells — so the
+  // tube is never chopped at an edge. Candidates whose footprint touches
+  // a Wall tile, a pillar footprint or an interior are REJECTED at
+  // placement (siloPlacement), never chopped.
+  if (siloTileOpen(tiles, floorHeights, cellBiomes, pillarGround, pillarWall, tx, tz)) {
+    const pl = siloPlacement(tiles, floorHeights, cellBiomes, pillarGround, pillarWall, stackSeed, absTx0, absTz0);
+    if (siloIntervalsAt(stackSeed, absTx, absTz, pl).length > 0) {
+      const top = siloMaxTop();
+      return { yLo: SILO_BASE_Y, yHi: top, fLo: SILO_BASE_Y, fHi: top, preset: SILO_PRESET };
+    }
+  }
+  if (isWall) return null;
+  const f = floorHeights[tz]![tx]!;
+  const isPit = f <= PIT_LEVEL;
+  const outside = biome === 'outside';
+  // Interior rooms/corridors are untouchable; fold lives in pits and
+  // open-sky terrain
+  if (!isPit && !outside) return null;
   // District gate + preset (absolute dungeon cells)
   const preset = presetIndexFor(stackSeed, acx, acz);
   if (preset === undefined) return null;
   const P = FOLD_PRESETS[preset]!;
-  const f = floorHeights[tz]![tx]!;
-  const isPit = f <= PIT_LEVEL;
-  const outside = tileBiome(cellBiomes, tx, tz) === 'outside';
-  // Interior rooms/corridors are untouchable; fold lives in pits and
-  // open-sky terrain
-  if (!isPit && !outside) return null;
-  const full = crestToAbyss(P);
+  if (P.kind === 'silo') return null; // silo districts carry silos only (claimed above)
+  // CANYON GUEST RULES (user, Aug 22 2026): canyon is the pits' biome.
+  // Three girder flavours share one engine:
+  //  - LAND girders: the preset in its own homes (machine districts,
+  //    fold districts) — untouched by these rules;
+  //  - PIT girders: in canyon pits only, BELOW the rim, partial coverage
+  //    (low-frequency gate) so canyons read as canyons;
+  //  - SKY girders: in canyon open-sky tiles, a HIGH band slung between
+  //    the outer walls (within canyonSkyReach tiles of a Wall tile),
+  //    partial coverage — look up and see them; scale.
+  let guest = false;
+  if (Math.round(TUNABLES.foldPreset) < 0) {
+    const { rcx, rcz } = regionCellAt(stackSeed, acx, acz);
+    guest = regionType(stackSeed, rcx, rcz) === 'canyon';
+  }
+  let sky = false;
+  if (guest) {
+    if (isPit) {
+      // ~3-cell blobs of girder zones inside the pits
+      if (sampleNoise(absTx, absTz, stackSeed + 4242, 42) > TUNABLES.canyonGirderCover) return null;
+    } else {
+      // SKY girders: no trimming (user, Aug 22 2026 — the coverage /
+      // wall-reach gates thinned them to nothing). Optional gates stay
+      // available as tunables but default OFF (cover 1, reach 0).
+      if (TUNABLES.canyonSkyCover < 1
+        && sampleNoise(absTx, absTz, stackSeed + 7373, 42) > TUNABLES.canyonSkyCover) return null;
+      const reach = Math.round(TUNABLES.canyonSkyReach);
+      if (reach > 0) {
+        const gridTiles = tiles.length;
+        let nearWall = false;
+        for (let r = 1; r <= reach && !nearWall; r++) {
+          for (let dz = -r; dz <= r && !nearWall; dz++) {
+            for (let dx = -r; dx <= r; dx++) {
+              if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+              const nx = tx + dx;
+              const nz = tz + dz;
+              if (nx < 0 || nz < 0 || nx >= gridTiles || nz >= gridTiles) continue;
+              if (tiles[nz]![nx] === TileType.Wall) { nearWall = true; break; }
+            }
+          }
+        }
+        if (!nearWall) return null;
+      }
+      sky = true;
+    }
+  }
+  const full = crestToAbyss(P) && !guest;
   // FIELD band (the designed structure): pits from foldDeep, ground
   // tiles from their floor, up to foldTop. MOVE TARGETS (crest-to-abyss):
   // the structure's TOPMOST geometry is moved up to the cell's CREST —
   // where this cell's walls crown — and in pits the BOTTOMMOST geometry
   // is moved down to the pit bottom (where pit walls end). Everything
   // between is untouched: same rooms, same stories.
-  const fLo = isPit ? foldDeep() : f;
-  const fHi = foldTop();
+  const fLo = sky ? TUNABLES.canyonSkyLo : (isPit ? foldDeep() : f);
+  const fHi = sky ? Math.max(TUNABLES.canyonSkyHi, TUNABLES.canyonSkyLo + 5) : foldTop();
   const yLo = isPit && full ? FOLD_ABYSS : fLo;
   let yHi = full ? Math.max(fHi, cellCrest(acx, acz, stackSeed)) : fHi;
   // INTERIOR PITS (no open sky above): the mass stays INSIDE the shaft —
   // capped at the surrounding rim's floor — instead of climbing out of
   // the pit into the room above.
-  if (isPit && !outside) {
+  if (isPit && (!outside || guest)) {
     const gridTiles = tiles.length;
     let rim = Infinity;
     for (let r = 1; r <= RIM_SCAN && rim === Infinity; r++) {
@@ -407,9 +575,13 @@ export function foldColumnBand(
       }
     }
     if (rim !== Infinity) yHi = Math.min(yHi, rim);
+    // Guest girders stay clearly BELOW ground: the rim (or, beyond the
+    // scan, grade ≈ 0) minus a drop — tops never stand flush with the
+    // canyon floor, the pit stays a pit
+    if (guest) yHi = Math.min(yHi, (rim === Infinity ? 0 : rim) - GUEST_DROP);
   }
   if (fLo >= Math.min(fHi, yHi)) return null;
-  return { yLo, yHi, fLo, fHi, preset };
+  return { yLo, yHi, fLo, fHi, preset, sky };
 }
 
 /** Bore an air band [lo, hi] through whatever solid occupies it; air
@@ -459,7 +631,7 @@ export function foldTileIntervals(
   pillarCellMemo?: Map<string, boolean>,
 ): { bands: [number, number][]; preset: number; yLo: number } | null {
   const [ox, oz] = foldOrigin(stackSeed);
-  const band = foldColumnBand(tiles, floorHeights, cellBiomes, pillarGround, stackSeed, absTx0, absTz0, tx, tz);
+  const band = foldColumnBand(tiles, floorHeights, cellBiomes, pillarGround, stackSeed, absTx0, absTz0, tx, tz, pillarWall);
   if (band === null) return null;
   const PC = 56;
   const RING_LO = 14;
@@ -496,7 +668,28 @@ export function foldTileIntervals(
   const wx = (absTx + 0.5) * TILE_SIZE;
   const wz = (absTz + 0.5) * TILE_SIZE;
   // Scan the DESIGNED band (interior-pit rim cap applies to the scan top)
-  let bands = foldIntervals(P, ox, oz, wx, wz, band.fLo, Math.min(band.fHi, yHi));
+  // SKY girders are the GROUND girder structure LIFTED (user, Aug 22
+  // 2026): sample the field in ground space [0, bandHeight] and shift
+  // the intervals up by the band base — same shape as land girders,
+  // just high up; never a different (higher) slice of the field.
+  let bands: [number, number][];
+  if (P.kind === 'silo') {
+    const pl = siloPlacement(tiles, floorHeights, cellBiomes, pillarGround, pillarWall, stackSeed, absTx0, absTz0);
+    bands = siloIntervalsAt(stackSeed, absTx, absTz, pl);
+    if (bands.length === 0) return null;
+    return { bands, preset: band.preset, yLo: band.yLo };
+  }
+  if (band.sky) {
+    const lift = band.fLo;
+    // Horizontal OFFSET (user, Aug 22 2026): the sky chunk must not be the
+    // ground pattern directly overhead — sample a different part of the
+    // same lattice, shifted by a per-world seeded distance
+    const [sx, sz] = skyShift(stackSeed);
+    bands = foldIntervals(P, ox, oz, wx + sx, wz + sz, 0, Math.min(band.fHi, yHi) - lift)
+      .map(([lo, hi]) => [lo + lift, hi + lift] as [number, number]);
+  } else {
+    bands = foldIntervals(P, ox, oz, wx, wz, band.fLo, Math.min(band.fHi, yHi));
+  }
   if (FOLD_MODULE > 0) {
     const snapped: [number, number][] = [];
     for (const [lo, hi] of bands) {

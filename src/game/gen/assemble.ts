@@ -24,6 +24,7 @@ import { pickFarthestCell, nearestPermanentTransit } from '../DungeonGenerator';
 import { assembleGrid, type ChunkBounds } from './chunked';
 import {
   TileBaseLayer, TransitLayer, HeightLayer, ColumnLayer, setupCellsFromChunks,
+  columnPaddingTiles, legacyWindowPaddingPc,
 } from './layers';
 
 const CT = PILLAR_CELL_TILES;
@@ -32,7 +33,7 @@ const CPC = PILLAR_FACTOR;
 const CELL_GRID_SIZE = 16;
 const GRID_TILES = CELL_GRID_SIZE * CELL;
 const CORE_PC = GRID_TILES / CT; // 4 pillar cells per window side
-const PAD_PC = 1; // legacy guard ring, still used for the published bridge list
+
 /** Chunks kept beyond the window on release — the next recenter's
  *  guard ring is usually already here. */
 const KEEP_MARGIN_PC = 2;
@@ -58,6 +59,12 @@ export function resetGenState(from: GenResetLevel = 'all'): void {
     state = null;
     return;
   }
+  // Padding is a constructor declaration. Rebuild only this consumer on
+  // reach edits, preserving the expensive upstream caches.
+  if (state.column.padTiles !== columnPaddingTiles()) {
+    const [seed, stack] = state.key.split(':').map(Number);
+    state.column = new ColumnLayer(seed! + stack! * 100000, state.tileBase, state.transit, state.height);
+  }
   if (from === 'transit') {
     state.transit.clearAll();
     state.height.clearAll();
@@ -75,7 +82,10 @@ export function resetGenState(from: GenResetLevel = 'all'): void {
 
 function layersFor(seed: number, stack: number): GenState {
   const key = `${seed}:${stack}`;
-  if (state && state.key === key) return state;
+  if (state && state.key === key) {
+    if (state.column.padTiles !== columnPaddingTiles()) resetGenState('column');
+    return state!;
+  }
   const stackSeed = seed + stack * 100000;
   const tileBase = new TileBaseLayer(stackSeed);
   const transit = new TransitLayer(stackSeed, tileBase);
@@ -93,6 +103,7 @@ export interface ChunkedGenOpts {
 }
 
 export function generateWorldChunked(opts: ChunkedGenOpts): WorldData {
+  const PAD_PC = legacyWindowPaddingPc();
   const { seed, stack } = opts;
   const originPcx = opts.originPcx ?? 0;
   const originPcz = opts.originPcz ?? 0;

@@ -24,6 +24,8 @@
  */
 
 import type { PillarSpec, PlacedChunk } from './pillar-layer';
+import { crossingHallAir, crossingHallRampSurface } from './crossing-hall';
+import { serviceGalleryAir } from './service-gallery';
 import {
   isResidentialRoomDoor,
   isWindowBay,
@@ -205,12 +207,26 @@ function rampSolids(
     // tread there gets erased by the neighbor flight's headroom punch.
     const surface = placed.def.id === 'residential'
       ? residentialRampSurface(b, i)
-      : b + Math.min(h, Math.max(0, i - landingEnd) * rise);
+      : placed.def.id === 'crossing-hall'
+        ? crossingHallRampSurface(b, i)
+        : b + Math.min(h, Math.max(0, i - landingEnd) * rise);
     const clearTop = Math.min(surface + RAMP_CLEARANCE, b + h + LANDING_CLEARANCE);
     for (let z = RING.lo; z <= RING.lo + 2; z++) {
       addSolid(solids, RING.lo + i, z, k, surface - RAMP_SLAB, surface);
       addClear(solids, RING.lo + i, z, k, surface, clearTop, deep);
     }
+  }
+}
+
+/** Flat wrapped entry shared by the public and service galleries. */
+function galleryEntryApron(placed: PlacedChunk, solids: Map<string, TileSolids>): void {
+  const b = placed.baseY, k = placed.rotation;
+  // Keep only the inner strip: a wide apron would cross the arriving flight.
+  for (let z = FULL.lo; z < FULL.lo + 2 + ROOM_MODULE.doorTiles; z++) {
+    const x = FULL.lo - 1;
+    addProtectedSolid(solids, x, z, k, b, b + SLAB);
+    addClear(solids, x, z, k, b + SLAB, b + SLAB + 3.5, b < 0);
+    addAllow(solids, x, z, k, b + SLAB, b + SLAB + 3.5);
   }
 }
 
@@ -227,6 +243,27 @@ function chunkSolids(
   rampSolids(placed, solids, placed.baseY === 0, flattenRamp);
 
   switch (placed.def.id) {
+    case 'crossing-hall':
+    case 'service-gallery': {
+      // Compile local air plans to solids. Deep rooms cut only their declared
+      // air through the foundation; ordinary rooms reserve it against culling.
+      const service = placed.def.id === 'service-gallery';
+      for (let z = FULL.lo; z <= FULL.hi; z++) for (let x = FULL.lo; x <= (service ? 40 : FULL.hi); x++) {
+        const air = service ? serviceGalleryAir(x, z) : crossingHallAir(x, z);
+        if (air === undefined) continue;
+        let cursor = b;
+        for (const [floor, ceil] of air) {
+          if (b + floor > cursor) addSolid(solids, x, z, k, cursor, b + floor);
+          if (b < 0) addClear(solids, x, z, k, b + floor, b + ceil, true);
+          else addAllow(solids, x, z, k, b + floor, b + ceil);
+          cursor = b + ceil;
+        }
+        if (cursor < top) addSolid(solids, x, z, k, cursor, top);
+      }
+      if (service) galleryEntryApron(placed, solids);
+      break;
+    }
+
     case 'terrace':
       // Slim waist inside a flat plaza — the bridge landing. The plaza
       // OMITS its band over the ramp arriving from the chunk below
@@ -312,14 +349,7 @@ function chunkSolids(
       // structural apron wraps to the west-façade doorway. The apron is a
       // protected navigation transfer: another chunk's broad headroom punch
       // may clear above it, but may not erase its floor.
-      for (let z = FULL.lo; z < FULL.lo + 2 + ROOM_MODULE.doorTiles; z++) {
-        // Only the inner-edge strip is circulation. Keeping the two outer
-        // tiles open avoids crossing another rotated flight below.
-        const x = FULL.lo - 1;
-        addProtectedSolid(solids, x, z, k, b, b + SLAB);
-        addClear(solids, x, z, k, b + SLAB, b + SLAB + 3.5, b < 0);
-        addAllow(solids, x, z, k, b + SLAB, b + SLAB + 3.5);
-      }
+      galleryEntryApron(placed, solids);
       break;
 
     case 'residential': {

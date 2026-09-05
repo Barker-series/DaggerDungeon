@@ -16,6 +16,9 @@
  * All heights are in world units, local to the chunk's base.
  */
 
+import { CROSSING_HALL_HEIGHT } from './crossing-hall';
+import { SERVICE_GALLERY_HEIGHT } from './service-gallery';
+
 export type SocketKind =
   /** A bridge to a neighboring pillar may attach here */
   | 'bridge'
@@ -63,6 +66,10 @@ export const CHUNK_LIBRARY: PillarChunkDef[] = [
   { id: 'plain', height: 8, weight: 3 },
   { id: 'terrace', height: 6, weight: 3 },
   { id: 'gallery', height: 12, weight: 2 },
+  // Same-height regional variation, chosen after the kebab is assembled.
+  { id: 'service-gallery', height: SERVICE_GALLERY_HEIGHT, weight: 0 },
+  // Low entry → split-level hall → offset crossing → open observation edge.
+  { id: 'crossing-hall', height: CROSSING_HALL_HEIGHT, weight: 1 },
   // 13.8 = 23 treads at the fixed 0.6 rise — exactly the climb between
   // the two corner squares. The flight fills the whole band: the shared
   // corners are its only flat tiles, so it reads as stairs that never

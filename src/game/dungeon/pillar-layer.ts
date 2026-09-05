@@ -207,6 +207,7 @@ function chunkSockets(placed: PlacedChunk): ChunkSocket[] {
       ]);
     }
     case 'gallery':
+    case 'service-gallery':
       // The room entry sits one façade around the ramp's starting corner,
       // reached by its wrapped landing apron. A bridge may share that authored
       // threshold; the interior is never bridge-only.
@@ -283,9 +284,9 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   // plaza terraces. Multipliers, not hard bans — every meat can appear
   // anywhere, the district shifts the odds.
   const DISTRICT_MULT: Record<string, Record<string, number>> = {
-    city: { residential: 3, gallery: 1.5, terrace: 1, plain: 0.7, shaft: 0.7 },
-    machine: { plain: 1.5, shaft: 1.5, gallery: 1, terrace: 0.6, residential: 0.3 },
-    canyon: { terrace: 2, plain: 1, shaft: 1, gallery: 0.8, residential: 0.5 },
+    city: { residential: 3, gallery: 1.5, terrace: 1, plain: 0.7, shaft: 0.7, 'crossing-hall': 0.5 },
+    machine: { plain: 1.5, shaft: 1.5, gallery: 1, terrace: 0.6, residential: 0.3, 'crossing-hall': 3 },
+    canyon: { terrace: 2, plain: 1, shaft: 1, gallery: 0.8, residential: 0.5, 'crossing-hall': 3 },
     frontier: {},
   };
   const mult = DISTRICT_MULT[district] ?? {};
@@ -299,9 +300,10 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
     }
     return pickable[pickable.length - 1]!;
   };
-  // Below grade only plain and shaft for now: buried plazas and
-  // underground halls are future meats
-  const deepPickable = pickable.filter((c) => c.id === 'plain' || c.id === 'shaft');
+  // Buried circulation now opens into explorable split-level chambers too.
+  // Machine foundations favor them; the bottom chunk stays a plain landing.
+  const deepPickable = pickable.filter((c) => c.id === 'plain' || c.id === 'shaft' || c.id === 'crossing-hall');
+  if (district === 'machine') deepPickable.push(CHUNK_BY_ID.get('crossing-hall')!);
   const pickDeep = (): PillarChunkDef =>
     deepPickable[Math.floor(rng() * deepPickable.length)]!;
 
@@ -350,7 +352,15 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   const mirror = rng() < 0.5;
   let base = -downTotal;
   for (const def of allDefs) {
-    chunks.push({ def, baseY: base, rotation: face | (mirror ? 4 : 0) });
+    // Independent same-height variation: no reroll of tower height, chirality,
+    // or gallery bridge sockets. Buried machine rooms gain this vocabulary too.
+    const serviceChance = district === 'machine' ? 0.75 : district === 'city' ? 0.35 : 0.2;
+    const serviceEligible = def.id === 'gallery'
+      || (base < 0 && def.id === 'crossing-hall' && district === 'machine');
+    const serviceRoll = mulberry32(cellSeed(pcx, pcz, worldSeed, 9393 + Math.round(base * 10)))();
+    const placedDef = serviceEligible && serviceRoll < serviceChance
+      ? CHUNK_BY_ID.get('service-gallery')! : def;
+    chunks.push({ def: placedDef, baseY: base, rotation: face | (mirror ? 4 : 0) });
     base += def.height;
     face = (face + (mirror ? 3 : 1)) % 4;
   }
