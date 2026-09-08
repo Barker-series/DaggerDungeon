@@ -69,6 +69,32 @@ doorways now receive the height lift too; doorway widths, slab mass and
 deliberately tight ducts remain unchanged. Current ranges
 and reproduction views live in `docs/spatial-scale.md`.
 
+Roads/infrastructure direction: the shaped plinths are building sites, not the
+finished roads district. Road-front facilities now inherit those footprints,
+and mounted pipe hierarchies/cable bundles add visible maintenance structure.
+The current scope, bounded layer contracts, playtest views, and the Mik/scale
+references supplied by the user live in `docs/roads-infrastructure.md`.
+
+Infrastructure is a world-scale system, not a small pipe statue inside one
+building family. The rejected atrium-only pipe pass has been replaced by a
+coarse LayerProcGen network: shared nodes, long owned trunks and returns, physical
+octagonal bores, risers, maintenance walkways, cables and local access stations.
+It passes through rock as service galleries and over voids as exposed crossings.
+Column projections and exact analytic refinements share one physical model;
+pipes and fittings have collision, and input-driven tests exercise the ladders.
+Existing framed shelves remain a local circulation vocabulary, not the network's
+owner. Contracts, controls and inspected views: `docs/infrastructure-network.md`.
+The separate round-shaft stair reference remains future structural work.
+
+Rendering direction: Source-inspired readability on the BLAME! world, not a
+universal grime overlay. Quiet old concrete is the default for walls/ceilings;
+constructed floors read as concrete slabs, with natural ground kept ungrouted.
+Pipe coatings follow existing service roles and coarse construction/region
+context—not universal green or random colours per mesh. Wear is restrained and
+subordinate to structure. Improved UVs, industrial lighting, ambience, collision
+and streaming budgets remain protected. Current material rules and verification:
+`docs/quiet-material-roles.md`; original assets/reference: `docs/source-style-pass.md`.
+
 ## Non-Negotiable Discipline
 
 Every generation feature is a **pure function of `(seed, cellX, cellZ)` plus a
@@ -78,7 +104,10 @@ what makes the endless world possible and it is now literal in the code.
 
 The **column model** (`src/game/dungeon/columns.ts`) is the single source of
 truth: per-(x,z) sorted AIR spans. Renderer faces, physics, and agents all
-derive from span differences. If it isn't in the columns, it doesn't exist.
+derive from that authority. Infrastructure's analytic prism field refines those
+columns continuously for exact pipe surfaces; it is shared by rendering and
+collision, not a second mesh-only world. If it isn't in that model, it isn't a
+physical structure.
 
 ## Next Up (Streaming v2 — Phases 1 and 2A SHIPPED, milestone B remains)
 

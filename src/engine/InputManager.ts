@@ -95,6 +95,11 @@ export class KeyboardInput {
     return this.keysDown.has('Space');
   }
 
+  /** Inspect without consuming: automatic interactions defer to explicit F. */
+  hasAction(action: InputAction): boolean {
+    return this.actionQueue.includes(action);
+  }
+
   consumeAction(): InputAction | null {
     return this.actionQueue.shift() ?? null;
   }
@@ -130,6 +135,8 @@ export class KeyboardInput {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (this.disposed) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName ?? '')) return;
     if (this.isGameKey(e.code)) e.preventDefault();
     this.keysDown.add(e.code);
 

@@ -12,6 +12,11 @@ import { foldColumnBand, foldOrigin } from '../game/dungeon/fold-structure';
 import { TUNABLES } from '../game/dungeon/tunables';
 import { FoldContour, contourTerrain, foldWedgesAt, terrainOr } from '../game/dungeon/fold-contour';
 import { floorEdgeSegments } from './floor-edge';
+import { buildStructureUtilityBuffers, type UtilityBatches } from './StructureUtilities';
+import { createSourceMaterial, createSourceFittingMaterial, CONCRETE_UV_GLSL, QUIET_SLAB_GLSL, SOURCE_SURFACES, type SourceSurface } from './SourceMaterials';
+import { SOURCE_MAP_FRAGMENT } from './SourceSampling';
+
+import { buildWorldInfrastructureBuffers, buildWorldInfrastructureBuffersIncrementally, infrastructureRenderWorld } from './InfrastructureRenderer';
 
 const loader = new THREE.TextureLoader();
 
@@ -32,24 +37,19 @@ function loadTex(path: string): THREE.Texture {
   return tex;
 }
 
-// Closely value-matched concrete bases. The renderer blends these with
-// per-vertex RGB weights; construction seams belong to trim geometry rather
-// than the infinitely repeating terrain material.
-const CONCRETE_CLEAN_TEX = loadTex('/textures/concrete-clean-base.png');
-const CONCRETE_AGGREGATE_TEX = loadTex('/textures/concrete-fine-aggregate.png');
-const CONCRETE_PRECAST_TEX = loadTex('/textures/concrete-smooth-precast.png');
 const STAIRS_TEX = loadTex('/textures/stairs-down.png');
+const TEXTURE_WORLD_ORIGIN = { value: new THREE.Vector3() };
 
 /** Region key: a biome, or 'tunnel' for connections carved through void */
 type RegionKey = BiomeType | 'tunnel';
 
 const REGION_TINTS: Record<RegionKey, number> = {
   dungeon: 0xffffff,
-  cave: 0xd8b494, // warm earth
-  crypt: 0x9fb4cc, // cold blue-grey
-  ember: 0x8a827c, // darkened neutral stone — the heat lives in the fog now
-  outside: 0xaec8d8, // moonlit stone
-  tunnel: 0xb8b0a8, // drab passage
+  cave: 0xc8bbaa, // warm mineral dust, not orange concrete
+  crypt: 0xb4bfba, // aged cool-grey services
+  ember: 0xa89a89, // soot and heat wear; lamps/fog carry the warm accent
+  outside: 0xc9ceca,
+  tunnel: 0xc5beb0,
 };
 
 // Per-region self-illumination (currently none; ember's red moved to fog)
@@ -66,9 +66,8 @@ const TINT_RGB: Record<RegionKey, [number, number, number]> = Object.fromEntries
 const smooth01 = (t: number): number => t * t * (3 - 2 * t);
 
 /**
- * Standard-lit concrete with three albedo layers mixed by the geometry's
- * `splatWeight` RGB attribute. Offsetting and scaling the secondary samples
- * prevents their features from lining up with the base texture's repetition.
+ * Diffuse-led industrial concrete with restrained Phong highlights and a
+ * distance-filtered fine-detail layer. Texture scale stays human-sized.
  */
 /** FOLD WALL DETAIL — shared live uniforms (all detail materials read
  *  the same objects; syncDetailUniforms copies TUNABLES in each frame,
@@ -102,6 +101,7 @@ export function syncDetailUniforms(): void {
 /** Domain offset for the detail field: the world's fold origin, so the
  *  wall pattern is a per-seed thing like the mass */
 function setDetailOrigin(world: WorldData): void {
+  TEXTURE_WORLD_ORIGIN.value.set(world.originPcx * PILLAR_CELL_TILES * TILE_SIZE, 0, world.originPcz * PILLAR_CELL_TILES * TILE_SIZE);
   const [ox, oz] = foldOrigin(world.seed + world.stack * 100000);
   DETAIL_UNIFORMS.detailOrigin.value.set(ox, oz);
 }
@@ -143,7 +143,7 @@ float foldDetailField(vec2 p, float pixelWidth) {
 }
 `;
 
-function makeConcreteMaterial(
+export function makeConcreteMaterial(
   tint: number,
   emissive: number,
   roughness: number,
@@ -151,67 +151,61 @@ function makeConcreteMaterial(
   /** Fold wall detail: the 2D fold panel field replaces formwork seams
    *  (live-toggled by detailOn; seams return when it is off) */
   foldDetail = false,
-): THREE.MeshStandardMaterial {
-  const material = new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    map: CONCRETE_CLEAN_TEX,
-    // The albedo doubles as its own bump map (the synthcity trick):
-    // brightness variation in the concrete reads as aggregate/formwork
-    // relief under the point lights. Derivative-based, no tangents
-    // needed — this is NOT the parked normal-map work.
-    bumpMap: CONCRETE_CLEAN_TEX,
-    bumpScale: 0.6,
-    color: tint,
-    emissive,
-    roughness,
-    side: THREE.FrontSide,
-  });
+  surface: Extract<SourceSurface, `concrete-${string}`> = 'concrete-wall',
+): THREE.MeshPhongMaterial {
+  constructionSeams = constructionSeams && surface === 'concrete-wall';
+  foldDetail = foldDetail && surface === 'concrete-wall';
+  const material = createSourceMaterial(surface, tint);
+  material.vertexColors = true;
+  material.emissive.setHex(emissive);
+  material.shininess = 3 + (1-roughness)*12;
 
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms['concreteAggregate'] = { value: CONCRETE_AGGREGATE_TEX };
-    shader.uniforms['concretePrecast'] = { value: CONCRETE_PRECAST_TEX };
+  const baseCompile = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    baseCompile.call(material, shader, renderer);
+
+    shader.uniforms['textureWorldOrigin'] = TEXTURE_WORLD_ORIGIN;
     shader.uniforms['constructionSeams'] = { value: constructionSeams ? 1 : 0 };
     if (foldDetail) Object.assign(shader.uniforms, DETAIL_UNIFORMS);
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
-attribute vec3 splatWeight;
-varying vec3 vSplatWeight;
+uniform vec3 textureWorldOrigin;
+${CONCRETE_UV_GLSL}
 varying vec3 vConcretePosition;
 varying vec3 vConcreteNormal;`,
       )
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
-vSplatWeight = splatWeight;
-vConcretePosition = position;
-vConcreteNormal = normal;`,
+vConcretePosition = (modelMatrix * vec4(position, 1.0)).xyz + textureWorldOrigin;
+vConcreteNormal = mat3(modelMatrix) * normal;
+#ifdef USE_MAP
+vMapUv = concreteTextureUV(vConcretePosition, vConcreteNormal) * ${SOURCE_SURFACES[surface].repeat.toFixed(2)};
+#endif
+#ifdef USE_BUMPMAP
+vBumpMapUv = concreteTextureUV(vConcretePosition, vConcreteNormal) * ${SOURCE_SURFACES[surface].repeat.toFixed(2)};
+#endif`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
         `#include <common>
-varying vec3 vSplatWeight;
 varying vec3 vConcretePosition;
 varying vec3 vConcreteNormal;
-uniform sampler2D concreteAggregate;
-uniform sampler2D concretePrecast;
 uniform float constructionSeams;
+${surface === 'concrete-floor' ? QUIET_SLAB_GLSL : ''}
 ${foldDetail ? DETAIL_GLSL : ''}
 float foldDetailH = 0.0;`,
       )
       .replace(
-        '#include <map_fragment>',
-        `#ifdef USE_MAP
-          vec3 weights = max(vSplatWeight, vec3(0.001));
-          weights /= weights.r + weights.g + weights.b;
-          vec4 cleanSample = texture2D(map, vMapUv);
-          vec4 aggregateSample = texture2D(concreteAggregate, vMapUv * 0.83 + vec2(0.173, 0.319));
-          vec4 precastSample = texture2D(concretePrecast, vMapUv * 1.17 + vec2(0.437, 0.113));
-          diffuseColor *= cleanSample * weights.r
-            + aggregateSample * weights.g
-            + precastSample * weights.b;
+        SOURCE_MAP_FRAGMENT,
+        `${SOURCE_MAP_FRAGMENT}
+        #ifdef USE_MAP
+          ${surface === 'concrete-floor' ? `
+          diffuseColor.rgb *= quietSlabFactor(vConcretePosition.xz, max(fwidth(vConcretePosition.x), fwidth(vConcretePosition.z)));
+          ` : ''}
 
           ${foldDetail ? `
           // FOLD WALL DETAIL: the mass's own fold, on the wall plane —
@@ -238,7 +232,7 @@ float foldDetailH = 0.0;`,
           ` : ''}
           // Large staggered formwork panels are anchored in structure space,
           // not texture UVs, so joints continue across generated tile edges.
-          if (constructionSeams > 0.5${foldDetail ? ' && !foldDetailActive' : ''}) {
+          if (constructionSeams > 0.5 && abs(vConcreteNormal.y) < 0.5${foldDetail ? ' && !foldDetailActive' : ''}) {
             vec3 axisWeight = abs(normalize(vConcreteNormal));
             float wallU = axisWeight.x > axisWeight.z
               ? vConcretePosition.z
@@ -279,7 +273,7 @@ float foldDetailH = 0.0;`,
               edgeDistance.y
             );
             float joint = max(verticalJoint, horizontalJoint);
-            diffuseColor.rgb *= mix(1.0, 0.76, joint);
+            diffuseColor.rgb *= mix(1.0, 0.92, joint);
           }
         #endif`,
       );
@@ -287,17 +281,13 @@ float foldDetailH = 0.0;`,
       // Fold relief joins the albedo-bump derivative (same Mikkelsen
       // screen-space path three.js uses for bumpMap)
       shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <normal_fragment_maps>',
-        `#ifdef USE_BUMPMAP
-          normal = perturbNormalArb( - vViewPosition, normal, dHdxy_fwd() + vec2(dFdx(foldDetailH), dFdy(foldDetailH)), faceDirection );
-        #else
-          #include <normal_fragment_maps>
-        #endif`,
+        'vec2(dFdx(sourceHeight), dFdy(sourceHeight)), faceDirection',
+        'vec2(dFdx(sourceHeight + foldDetailH), dFdy(sourceHeight + foldDetailH)), faceDirection',
       );
     }
   };
   material.customProgramCacheKey = () =>
-    `${constructionSeams ? 'rgb-concrete-splat-seams-v2' : 'rgb-concrete-splat-v2'}${foldDetail ? '-folddetail-v1' : ''}`;
+    `source-concrete-quiet-v3:${surface}:${constructionSeams}:${foldDetail}`;
   return material;
 }
 
@@ -319,6 +309,8 @@ interface MeshBuffers {
   idxs: number[];
   uvs: number[];
   norms: number[];
+  /** Explicit linear RGB (e.g. construction/service finish), not biome tint. */
+  colors?: number[];
 }
 
 function newBuffers(): MeshBuffers {
@@ -376,8 +368,8 @@ interface RenderChunk {
    *  the built window's local frame land at the right absolute place. */
   builtPcx: number;
   builtPcz: number;
-  /** Remaining jobs: sub-cell BUILD jobs (window-local tile bounds),
-   *  then one FLUSH job per accumulated material buffer */
+  /** Remaining jobs: sub-cell BUILD and resumable infrastructure jobs
+   *  (window-local tile bounds), then one FLUSH per material buffer. */
   jobs: ChunkJob[];
   /** Geometry accumulated across build jobs, merged per (pass, material)
    *  — one mesh per material per chunk instead of one per job (fewer
@@ -389,7 +381,9 @@ interface RenderChunk {
 }
 
 type Contour = ReturnType<typeof buildOrganicContour>;
-type ChunkJob = { kind: 'build'; bounds: RenderBounds } | { kind: 'flush'; key: string };
+type ChunkJob = { kind: 'build'; bounds: RenderBounds }
+  | { kind: 'infrastructure'; bounds: RenderBounds; builder?: Generator<void, UtilityBatches> }
+  | { kind: 'flush'; key: string };
 /** Build jobs per chunk edge: 4 → 16 jobs of 14x14 tiles. Smaller jobs
  *  keep each budgeted frame near CHUNK_BUDGET_MS instead of overshooting
  *  by a whole quarter cell (the 20-95 ms travel stutters, Aug 2026). */
@@ -409,6 +403,8 @@ const EVICT_WU = 260;
  * frontier column entering the window fills over a handful of frames
  * while still ~100 wu beyond the fog line. */
 const CHUNK_BUDGET_MS = 8;
+/** Cooperative CSG work leaves room for the other passes in a frame. */
+const INFRASTRUCTURE_JOB_MS = 2;
 
 export class DungeonRenderer {
   private scene: THREE.Scene;
@@ -474,19 +470,18 @@ export class DungeonRenderer {
     }
   }
 
-  /** DEBUG TINT for fold-generated surfaces: one colour per preset so
-   *  fold mass reads apart from terrain and presets read apart from
-   *  each other in-game. Vertex biome tints still multiply in. */
+  /** Subtle mineral variation distinguishes fold families without turning
+   *  the industrial palette into debug-colored architecture. */
   private foldMaterials = new Map<number, RegionMaterials>();
   private foldMaterialsFor(preset: number): RegionMaterials {
     let m = this.foldMaterials.get(preset);
     if (!m) {
-      const FOLD_TINTS = [0x7fb0ff, 0xc08cff, 0xffb066, 0x8fe08f]; // blue, purple, orange, green
+      const FOLD_TINTS = [0xc1b8a3, 0xa4aba5, 0xb6a896, 0xadb5ad]; // mineral/industrial variations, not debug colors
       const tint = FOLD_TINTS[preset % FOLD_TINTS.length]!;
       m = {
         wall: makeConcreteMaterial(tint, 0x000000, 0.9, true, true),
-        floor: makeConcreteMaterial(tint, 0x000000, 0.94),
-        ceil: makeConcreteMaterial(tint, 0x000000, 0.97),
+        floor: makeConcreteMaterial(tint, 0x000000, 0.94, false, false, 'concrete-floor'),
+        ceil: makeConcreteMaterial(tint, 0x000000, 0.97, false, false, 'concrete-ceiling'),
       };
       this.foldMaterials.set(preset, m);
     }
@@ -501,8 +496,8 @@ export class DungeonRenderer {
       const emissive = REGION_EMISSIVE[key] ?? 0x000000;
       m = {
         wall: makeConcreteMaterial(0xffffff, emissive, 0.9, true),
-        floor: makeConcreteMaterial(0xffffff, emissive, 0.94),
-        ceil: makeConcreteMaterial(0xffffff, emissive, 0.97),
+        floor: makeConcreteMaterial(0xffffff, emissive, 0.94, false, false, key === 'cave' || key === 'ember' ? 'concrete-mineral' : 'concrete-floor'),
+        ceil: makeConcreteMaterial(0xffffff, emissive, 0.97, false, false, 'concrete-ceiling'),
       };
       this.materials.set(key, m);
     }
@@ -516,6 +511,7 @@ export class DungeonRenderer {
    * adjacent columns — a face exists exactly where air meets solid.
    */
   build(world: WorldData): void {
+    world = infrastructureRenderWorld(world);
     this.tintWorld = world;
     setDetailOrigin(world);
     const cornerFloors = world.levels.map((l) =>
@@ -533,6 +529,9 @@ export class DungeonRenderer {
     }
     this.buildWalls(world, cornerFloors, contours, roadsContour, this.materialsFor, this.meshGroup, undefined, pitContour);
     this.buildPipeChamfers(world, this.meshGroup);
+    this.buildStructureUtilities(world, this.meshGroup);
+
+    this.buildInfrastructure(world, this.meshGroup);
     this.buildSegmentWalls(world, contours[0]!, cornerFloors[0]!, this.meshGroup);
     this.buildTunnelTrim(world, contours[0]!, cornerFloors[0]!, this.meshGroup);
     this.buildRoadsWalls(world, roadsContour, cornerFloors[0]!, this.meshGroup);
@@ -557,6 +556,8 @@ export class DungeonRenderer {
     shared?: { cornerFloors: number[][][]; contours: Contour[]; roadsContour: RoadsContour; pitContour: PitContour },
   ): void {
     const stamp = `${world.seed}:${world.levels[0]?.floor ?? 0}:${this.configEpoch}`;
+    // window-prep shares contours computed from this same base authority.
+    world = infrastructureRenderWorld(world);
     if (stamp !== this.chunkStamp) this.clearChunks();
     this.chunkStamp = stamp;
     this.chunkWorld = world;
@@ -681,10 +682,11 @@ export class DungeonRenderer {
     const jobs: ChunkJob[] = [];
     for (let jz = 0; jz < JOBS_PER_EDGE; jz++) {
       for (let jx = 0; jx < JOBS_PER_EDGE; jx++) {
-        jobs.push({ kind: 'build', bounds: {
+        const bounds = {
           x0: x0 + jx * step, z0: z0 + jz * step,
           x1: x0 + (jx + 1) * step, z1: z0 + (jz + 1) * step,
-        } });
+        };
+        jobs.push({ kind: 'build', bounds }, { kind: 'infrastructure', bounds });
       }
     }
     const group = new THREE.Group();
@@ -703,7 +705,8 @@ export class DungeonRenderer {
     return chunk;
   }
 
-  /** Run ONE quarter-cell build job. On the last job the chunk becomes
+  /** Run ONE build, cooperative infrastructure slice, or flush job.
+   * On the last job the chunk becomes
    * complete: it enters the scene, and if it was a rebuild it replaces
    * the stale chunk it shadowed. */
   private runChunkJob(chunk: RenderChunk): void {
@@ -725,18 +728,36 @@ export class DungeonRenderer {
       return;
     }
     const bounds = job.bounds;
-    for (let li = 0; li < w.levels.length; li++) {
-      this.buildLevelSurfaces(
-        w, li, ctx.cornerFloors[li]!, ctx.contours[li]!, this.materialsFor,
-        chunk.group, bounds, li === 0 ? ctx.pitContour : undefined,
-      );
+    if (job.kind === 'infrastructure') {
+      const builder = job.builder ??= buildWorldInfrastructureBuffersIncrementally(w, bounds);
+      // Always advance once, even if this frame's outer budget is exhausted.
+      // Unfinished jobs retain their iterator and stay ahead of later work.
+      let result: IteratorResult<void, UtilityBatches>;
+      do {
+        result = builder.next();
+      } while (!result.done && performance.now() - jobStart < INFRASTRUCTURE_JOB_MS);
+      if (!result.done) {
+        chunk.jobs.unshift(job);
+      } else {
+        for (const key of Object.keys(result.value) as (keyof UtilityBatches)[]) {
+          this.addMesh(chunk.group, result.value[key], this.utilityMaterials[key], `infrastructure-${key}`);
+        }
+      }
+    } else {
+      for (let li = 0; li < w.levels.length; li++) {
+        this.buildLevelSurfaces(
+          w, li, ctx.cornerFloors[li]!, ctx.contours[li]!, this.materialsFor,
+          chunk.group, bounds, li === 0 ? ctx.pitContour : undefined,
+        );
+      }
+      this.buildWalls(w, ctx.cornerFloors, ctx.contours, ctx.roadsContour, this.materialsFor, chunk.group, bounds, ctx.pitContour);
+      this.buildPipeChamfers(w, chunk.group, bounds);
+      this.buildStructureUtilities(w, chunk.group, bounds);
+      this.buildPitRims(w, ctx.pitContour, ctx.cornerFloors[0]!, chunk.group, bounds);
+      this.buildSegmentWalls(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
+      this.buildTunnelTrim(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
+      this.buildRoadsWalls(w, ctx.roadsContour, ctx.cornerFloors[0]!, chunk.group, bounds);
     }
-    this.buildWalls(w, ctx.cornerFloors, ctx.contours, ctx.roadsContour, this.materialsFor, chunk.group, bounds, ctx.pitContour);
-    this.buildPipeChamfers(w, chunk.group, bounds);
-    this.buildPitRims(w, ctx.pitContour, ctx.cornerFloors[0]!, chunk.group, bounds);
-    this.buildSegmentWalls(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
-    this.buildTunnelTrim(w, ctx.contours[0]!, ctx.cornerFloors[0]!, chunk.group, bounds);
-    this.buildRoadsWalls(w, ctx.roadsContour, ctx.cornerFloors[0]!, chunk.group, bounds);
     chunk.buildMs += performance.now() - jobStart;
     if (chunk.jobs.length === 0) {
       // Build jobs done: queue one flush per accumulated buffer (each is
@@ -3321,6 +3342,28 @@ export class DungeonRenderer {
       for (let k = 0; k < 4; k++) buf.norms.push(nx, ny, nz);
       buf.uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
       addOrientedQuad(buf, vi, nx, ny, nz);
+      // Close each triangular wedge at its ends. An elevated service shelf
+      // can see into a bore mouth from above/alongside; an open-ended slope
+      // exposes its back even though the slope itself is correctly wound.
+      // Each segment owns its caps, so quarter jobs remain independent.
+      const alongX = Math.abs(ax1 - ax0) > Math.abs(az1 - az0);
+      for (const [ax, ay, az, bx, by, bz, sign] of [
+        [ax0, ay0, az0, bx0, by0, bz0, -1],
+        [ax1, ay1, az1, bx1, by1, bz1, 1],
+      ]) {
+        const a = new THREE.Vector3(ax!, ay!, az!);
+        const b = new THREE.Vector3(bx!, by!, bz!);
+        const c = new THREE.Vector3(alongX ? ax! : bx!, ay!, alongX ? bz! : az!);
+        const n = new THREE.Vector3(alongX ? sign! : 0, 0, alongX ? 0 : sign!);
+        const base = buf.verts.length / 3;
+        for (const p of [a, b, c]) {
+          buf.verts.push(p.x, p.y, p.z);
+          buf.norms.push(n.x, n.y, n.z);
+          buf.uvs.push(0, 0);
+        }
+        const forward = b.clone().sub(a).cross(c.clone().sub(a)).dot(n) > 0;
+        buf.idxs.push(base, base + (forward ? 1 : 2), base + (forward ? 2 : 1));
+      }
     };
 
     // EVERY bore gets chamfers where it tunnels through solid — pipes,
@@ -3436,7 +3479,7 @@ export class DungeonRenderer {
     const geom = new THREE.PlaneGeometry(0.01, 0.01);
     geom.setAttribute('splatWeight', new THREE.Float32BufferAttribute(new Float32Array(geom.attributes['position']!.count * 3).fill(1 / 3), 3));
     geom.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(geom.attributes['position']!.count * 3).fill(1), 3));
-    const mats: THREE.Material[] = [];
+    const mats: THREE.Material[] = [...Object.values(this.utilityMaterials), this.stairsMaterial];
     for (const key of ['tunnel', 'dungeon', 'cave', 'crypt', 'ember', 'outside'] as RegionKey[]) {
       const m = this.materialsFor(key);
       mats.push(m.wall, m.floor, m.ceil);
@@ -3449,8 +3492,41 @@ export class DungeonRenderer {
     void renderer.compileAsync(probe, camera, lit).catch(() => { /* warmup only */ });
   }
 
+  // Window-independent materials, retained exactly like stairs/concrete.
+  private utilityMaterials: Record<keyof UtilityBatches, THREE.MeshPhongMaterial> = {
+    pipe: createSourceMaterial('painted-metal'),
+    fitting: createSourceFittingMaterial(),
+    cable: createSourceMaterial('rubber'),
+  };
+
+  /** Small decorative wall/overhead utilities, never collision or pipe bores.
+   * Same absolute strip ownership in headless and streamed quarter jobs.
+   * addMesh accumulates just three batches per chunk; clear/eviction disposes
+   * geometry through the ordinary renderer path (no per-fitting objects). */
+  private buildStructureUtilities(world: WorldData, target: THREE.Group, bounds?: RenderBounds): void {
+    const level = world.levels[0];
+    if (!level) return;
+    const batches = buildStructureUtilityBuffers(world, bounds ?? {
+      x0: 0, z0: 0, x1: level.width, z1: level.height,
+    });
+    for (const key of Object.keys(batches) as (keyof UtilityBatches)[]) {
+      this.addMesh(target, batches[key], this.utilityMaterials[key], `surface-utility-${key}`);
+    }
+  }
+
+
+  private buildInfrastructure(world: WorldData, target: THREE.Group, bounds?: RenderBounds): void {
+    const level = world.levels[0];
+    if (!level) return;
+    const batches = buildWorldInfrastructureBuffers(world, bounds ?? { x0: 0, z0: 0, x1: level.width, z1: level.height });
+    for (const key of Object.keys(batches) as (keyof UtilityBatches)[]) {
+      this.addMesh(target, batches[key], this.utilityMaterials[key], `infrastructure-${key}`);
+    }
+  }
+
   private addMesh(parent: THREE.Group, buf: MeshBuffers, material: THREE.Material, passName = ''): void {
     if (buf.verts.length === 0) return;
+    if(buf.colors&&buf.colors.length!==buf.verts.length)throw new Error('Mesh finish RGB count must match positions');
     // Passes may nest their own sub-groups under the chunk group: walk
     // up to find the accumulating chunk (flushed meshes land flat on
     // the chunk group)
@@ -3465,6 +3541,10 @@ export class DungeonRenderer {
       }
       const base = entry.buf.verts.length / 3;
       const eb = entry.buf;
+      if(buf.colors||eb.colors){
+        if(!eb.colors)eb.colors=new Array(base*3).fill(1);
+        for(let i=0;i<buf.verts.length;i++)eb.colors.push(buf.colors?.[i]??1);
+      }
       for (let i = 0; i < buf.verts.length; i++) eb.verts.push(buf.verts[i]!);
       for (let i = 0; i < buf.uvs.length; i++) eb.uvs.push(buf.uvs[i]!);
       for (let i = 0; i < buf.norms.length; i++) eb.norms.push(buf.norms[i]!);
@@ -3495,12 +3575,15 @@ export class DungeonRenderer {
       splatWeights.push(r / sum, g / sum, b / sum);
     }
     geom.setAttribute('splatWeight', new THREE.Float32BufferAttribute(splatWeights, 3));
-    // Per-vertex biome tint — smoothly blended fields, single-tint pillars
-    const colors: number[] = [];
-    const tint: [number, number, number] = [1, 1, 1];
-    for (let i = 0; i < buf.verts.length; i += 3) {
-      this.tintAt(buf.verts[i]!, buf.verts[i + 2]!, tint);
-      colors.push(tint[0], tint[1], tint[2]);
+    // Explicit service finishes survive both direct and streamed builds.
+    // Other architecture retains its existing coarse biome tint.
+    const colors: number[] = buf.colors ?? [];
+    if(!buf.colors){
+      const tint: [number, number, number] = [1, 1, 1];
+      for (let i = 0; i < buf.verts.length; i += 3) {
+        this.tintAt(buf.verts[i]!, buf.verts[i + 2]!, tint);
+        colors.push(tint[0], tint[1], tint[2]);
+      }
     }
     geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geom.setIndex(buf.idxs);

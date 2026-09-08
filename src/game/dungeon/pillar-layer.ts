@@ -287,7 +287,8 @@ export function assemblePillar(worldSeed: number, pcx: number, pcz: number): Pil
   const framed = !elevator && (district === 'city' || district === 'machine' || frameRng() < 0.6);
   if (framed) {
     return createFrameSpec(createFramePlan(targetHeight, targetDown,
-      Math.floor(frameRng() * 4), district === 'machine'), pcx, pcz);
+      Math.floor(frameRng() * 4), district === 'machine',
+      mulberry32(cellSeed(pcx, pcz, worldSeed, 11012))() < (district === 'machine' ? 0.85 : 0.6)), pcx, pcz);
   }
 
   const crown = CHUNK_BY_ID.get('crown')!;

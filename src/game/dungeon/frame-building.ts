@@ -8,6 +8,7 @@
 import type { PillarSpec, PlacedChunk, ResolvedSocket } from './pillar-layer';
 import type { PillarRoomSocket } from './pillar-rooms';
 import type { SocketFace } from './pillar-chunks';
+import { frameServiceDecks, frameServiceSolids } from './frame-services';
 
 export const FRAME_PITCH = 9;
 export const FRAME_SLAB = 1.5;
@@ -27,6 +28,7 @@ export interface FrameBuildingPlan {
   setbackLevel: number;
   rotation: number;
   industrial: boolean;
+  serviceRoutes: boolean;
 }
 
 export function createFramePlan(
@@ -34,6 +36,7 @@ export function createFramePlan(
   depth: number,
   rotation: number,
   industrial: boolean,
+  serviceRoutes = true,
 ): FrameBuildingPlan {
   const aboveLevels = Math.max(4, Math.ceil(height / FRAME_PITCH));
   return {
@@ -43,6 +46,7 @@ export function createFramePlan(
     setbackLevel: Math.max(3, aboveLevels - 3),
     rotation: rotation & 3,
     industrial,
+    serviceRoutes,
   };
 }
 
@@ -99,7 +103,7 @@ export function frameBuildingAir(
   const bottom = frameFloorY(-p.belowLevels);
   const top = frameFloorY(p.aboveLevels);
   const cap = top + FRAME_ROOF_CLEARANCE;
-  const solids: [number, number][] = [];
+  const solids: [number, number][] = frameServiceSolids(p, x, z);
   const slab = (y: number, depth = FRAME_SLAB): void => {
     solids.push([y - depth, y]);
   };
@@ -174,9 +178,15 @@ export function createFrameSpec(frame: FrameBuildingPlan, pcx: number, pcz: numb
   const chunks: PlacedChunk[] = [];
   const sockets: ResolvedSocket[] = [];
   const roomSockets: PillarRoomSocket[] = [];
-  const publish = (x: number, z: number, level: number, role: 'entry' | 'room'): void => {
+  const publish = (
+    x: number,
+    z: number,
+    level: number,
+    role: 'entry' | 'room',
+    group = `frame-${level}`,
+  ): void => {
     const [lx, lz] = rotate(x, z, frame.rotation);
-    roomSockets.push({ lx, lz, y: frameFloorY(level), group: `frame-${level}`, role });
+    roomSockets.push({ lx, lz, y: frameFloorY(level), group, role });
   };
   for (let level = -frame.belowLevels; level < frame.aboveLevels; level++) {
     chunks.push({
@@ -218,6 +228,14 @@ export function createFrameSpec(frame: FrameBuildingPlan, pcx: number, pcz: numb
         });
       }
     }
+  }
+  for (const d of frameServiceDecks(frame)) {
+    const group = `service-${d.level}`;
+    publish(22, 18, d.level - 1, 'entry', group);
+    publish(28, 24, d.level - 1, 'room', group);
+    publish(d.ladderX, 23, d.level - 1, 'room', group);
+    publish(d.ladderX, 22, d.level, 'room', group);
+    publish(d.endX, 22, d.level, 'room', group);
   }
   chunks.push({
     def: { id: 'frame-roof', height: 0.5, weight: 0 },

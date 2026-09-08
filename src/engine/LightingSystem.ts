@@ -1,39 +1,36 @@
 import * as THREE from 'three';
+import { FOG_DEFAULT, FOG_NEAR, FOG_FAR } from './visibility-policy';
 import { TILE_SIZE, WALL_HEIGHT, TileType, SKY_CEIL } from '../game/types';
 import type { DungeonData, WorldData } from '../game/types';
 import { tileBiome, type BiomeType } from '../game/dungeon/cells';
 import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
+import { infrastructureColumnAt } from '../game/dungeon/infrastructure-columns';
 
-const FOG_COLOR = 0x0f0e12;
-/** SOLVED, not eyeballed: FogExp2 transmittance exp(-(d*rho)^2) should
- *  reach ~2% just inside the camera far plane (160) so the cutoff is
- *  never visible: rho = sqrt(ln 50)/150 = 0.0132. The old 0.02 went
- *  fully opaque by ~99wu — 60 units of paid-for view were pure black. */
-const FOG_DENSITY = 0.0132;
-const AMBIENT_COLOR = 0xffeedd;
-const AMBIENT_INTENSITY = 0.68;
-const TORCH_COLOR = 0xff9944;
+
+const AMBIENT_COLOR = 0xdedbd2;
+const AMBIENT_INTENSITY = 0.40;
+const TORCH_COLOR = 0xffd6a0;
 const TORCH_INTENSITY = 2.5;
 const TORCH_DISTANCE = TILE_SIZE * 10; // must reach cell corners from its center
 const TORCH_DECAY = 1.5;
 
 // Each biome lights differently — the strongest cheap mood signal there is
 const BIOME_TORCH: Record<BiomeType, { color: number; intensity: number }> = {
-  dungeon: { color: 0xff9944, intensity: 2.5 }, // warm torchlight
-  cave: { color: 0xffb066, intensity: 2.2 }, // soft amber
-  crypt: { color: 0x7799ee, intensity: 2.6 }, // cold witch-light
-  ember: { color: 0xff4411, intensity: 3.5 }, // furnace glow
-  outside: { color: 0xa8c4ff, intensity: 3.2 }, // moonlight
+  dungeon: { color: 0xffd6a0, intensity: 2.5 }, // warm utility lamps
+  cave: { color: 0xe6c79e, intensity: 2.1 }, // dusty work lights
+  crypt: { color: 0xc0d2c3, intensity: 2.4 }, // aged fluorescent
+  ember: { color: 0xff9452, intensity: 3.1 }, // restrained furnace glow
+  outside: { color: 0xd0deea, intensity: 2.8 }, // cool overcast fill
 };
-const CORRIDOR_LIGHT_COLOR = 0xcc8844;
-const CORRIDOR_LIGHT_INTENSITY = 1.5;
+const CORRIDOR_LIGHT_COLOR = 0xd4dbc6;
+const CORRIDOR_LIGHT_INTENSITY = 1.7;
 const CORRIDOR_LIGHT_DISTANCE = TILE_SIZE * 4;
 /** THRESHOLD BEACONS — light marks the mouths of the permanent transit
  *  corridors (the Mik principle: guide with light direction, never
  *  yellow paint). The network was 100% reachable but experientially
  *  invisible; a cold marker light at every mouth makes the
  *  infrastructure legible without touching geometry or UI. */
-const THRESHOLD_COLOR = 0xbfd9ff;
+const THRESHOLD_COLOR = 0xd5e4dc;
 const THRESHOLD_INTENSITY = 2.6;
 const THRESHOLD_DISTANCE = TILE_SIZE * 6;
 
@@ -64,6 +61,7 @@ export interface FrameFixture {
  *  clipping. A roofless landing never receives a floating ceiling light. */
 export function collectFrameFixtures(world: WorldData): FrameFixture[] {
   const out: FrameFixture[] = [];
+  const mounted = new Set<string>();
   const w = world.levels[0]!.width;
   for (const p of world.pillars.values()) {
     if (!p.frame) continue;
@@ -73,8 +71,43 @@ export function collectFrameFixtures(world: WorldData): FrameFixture[] {
       const tz = p.cz * PILLAR_CELL_TILES + entry.lz;
       const span = world.columns[tz * w + tx]?.find(s => Math.abs(s.floor-entry.y)<0.7 && s.ceil-s.floor>=2);
       if (!span || span.ceil >= SKY_CEIL) continue;
+      // Multiple route groups may share a physical stair landing. Navigation
+      // entries are not fixture instances: mount and light that ceiling once.
+      const key = `${tx},${tz},${span.ceil}`;
+      if (mounted.has(key)) continue;
+      mounted.add(key);
       out.push({x:(tx+0.5)*TILE_SIZE,y:span.ceil-0.28,z:(tz+0.5)*TILE_SIZE,
         ceilingY:span.ceil,rotation:p.frame.rotation});
+    }
+  }
+  return out;
+}
+
+/** Sample complete absolute runs, never the clipped streaming window. Only the
+ * exact bore air span can authorize a mount; open sky is not a ceiling. */
+export function collectInfrastructureFixtures(world: WorldData): FrameFixture[] {
+  const out: FrameFixture[] = [];
+  if (!world.infrastructure) return out;
+  const mounted = new Set<string>();
+  const level = world.levels[0]!;
+  const originX = world.originPcx * PILLAR_CELL_TILES * TILE_SIZE;
+  const originZ = world.originPcz * PILLAR_CELL_TILES * TILE_SIZE;
+  for (const p of world.infrastructure.primitives) {
+    if (p.kind !== 'pipe' || !p.innerRadius || p.radius < 3 || p.a[1] !== p.b[1]) continue;
+    const dx = p.b[0] - p.a[0], dz = p.b[2] - p.a[2];
+    const length = Math.hypot(dx, dz);
+    if (length < 100) continue;
+    for (let d = 18; d < length; d += 36) {
+      const x = p.a[0] + dx * d / length - originX;
+      const z = p.a[2] + dz * d / length - originZ;
+      if (x < 0 || z < 0 || x >= level.width * TILE_SIZE || z >= level.height * TILE_SIZE) continue;
+      const span = infrastructureColumnAt(world, x, z)?.find(s => s.floor <= p.a[1] && s.ceil > p.a[1]);
+      if (!span || span.ceil >= SKY_CEIL) continue;
+      const key = `${x},${z},${span.ceil}`;
+      if (mounted.has(key)) continue;
+      mounted.add(key);
+      out.push({ x, y: span.ceil - 0.28, z, ceilingY: span.ceil,
+        rotation: Math.abs(dx) > Math.abs(dz) ? 1 : 0 });
     }
   }
   return out;
@@ -163,37 +196,41 @@ export class LightingSystem {
   }
 
   setup(world: WorldData): void {
-    // Lighter fog so textures are visible at reasonable distance
-    this.scene.fog = new THREE.FogExp2(FOG_COLOR, FOG_DENSITY);
-    this.scene.background = new THREE.Color(FOG_COLOR);
+    // Gradual haze preserves mid-distance detail and hides the unchanged far clip.
+    this.scene.fog = new THREE.Fog(FOG_DEFAULT, FOG_NEAR, FOG_FAR);
+    this.scene.background = new THREE.Color(FOG_DEFAULT);
 
-    // Ambient — warm tint, bright enough to see textures even in unlit areas
+    // Restrained neutral fill preserves industrial material contrast.
     const ambient = new THREE.AmbientLight(AMBIENT_COLOR, AMBIENT_INTENSITY);
     this.scene.add(ambient);
     this.globalLights.push(ambient);
 
     // Hemisphere light for subtle top/bottom color difference
-    const hemi = new THREE.HemisphereLight(0xffe8cc, 0x443322, 0.3);
+    const hemi = new THREE.HemisphereLight(0xb7c8ce, 0x51473a, 0.42);
     this.scene.add(hemi);
     this.globalLights.push(hemi);
 
     this.ensurePool();
     this.levelFixtures = world.levels.map((level) => this.collectFixtures(level));
     const frameFixtures = collectFrameFixtures(world);
-    if (frameFixtures.length) {
+    const infrastructureFixtures = collectInfrastructureFixtures(world);
+    const mountedFixtures = [...frameFixtures, ...infrastructureFixtures];
+    if (mountedFixtures.length) {
       this.frameMounts = new THREE.InstancedMesh(
         new THREE.BoxGeometry(1.8,0.12,0.25),
-        new THREE.MeshBasicMaterial({color:0xffd5a3}),frameFixtures.length);
+        new THREE.MeshBasicMaterial({color:0xffd5a3}),mountedFixtures.length);
       const matrix = new THREE.Matrix4();
       const q = new THREE.Quaternion();
       const position = new THREE.Vector3();
       const scale = new THREE.Vector3(1,1,1);
       const up = new THREE.Vector3(0,1,0);
-      frameFixtures.forEach((f,i) => {
+      mountedFixtures.forEach((f,i) => {
         position.set(f.x,f.ceilingY-0.06,f.z);
         q.setFromAxisAngle(up,f.rotation*Math.PI/2);
         this.frameMounts!.setMatrixAt(i,matrix.compose(position,q,scale));
-        this.levelFixtures[0]!.push({x:f.x,y:f.y,z:f.z,color:0xffd5a3,intensity:2.5,distance:24});
+        const isBore = i >= frameFixtures.length;
+        this.levelFixtures[0]!.push({x:f.x,y:f.y,z:f.z,
+          color:isBore ? 0xd5e4dc : 0xffd5a3,intensity:2.5,distance:isBore ? 30 : 24});
       });
       this.frameMounts.instanceMatrix.needsUpdate = true;
       this.frameMounts.computeBoundingSphere();

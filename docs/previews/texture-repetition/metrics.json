@@ -1,0 +1,42 @@
+[
+  {
+    "role": "concrete-wall",
+    "oldOneTileCorrelation": 1.0000000000000004,
+    "newOneTileCorrelation": 0.015550252463926786,
+    "meanBefore": 0.2282824075398635,
+    "meanAfter": 0.23172618027999392,
+    "standardDeviationRatio": 0.886108935122787,
+    "oldWallResetSeamMean": 0.05411232422352148,
+    "newContinuousSeamMean": 6.43052769782465e-7
+  },
+  {
+    "role": "concrete-floor",
+    "oldOneTileCorrelation": 1.0000000000000002,
+    "newOneTileCorrelation": 0.04030568255234511,
+    "meanBefore": 0.24771848713950848,
+    "meanAfter": 0.24826839140397014,
+    "standardDeviationRatio": 0.9069772108706462,
+    "oldWallResetSeamMean": 0.022776389776842095,
+    "newContinuousSeamMean": 4.552920840319996e-7
+  },
+  {
+    "role": "painted-metal",
+    "oldOneTileCorrelation": 1.000000000000001,
+    "newOneTileCorrelation": 0.034310634845346064,
+    "meanBefore": 0.07386424656195181,
+    "meanAfter": 0.0739400056118642,
+    "standardDeviationRatio": 0.8616716237553863,
+    "oldWallResetSeamMean": 0.005153158420054984,
+    "newContinuousSeamMean": 6.223626993595576e-8
+  },
+  {
+    "role": "rusted-metal",
+    "oldOneTileCorrelation": 0.9999999999999999,
+    "newOneTileCorrelation": 0.046228875075075684,
+    "meanBefore": 0.0439165540121688,
+    "meanAfter": 0.04361673273157953,
+    "standardDeviationRatio": 0.8912560376097239,
+    "oldWallResetSeamMean": 0.028669158318447945,
+    "newContinuousSeamMean": 7.204949418099932e-8
+  }
+]

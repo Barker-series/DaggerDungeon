@@ -9,7 +9,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 export type RenderDebugMode = 'lit' | 'solid' | 'wireframe' | 'normals';
 
 export interface VisualSettings {
-  version: 6;
+  version: 8;
   postEnabled: boolean;
   bloomEnabled: boolean;
   bloomStrength: number;
@@ -26,20 +26,73 @@ export interface VisualSettings {
 }
 
 export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
-  version: 6,
+  version: 8,
   postEnabled: true,
   bloomEnabled: true,
-  bloomStrength: 0.1,
-  bloomRadius: 0.37,
-  bloomThreshold: 0.045,
+  bloomStrength: 0.045,
+  bloomRadius: 0.28,
+  bloomThreshold: 0.2,
   contrast: 1,
-  saturation: 1,
-  vignette: 0.2,
+  saturation: 0.9,
+  vignette: 0,
   renderMode: 'lit',
   aoEnabled: true,
-  aoIntensity: 0.5,
+  aoIntensity: 0.6,
   aoRadius: 1,
 };
+
+/** Adopt the new look only for old default values; deliberate player choices
+ * such as disabled AO or zero vignette survive the material/visibility migration.
+ * Legacy storage has no per-field intent flag: only exact old defaults migrate. */
+export function migrateVisualSettings(saved: unknown): VisualSettings {
+  const raw = saved && typeof saved === 'object' ? (saved as Record<string, unknown>) : {};
+  if (raw['version'] !== 6 && raw['version'] !== 7 && raw['version'] !== 8)
+    return { ...DEFAULT_VISUAL_SETTINGS };
+  const old = {
+    bloomStrength: 0.1,
+    bloomRadius: 0.37,
+    bloomThreshold: 0.045,
+    contrast: 1,
+    saturation: 1,
+    vignette: 0.2,
+    aoIntensity: 0.5,
+    aoRadius: 1,
+  };
+  const n = (key: keyof typeof old, min: number, max: number): number => {
+    const value = raw[key],
+      fallback = DEFAULT_VISUAL_SETTINGS[key];
+    if (raw['version'] === 6 && value === old[key]) return fallback;
+    if (
+      raw['version'] === 7 &&
+      ((key === 'contrast' && value === 1.04) || (key === 'vignette' && value === 0.06))
+    )
+      return fallback;
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.min(max, Math.max(min, value))
+      : fallback;
+  };
+  const b = (key: 'postEnabled' | 'bloomEnabled' | 'aoEnabled'): boolean =>
+    typeof raw[key] === 'boolean' ? (raw[key] as boolean) : DEFAULT_VISUAL_SETTINGS[key];
+  const mode = raw['renderMode'];
+  return {
+    ...DEFAULT_VISUAL_SETTINGS,
+    postEnabled: b('postEnabled'),
+    bloomEnabled: b('bloomEnabled'),
+    aoEnabled: b('aoEnabled'),
+    bloomStrength: n('bloomStrength', 0, 1),
+    bloomRadius: n('bloomRadius', 0, 1),
+    bloomThreshold: n('bloomThreshold', 0, 0.25),
+    contrast: n('contrast', 0.8, 1.2),
+    saturation: n('saturation', 0, 1.5),
+    vignette: n('vignette', 0, 0.5),
+    aoIntensity: n('aoIntensity', 0, 1),
+    aoRadius: n('aoRadius', 0.3, 2),
+    renderMode:
+      mode === 'lit' || mode === 'solid' || mode === 'wireframe' || mode === 'normals'
+        ? mode
+        : 'lit',
+  };
+}
 
 const FINISH_SHADER = {
   uniforms: {
@@ -64,8 +117,13 @@ const FINISH_SHADER = {
 
     void main() {
       vec4 color = texture2D(tDiffuse, vUv);
-      color.rgb = (color.rgb - 0.5) * contrast + 0.5;
+      // Composer input is linear HDR, not display RGB: an additive 0.5
+      // pivot crushes dim surfaces/fog below zero. Scale luminance around
+      // linear middle gray instead, preserving true black and RGB ratios.
+      color.rgb = max(color.rgb, vec3(0.0));
       float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+      color.rgb *= pow(max(luma, 0.000001) / 0.18, contrast - 1.0);
+      luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
       color.rgb = mix(vec3(luma), color.rgb, saturation);
       vec2 centered = vUv - 0.5;
       float edge = smoothstep(0.18, 0.72, dot(centered, centered) * 1.7);
@@ -103,7 +161,10 @@ export class PostProcessing {
       const cache = gtaoInternals._visibilityCache;
       scene.traverse((object) => {
         const o = object as THREE.Object3D & {
-          isPoints?: boolean; isLine?: boolean; isLine2?: boolean; isSprite?: boolean;
+          isPoints?: boolean;
+          isLine?: boolean;
+          isLine2?: boolean;
+          isSprite?: boolean;
         };
         if ((o.isPoints || o.isLine || o.isLine2 || o.isSprite) && o.visible) {
           o.visible = false;

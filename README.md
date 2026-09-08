@@ -44,6 +44,7 @@ The generator uses a **LayerProcGen** architecture — layered procedural genera
 |-------|------|-------------|
 | Region | **Coarse region layer** | City, machine, canyon, frontier, and roads districts constrain biome palettes, pillar density, height, depth, and chunk vocabulary. |
 | Pillar | **Coarse building layer** | Region-weighted occupancy, framed-building plans and legacy kebab composition, pure in absolute pillar-cell coordinates. Empty cells create courts, cuts, and breathing room. |
+| Infrastructure plan | **Coarse service network** | Shared regional nodes and pair-owned trunks extend across 112-tile cells, independent of building recipes; upstream socket context protects existing crossings. |
 | 0 | **Noise** | Noise field defines which dungeon cells are active. Deterministic seeding via FNV-1a + mulberry32. |
 | 1 | **Tile Grid + Fine Noise** | Active cells become floor; organic biomes get noise-sculpted edges. |
 | 2 | **Biome** | Per-cell biome assignment: dungeon, crypt, cave, ember, outside. |
@@ -52,11 +53,13 @@ The generator uses a **LayerProcGen** architecture — layered procedural genera
 | 4 | **Permanent Transit** | Every absolute pillar cell owns a stable hub and pair-owned boundary sockets. Bounded local routes create the same infinite navigation network from every overlapping window. |
 | 5 | **Reserved legacy layer** | The bounded-map golden path and exit were removed; exploration currently has no objective-authored terrain. |
 | 6 | **Height Fields** | Rolling walkable terrain, bottomless pits, biome-clearance ceilings. Terrain flows *under* pillar footprints; foundations dominate the shared corner field so man-made surfaces stay flat and the ground banks against them. |
-| Columns | **Column model** | The single authority on solid vs air: per-(x,z) air spans, built last. Pillar air spans and bridge carves replace/split columns. Renderer, physics, and agents all derive from it — leaks are unrepresentable, not patched. |
+| Road facilities | **Parcel planning** | Fits street-entry facilities to the existing same-height road foundations, with bounded local plans, internal service stairs where they fit, and reserved bridge corridors. |
+| Columns | **Structural column base** | Pillar air, bridge bores, terrain and facilities compile into authoritative per-(x,z) air spans. |
+| Infrastructure | **Physical service network** | Materializes galleries, access stations and exact octagonal pipe solids. Shared analytic column refinements drive pipe rendering and collision; tile-center projections serve maps/navigation. |
 
 ### Design Principles
 
-1. **The column model is the seam** — all vertical faces derive from span differences between adjacent columns; a face exists exactly where air meets solid.
+1. **The column model is the seam** — structural surfaces follow shared air/solid data: tile-span boundaries plus the same continuous infrastructure refinement for rendering and collision, never an unrelated decorative mesh and collider.
 2. **Permanent navigation is sacred** — temporary generation windows never decide whether a route exists; local components attach to stable pillar-cell hubs and sockets.
 3. **Junctions interpenetrate, never abut** — face tops overshoot into solid, caps overlap neighbors; shared-edge geometry leaks rasterization hairlines, overlapping geometry cannot.
 4. **Infinite-world discipline** — every generation feature is a pure function of (seed, absolute cell) plus a bounded neighbor radius. No global scans in new code.
@@ -74,6 +77,8 @@ Seen bugs become reproducible bugs:
 
 ## Game Features
 
+- **World-scale material hierarchy** — quiet concrete walls/ceilings, slab-like constructed floors, and pipe finishes chosen by service and region; restrained wear, Source-inspired lighting and the existing fixed light pool ([current material rules](docs/quiet-material-roles.md), [asset credits](docs/source-style-pass.md))
+- **Industrial ambience** — quiet machinery, air movement, pipe resonance and sparse creaks, crossfaded by local enclosure/region; persistent volume/mute controls and gesture-safe audio lifecycle
 - **Megastructure traversal** — internal stair cores, recessed galleries, atrium crossings, roof terraces, legacy exterior climbs, rolling caves and open-sky canyons
 - **Taller occupied spaces** — generous framed-storey clearance, taller framed doorways, six-unit ordinary transit, and taller biome chambers; fixed-width openings and deliberately tight ducts retain contrast ([height standards](docs/spatial-scale.md))
 - **Vertical transit shafts** — rare elevator pillars replace the exterior-stair kebab and connect bottom, ground, and crown stops
@@ -82,6 +87,9 @@ Seen bugs become reproducible bugs:
 - **Sheltered bridge crossings** — region-weighted gatehouses and windowed service approaches alternate enclosure with exposed middle spans; plain bridges and ducts remain in the mix ([design and inspection view](docs/bridge-crossings.md))
 - **Five regions / five biomes** — city, machine, canyon, frontier, and roads districts restrict dungeon, crypt, cave, ember, and outside terrain into distinct identities
 - **Street-vein roads districts** — arterial streets that squeeze to lone tunnels and flood open basins with side streets, flowing with the terrain; the blocks between become courts and plinth building sites at quantized heights
+- **Road-front facilities** — inset halls and workshops follow the existing plinth outlines, with street-level entrances and internal roof access where a service core fits
+- **Surface infrastructure** — mounted pipe banks, larger risers, elbows, collars, and hanging cable/wire bundles on road facilities and framed buildings; decorative geometry is batched and streamed ([design and reference notes](docs/roads-infrastructure.md))
+- **Endless physical infrastructure** — region-scale trunks, return circuits, risers and open pipe interiors cross building boundaries; supported maintenance walkways, side ports, anchored cables and climbable access ladders materialize from the network. Pipe walls and fittings have real collision ([layer contracts, controls and views](docs/infrastructure-network.md))
 - **Bottomless pits** — deep voids and open-sky drops break the slab; R respawns
 - **Endless streaming** — neighboring worlds generate off-thread, geometry is prepared incrementally, and direction-aware prefetch keeps ordinary boundary crossings smooth
 - **Source-style movement** — persistent-velocity physics with ground friction and projected-velocity acceleration: air strafing and bunnyhopping work like CS/GMOD (hold Space to chain hops)
@@ -104,6 +112,7 @@ Seen bugs become reproducible bugs:
 | Crouch | Ctrl |
 | Sprint | Shift |
 | Interact | F |
+| Ladder | W approach attaches; W/S climb; F mounts/releases; Space releases |
 | Respawn | R |
 | Auto-play | P |
 | Visual Lab | V |

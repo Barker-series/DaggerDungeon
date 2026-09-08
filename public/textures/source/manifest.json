@@ -1,0 +1,240 @@
+{
+  "license": "CC0-1.0",
+  "style_reference": "Half-Life 2 / Source; no Valve artwork included",
+  "materials": [
+    {
+      "role": "concrete-wall",
+      "asset_id": "Concrete035",
+      "provider": "ambientCG",
+      "source_url": "https://ambientcg.com/a/Concrete035",
+      "authors": [
+        "Lennart Demes"
+      ],
+      "creation_method": "PBRApproximated",
+      "tileable_evidence": "https://releases.pbr.one/main/texture-tiling.html#texture_url=https://f003.backblazeb2.com/file/ambientCG-Web/media/surface-preview/Concrete035/Concrete035_SQ_Color.jpg?93765,https://f003.backblazeb2.com/file/ambientCG-Web/media/surface-preview/Concrete035/Concrete035_SQ_Displacement.jpg?1267,https://f003.backblazeb2.com/file/ambientCG-Web/media/surface-preview/Concrete035/Concrete035_SQ_NormalDX.jpg?95111,https://f003.backblazeb2.com/file/ambientCG-Web/media/surface-preview/Concrete035/Concrete035_SQ_Roughness.jpg?79560&texture_name=Color,Displacement,Normal,Roughness",
+      "license": "CC0-1.0",
+      "license_url": "https://docs.ambientcg.com/license",
+      "outputs": {
+        "color": {
+          "path": "/textures/source/concrete-wall-color.jpg",
+          "width": 1024,
+          "height": 1024,
+          "bytes": 261867,
+          "sha256": "3ccb98888f02547bdd46921e07389c4b2f544a111b2847f742819332e794d6c2",
+          "color_space": "sRGB",
+          "source": {
+            "original_filename": "Concrete035_1K-JPG_Color.jpg",
+            "download_url": "https://ambientcg.com/get?file=Concrete035_1K-JPG.zip",
+            "archive_filename": "Concrete035_1K-JPG.zip",
+            "archive_sha256": "7ea46d2c65f82796150a4890b82da1410d196e72c2c2be8b7de6e6490d9752da",
+            "source_sha256": "9e75883b8c6211bb617c54b7efa08282f1f4733a87a0c0e85060120314803ed8"
+          },
+          "processing": "resize to 1024px, 8-bit JPEG; metadata removed; original colors retained"
+        },
+        "height": {
+          "path": "/textures/source/concrete-wall-height.jpg",
+          "width": 512,
+          "height": 512,
+          "bytes": 88348,
+          "sha256": "dc7b81088db0cf69cefc49a27f862e306934e3fc044939ea7fe445a4ec639c1d",
+          "color_space": "linear height data",
+          "source": {
+            "original_filename": "Concrete035_1K-JPG_Displacement.jpg",
+            "download_url": "https://ambientcg.com/get?file=Concrete035_1K-JPG.zip",
+            "archive_filename": "Concrete035_1K-JPG.zip",
+            "archive_sha256": "7ea46d2c65f82796150a4890b82da1410d196e72c2c2be8b7de6e6490d9752da",
+            "source_sha256": "d323283da687294cfd3b231b3c35901a2011a840b45f819d7383a2f11a59ff09"
+          },
+          "processing": "resize to 512px, 8-bit JPEG; metadata removed; grayscale"
+        }
+      }
+    },
+    {
+      "role": "concrete-floor",
+      "asset_id": "Concrete047A",
+      "provider": "ambientCG",
+      "source_url": "https://ambientcg.com/a/Concrete047A",
+      "authors": [
+        "Lennart Demes"
+      ],
+      "creation_method": "PBRPhotogrammetry",
+      "tileable_evidence": "https://releases.pbr.one/main/texture-tiling.html#texture_url=https://f003.backblazeb2.com/file/ambientCG-Web/media/surface-preview/Concrete047A/Concrete047A_SQ_Color.jpg?15690,https://f003.backblazeb2.com/file/ambientCG-Web/media/surface-preview/Concrete047A/Concrete047A_SQ_Displacement.jpg?96396,https://f003.backblazeb2.com/file/ambientCG-Web/media/surface-preview/Concrete047A/Concrete047A_SQ_NormalDX.jpg?47491,https://f003.backblazeb2.com/file/ambientCG-Web/media/surface-preview/Concrete047A/Concrete047A_SQ_Roughness.jpg?56152,https://f003.backblazeb2.com/file/ambientCG-Web/media/surface-preview/Concrete047A/Concrete047A_SQ_AmbientOcclusion.jpg?44969&texture_name=Color,Displacement,Normal,Roughness,Ambient Occlusion",
+      "license": "CC0-1.0",
+      "license_url": "https://docs.ambientcg.com/license",
+      "outputs": {
+        "color": {
+          "path": "/textures/source/concrete-floor-color.jpg",
+          "width": 1024,
+          "height": 1024,
+          "bytes": 438274,
+          "sha256": "2668a69ed6e1903594a67467472a2ab4d57ffd6b4e1791addcd2bf9b3b4677c7",
+          "color_space": "sRGB",
+          "source": {
+            "original_filename": "Concrete047A_1K-JPG_Color.jpg",
+            "download_url": "https://ambientcg.com/get?file=Concrete047A_1K-JPG.zip",
+            "archive_filename": "Concrete047A_1K-JPG.zip",
+            "archive_sha256": "94e04bdf80c4fa377f8c736183963cdd911131a26673e2462495e45bf679102f",
+            "source_sha256": "74cbb49d821ac1a26dde8adf54527d84400c07aaf4e49918aed060a8a4715071"
+          },
+          "processing": "resize to 1024px, 8-bit JPEG; metadata removed; original colors retained"
+        },
+        "height": {
+          "path": "/textures/source/concrete-floor-height.jpg",
+          "width": 512,
+          "height": 512,
+          "bytes": 38363,
+          "sha256": "a830abc1640c4f1f79d467f20cbb623e2003c8fc31f3b180d62ddc81fc0af25a",
+          "color_space": "linear height data",
+          "source": {
+            "original_filename": "Concrete047A_1K-JPG_Displacement.jpg",
+            "download_url": "https://ambientcg.com/get?file=Concrete047A_1K-JPG.zip",
+            "archive_filename": "Concrete047A_1K-JPG.zip",
+            "archive_sha256": "94e04bdf80c4fa377f8c736183963cdd911131a26673e2462495e45bf679102f",
+            "source_sha256": "22f4aab777cb5680d5d7abddaaecb6fb2d2f4ad917c13cfa511d534d607423ef"
+          },
+          "processing": "resize to 512px, 8-bit JPEG; metadata removed; grayscale"
+        }
+      }
+    },
+    {
+      "role": "painted-metal",
+      "asset_id": "green_metal_rust",
+      "provider": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/green_metal_rust",
+      "authors": {
+        "Rob Tuytel": "All"
+      },
+      "source_dimensions_mm": [
+        1000,
+        1000
+      ],
+      "tileable_evidence": "Poly Haven material texture; verify full-tile repeat in generated contact sheet",
+      "license": "CC0-1.0",
+      "license_url": "https://polyhaven.com/license",
+      "outputs": {
+        "color": {
+          "path": "/textures/source/painted-metal-color.jpg",
+          "width": 1024,
+          "height": 1024,
+          "bytes": 114066,
+          "sha256": "1b62f5b2dd612ce0751a0826f79c5914d42a87b9bea6652e7d5be3db0daf2cbe",
+          "color_space": "sRGB",
+          "source": {
+            "original_filename": "green_metal_rust_diff_1k.jpg",
+            "download_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/green_metal_rust/green_metal_rust_diff_1k.jpg",
+            "source_sha256": "4509ab0cb1cf6bf9b9f970450a41f83ebd9bff178006deae568ff34b404856fc"
+          },
+          "processing": "resize to 1024px, 8-bit JPEG; metadata removed; original colors retained"
+        },
+        "height": {
+          "path": "/textures/source/painted-metal-height.jpg",
+          "width": 512,
+          "height": 512,
+          "bytes": 95760,
+          "sha256": "eefe1020aa8cec302e96b4f17acba87c115468f0b0692a8a9848f6ad27f7fd5d",
+          "color_space": "linear height data",
+          "source": {
+            "original_filename": "green_metal_rust_disp_1k.png",
+            "download_url": "https://dl.polyhaven.org/file/ph-assets/Textures/png/1k/green_metal_rust/green_metal_rust_disp_1k.png",
+            "source_sha256": "6485d35bc4e96cae38853194a4f8d96a50edf815df7c37aeb859b013d62c0d14"
+          },
+          "processing": "resize to 512px, 8-bit JPEG; metadata removed; grayscale"
+        }
+      }
+    },
+    {
+      "role": "rusted-metal",
+      "asset_id": "rust_coarse_01",
+      "provider": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/rust_coarse_01",
+      "authors": {
+        "Dimitrios Savva": "Photography",
+        "Rico Cilliers": "Processing"
+      },
+      "source_dimensions_mm": [
+        2199.9998092651367,
+        2200.000286102295
+      ],
+      "tileable_evidence": "Poly Haven material texture; verify full-tile repeat in generated contact sheet",
+      "license": "CC0-1.0",
+      "license_url": "https://polyhaven.com/license",
+      "outputs": {
+        "color": {
+          "path": "/textures/source/rusted-metal-color.jpg",
+          "width": 1024,
+          "height": 1024,
+          "bytes": 259529,
+          "sha256": "7514327697e452f3169e9d62587ee607f1081de6c6c512dd6a5ee729c39477be",
+          "color_space": "sRGB",
+          "source": {
+            "original_filename": "rust_coarse_01_diff_1k.jpg",
+            "download_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rust_coarse_01/rust_coarse_01_diff_1k.jpg",
+            "source_sha256": "369f69eb86a7dcc4e5b6e30b1f3a4da5ce6ba50cf417de937efb4f09101f88d4"
+          },
+          "processing": "resize to 1024px, 8-bit JPEG; metadata removed; original colors retained"
+        },
+        "height": {
+          "path": "/textures/source/rusted-metal-height.jpg",
+          "width": 512,
+          "height": 512,
+          "bytes": 40659,
+          "sha256": "7c36675fd6512a9e6f6d864004ad0bc0187feae05a34ce47172690c99d98d72e",
+          "color_space": "linear height data",
+          "source": {
+            "original_filename": "rust_coarse_01_disp_1k.png",
+            "download_url": "https://dl.polyhaven.org/file/ph-assets/Textures/png/1k/rust_coarse_01/rust_coarse_01_disp_1k.png",
+            "source_sha256": "752094663b9deebec91645acd1db1b7d0beb38d2df0c914d343b952f09954848"
+          },
+          "processing": "resize to 512px, 8-bit JPEG; metadata removed; grayscale"
+        }
+      }
+    },
+    {
+      "role": "utility-tread",
+      "asset_id": "metal_plate",
+      "provider": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/metal_plate",
+      "authors": {
+        "Rob Tuytel": "All"
+      },
+      "source_dimensions_mm": [
+        500,
+        500
+      ],
+      "tileable_evidence": "Poly Haven material texture; verify full-tile repeat in generated contact sheet",
+      "license": "CC0-1.0",
+      "license_url": "https://polyhaven.com/license",
+      "outputs": {
+        "color": {
+          "path": "/textures/source/utility-tread-color.jpg",
+          "width": 1024,
+          "height": 1024,
+          "bytes": 196260,
+          "sha256": "46042dc577345324d49b947b5cb21d78f4edff8849381e36cc49d33ebcf1a069",
+          "color_space": "sRGB",
+          "source": {
+            "original_filename": "metal_plate_diff_1k.jpg",
+            "download_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/metal_plate/metal_plate_diff_1k.jpg",
+            "source_sha256": "c6b6739eac2c75ccc898e753d7833df24eafbdb9aa92fb6eabfb92abd1a680a5"
+          },
+          "processing": "resize to 1024px, 8-bit JPEG; metadata removed; original colors retained"
+        },
+        "height": {
+          "path": "/textures/source/utility-tread-height.jpg",
+          "width": 512,
+          "height": 512,
+          "bytes": 65470,
+          "sha256": "fded8ea5a11484b3742866fc2ec5de808a90a2b45c23b4f70f649f97dfb342bb",
+          "color_space": "linear height data",
+          "source": {
+            "original_filename": "metal_plate_disp_1k.png",
+            "download_url": "https://dl.polyhaven.org/file/ph-assets/Textures/png/1k/metal_plate/metal_plate_disp_1k.png",
+            "source_sha256": "abc05dc9fb007d0aac92f8b785b7d24082ceda117e193a80570e134befaedd1e"
+          },
+          "processing": "resize to 512px, 8-bit JPEG; metadata removed; grayscale"
+        }
+      }
+    }
+  ],
+  "total_bytes": 1598596
+}

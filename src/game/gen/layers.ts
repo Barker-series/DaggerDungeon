@@ -33,6 +33,7 @@ import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } f
 import { pillarFootprint } from '../dungeon/pillar-geometry';
 import { applyPillarSpans } from '../dungeon/pillar-marry';
 import { planOwnedBridges, planOwnedArches, carveStructures, type BridgeSpec } from '../dungeon/pillar-bridges';
+import { ROAD_PARCEL_TILES, planRoadParcel, roadPlotSample, applyRoadBuildings, type RoadBuildingPlan } from '../dungeon/road-buildings';
 
 const CT = PILLAR_CELL_TILES; // chunk size in tiles (56)
 const CELL = CELL_TILE_SIZE; // 14
@@ -61,7 +62,10 @@ export function columnPaddingTiles(): number {
 /** Legacy guard covers composed input dependencies, not just silo diameter.
  *  Transit is cell-local; Height and TileBase add their stencil distances. */
 export function legacyWindowPaddingPc(): number {
-  return Math.max(1, Math.ceil((columnPaddingTiles() + PAD_HEIGHT + PAD_TILEBASE) / CT));
+  // A parcel crossing the core edge reads an entire neighbouring Transit
+  // chunk, whose TileBase generation in turn needs its own stencil context.
+  const roadContext = Math.ceil((ROAD_PARCEL_TILES + 2) / CT) * CT + PAD_TILEBASE;
+  return Math.max(1, Math.ceil(Math.max(columnPaddingTiles() + PAD_HEIGHT + PAD_TILEBASE,roadContext) / CT));
 }
 
 export interface TileBaseChunk {
@@ -95,6 +99,8 @@ export interface ColumnChunk {
   columns: ColumnSpan[][]; // flat 56*56, [z*56+x]
   floor: number[][]; // 56², post-marriage/post-roads-plinth
   pillarGround: boolean[][];
+  roadBuildingTiles: boolean[][];
+  roadBuildings: RoadBuildingPlan[];
 }
 
 /** Populate the generation-time cell singleton for a working window
@@ -296,20 +302,43 @@ export class HeightLayer extends ChunkedLayer<HeightChunk> {
   }
 }
 
+/** Parcels have their own lifetime and smaller planning grid. Planning reads
+ * immutable provider tiles with a two-tile erosion/context margin, never a
+ * window-dependent whole-block flood fill. */
+export class RoadBuildingLayer extends ChunkedLayer<RoadBuildingPlan | null> {
+  constructor(private stackSeed:number,private tileBase:TileBaseLayer,private transit:TransitLayer) {
+    super('road-buildings',ROAD_PARCEL_TILES);
+    this.dependsOn(tileBase,2);
+    this.dependsOn(transit,2);
+  }
+  protected create(cx:number,cz:number):RoadBuildingPlan|null {
+    return planRoadParcel(this.stackSeed,cx,cz,(tx,tz)=>{
+      const pcx=Math.floor(tx/CT),pcz=Math.floor(tz/CT);
+      const x=tx-pcx*CT,z=tz-pcz*CT;
+      return roadPlotSample(this.stackSeed,tx,tz,this.transit.get(pcx,pcz).tiles[z]![x]!,
+        this.tileBase.get(pcx,pcz).pillarWall[z]![x]!);
+    });
+  }
+}
+
 export class ColumnLayer extends ChunkedLayer<ColumnChunk> {
   /** Snapshot: dependency declarations and working grids must agree. */
   readonly padTiles = columnPaddingTiles();
+  private roadPlans: RoadBuildingLayer;
   constructor(
     private stackSeed: number,
     private tileBase: TileBaseLayer,
     private transit: TransitLayer,
     private height: HeightLayer,
+    roadPlans?: RoadBuildingLayer,
   ) {
     super('column', CT);
     const PAD_COLUMN = this.padTiles;
     this.dependsOn(transit, PAD_COLUMN);
     this.dependsOn(tileBase, PAD_COLUMN);
     this.dependsOn(height, PAD_COLUMN);
+    this.roadPlans = roadPlans ?? new RoadBuildingLayer(stackSeed,tileBase,transit);
+    this.dependsOn(this.roadPlans,0);
   }
 
   protected create(ccx: number, ccz: number): ColumnChunk {
@@ -380,6 +409,16 @@ export class ColumnLayer extends ChunkedLayer<ColumnChunk> {
       pillarGround, transitSetFor(this.transit, b), pillarWall,
     );
 
+    const roadBuildings:RoadBuildingPlan[]=[];
+    for(let z=Math.floor(ccz*CT/ROAD_PARCEL_TILES);z<Math.ceil((ccz+1)*CT/ROAD_PARCEL_TILES);z++) {
+      for(let x=Math.floor(ccx*CT/ROAD_PARCEL_TILES);x<Math.ceil((ccx+1)*CT/ROAD_PARCEL_TILES);x++) {
+        const plan=this.roadPlans.get(x,z);
+        if(plan)roadBuildings.push(plan);
+      }
+    }
+    const roadBuildingTiles=applyRoadBuildings(columns,floors,pillarGround,roadBuildings,gridTiles,
+      b.tx0,b.tz0,{x0:PAD_COLUMN,z0:PAD_COLUMN,x1:PAD_COLUMN+CT,z1:PAD_COLUMN+CT});
+
     // Field tile frame → working frame: field origin is FR chunks
     // northwest of this chunk; working origin is PAD_COLUMN inside.
     const off = -FR * CT + PAD_COLUMN;
@@ -397,6 +436,8 @@ export class ColumnLayer extends ChunkedLayer<ColumnChunk> {
       columns: coreColumns,
       floor: crop2D(floors, PAD_COLUMN, CT),
       pillarGround: crop2D(pillarGround, PAD_COLUMN, CT),
+      roadBuildingTiles: crop2D(roadBuildingTiles,PAD_COLUMN,CT),
+      roadBuildings,
     };
   }
 }

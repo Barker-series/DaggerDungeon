@@ -1,0 +1,73 @@
+{
+  "derivation": "Pillow lossless exact WebP; original decoded RGB unchanged; bilinear 512-to-1024 height in alpha",
+  "provenance": "manifest.json (original CC0 sources retained)",
+  "textures": [
+    {
+      "role": "concrete-wall",
+      "file": "concrete-wall-packed.webp",
+      "size": 1332840,
+      "width": 1024,
+      "height": 1024,
+      "channels": "sRGB RGB; linear height alpha (NOT opacity)",
+      "sha256": "6600f4b706065102851525acbb5a6476734e9c1359c09131c5e5f9d3eac02c48",
+      "sources": {
+        "concrete-wall-color.jpg": "3ccb98888f02547bdd46921e07389c4b2f544a111b2847f742819332e794d6c2",
+        "concrete-wall-height.jpg": "dc7b81088db0cf69cefc49a27f862e306934e3fc044939ea7fe445a4ec639c1d"
+      }
+    },
+    {
+      "role": "concrete-floor",
+      "file": "concrete-floor-packed.webp",
+      "size": 1656108,
+      "width": 1024,
+      "height": 1024,
+      "channels": "sRGB RGB; linear height alpha (NOT opacity)",
+      "sha256": "f80f2a100bef6c03298fb109b66058004a54b735ad64ca3ef2b7d2e5e6d9c812",
+      "sources": {
+        "concrete-floor-color.jpg": "2668a69ed6e1903594a67467472a2ab4d57ffd6b4e1791addcd2bf9b3b4677c7",
+        "concrete-floor-height.jpg": "a830abc1640c4f1f79d467f20cbb623e2003c8fc31f3b180d62ddc81fc0af25a"
+      }
+    },
+    {
+      "role": "painted-metal",
+      "file": "painted-metal-packed.webp",
+      "size": 847248,
+      "width": 1024,
+      "height": 1024,
+      "channels": "sRGB RGB; linear height alpha (NOT opacity)",
+      "sha256": "4b4d91404054a10e72598dfb896e000946e073a52ce0771c7bbdd31ff02f05d2",
+      "sources": {
+        "painted-metal-color.jpg": "1b62f5b2dd612ce0751a0826f79c5914d42a87b9bea6652e7d5be3db0daf2cbe",
+        "painted-metal-height.jpg": "eefe1020aa8cec302e96b4f17acba87c115468f0b0692a8a9848f6ad27f7fd5d"
+      }
+    },
+    {
+      "role": "rusted-metal",
+      "file": "rusted-metal-packed.webp",
+      "size": 1089874,
+      "width": 1024,
+      "height": 1024,
+      "channels": "sRGB RGB; linear height alpha (NOT opacity)",
+      "sha256": "cd5bc20eec2344e235b522974644bda53b7e1027907812b85e4ded81122b76aa",
+      "sources": {
+        "rusted-metal-color.jpg": "7514327697e452f3169e9d62587ee607f1081de6c6c512dd6a5ee729c39477be",
+        "rusted-metal-height.jpg": "7c36675fd6512a9e6f6d864004ad0bc0187feae05a34ce47172690c99d98d72e"
+      }
+    },
+    {
+      "role": "utility-tread",
+      "file": "utility-tread-packed.webp",
+      "size": 1204424,
+      "width": 1024,
+      "height": 1024,
+      "channels": "sRGB RGB; linear height alpha (NOT opacity)",
+      "sha256": "9b226852701b8f9dac036cfb164cd4ac7413b0c1e1af55e70c32a99ba5357726",
+      "sources": {
+        "utility-tread-color.jpg": "46042dc577345324d49b947b5cb21d78f4edff8849381e36cc49d33ebcf1a069",
+        "utility-tread-height.jpg": "fded8ea5a11484b3742866fc2ec5de808a90a2b45c23b4f70f649f97dfb342bb"
+      }
+    }
+  ],
+  "decodedRGBABytes": 20971520,
+  "gpuBytesIncludingMipmaps": 27962020
+}

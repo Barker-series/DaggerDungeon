@@ -12,6 +12,7 @@ import { buildCornerField } from './heightfield';
 import { buildOrganicContour, type OrganicContour } from './organiccontour';
 import { buildPitContour, type PitContour } from './pitcontour';
 import { buildRoadsContour, type RoadsContour } from './roadscontour';
+import { infrastructureBaseWorld } from './infrastructure-columns';
 
 export interface WindowPrep {
   cornerFloors: number[][][];
@@ -21,6 +22,7 @@ export interface WindowPrep {
 }
 
 export function prepareWindow(world: WorldData): WindowPrep {
+  world = infrastructureBaseWorld(world);
   const cornerFloors = world.levels.map((l) =>
     buildCornerField(l.tiles, l.floorHeights, l.width, l.height, 0, l.pillarGround));
   const contours = world.levels.map((l) => buildOrganicContour(l, world.columns));

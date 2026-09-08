@@ -25,6 +25,7 @@
 import { TileType, type ColumnSpan, type DungeonData, type WorldData, type RoomData, type GridPos } from './types';
 import { getOrCreateCell, getCell, getAllCells, resetCells, snapshotCellBiomes, setWindowOrigin } from './dungeon/cells';
 import { buildColumns, validateColumns } from './dungeon/columns';
+import { applyInfrastructureToWorld } from './gen/infrastructure-layers';
 import { generateLayer0 } from './dungeon/layer0-noise';
 import { generateLayer1TileGrid } from './dungeon/layer1-tilegrid';
 import { assignBiomes } from './dungeon/layer2-biome';
@@ -34,6 +35,7 @@ import { regionAtCell } from './dungeon/region-layer';
 import { connectPermanentTransit, permanentTransitTiles, hallwayCells } from './dungeon/layer4-connect';
 import { computeHeightFields, computePitMask, carvePitArches, levelPitDecks, cellCrest } from './dungeon/layer6-heights';
 import { applyFoldStructures } from './dungeon/fold-structure';
+import { ROAD_PARCEL_TILES, planRoadParcel, roadPlotSample, applyRoadBuildings, type RoadBuildingPlan } from './dungeon/road-buildings';
 import { legacyWindowPaddingPc } from './gen/layers';
 import { placePillars } from './dungeon/layer45-pillars';
 import { buildPillarField, PILLAR_CELL_TILES, PILLAR_FACTOR, type PillarSpec } from './dungeon/pillar-layer';
@@ -228,6 +230,23 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     if (broken > 0) console.error(`[gen] column invariant: ${broken} transit tiles lost walk clearance under fold mass`);
   }
 
+  const roadBuildings:RoadBuildingPlan[]=[];
+  for(let z=Math.floor(originPcz*PILLAR_CELL_TILES/ROAD_PARCEL_TILES);
+    z<Math.ceil((originPcz*PILLAR_CELL_TILES+GRID_TILES)/ROAD_PARCEL_TILES);z++) {
+    for(let x=Math.floor(originPcx*PILLAR_CELL_TILES/ROAD_PARCEL_TILES);
+      x<Math.ceil((originPcx*PILLAR_CELL_TILES+GRID_TILES)/ROAD_PARCEL_TILES);x++) {
+      const plan=planRoadParcel(stackSeed,x,z,(ax,az)=>{
+        const tx=ax-genPcx*PILLAR_CELL_TILES,tz=az-genPcz*PILLAR_CELL_TILES;
+        if(tx<0||tz<0||tx>=genTiles||tz>=genTiles)throw new Error('road parcel missing declared context');
+        return roadPlotSample(stackSeed,ax,az,level.tiles[tz]![tx]!,pillarWall[tz]![tx]!);
+      });
+      if(plan)roadBuildings.push(plan);
+    }
+  }
+  level.roadBuildingTiles=applyRoadBuildings(columns,level.floorHeights,level.pillarGround,
+    roadBuildings,genTiles,genPcx*PILLAR_CELL_TILES,genPcz*PILLAR_CELL_TILES,
+    {x0:padTiles,z0:padTiles,x1:padTiles+GRID_TILES,z1:padTiles+GRID_TILES});
+
   carveStructures(columns, genTiles, arches, subways, bridges);
 
   const errs = validateColumns(columns, genTiles, genTiles);
@@ -277,6 +296,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     ceilingHeights: crop2D(level.ceilingHeights),
     pillarWall: crop2D(level.pillarWall),
     pillarGround: crop2D(level.pillarGround),
+    roadBuildingTiles: level.roadBuildingTiles ? crop2D(level.roadBuildingTiles) : undefined,
     cellBiomes: cropCells(level.cellBiomes),
     cellCrests: cropCells(level.cellCrests),
     roadsCells: level.roadsCells ? cropCells(level.roadsCells) : undefined,
@@ -302,7 +322,7 @@ export function generateWorld(opts: GenerateOpts): WorldData {
       .filter((r) => r.left + r.width > 0 && r.top + r.height > 0 && r.left < GRID_TILES && r.top < GRID_TILES),
   };
 
-  return {
+  return applyInfrastructureToWorld({
     seed,
     stack,
     originPcx,
@@ -312,7 +332,8 @@ export function generateWorld(opts: GenerateOpts): WorldData {
     pillars: corePillars,
     bridges: coreBridges,
     subways: coreSubways,
-  };
+    roadBuildings,
+  });
 }
 
 // ── The floor pipeline ──

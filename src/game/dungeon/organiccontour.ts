@@ -143,8 +143,16 @@ export function buildOrganicContour(
     if (!col) return false;
     return !col.some((sp) => sp.floor <= fy + 0.05 && sp.ceil >= fy + 1.5);
   };
+  /** A 2D ground contour cannot represent authored air at another height.
+   * Its full-height walls/transoms would seal bridge bores (including over
+   * otherwise open ground). Keep those groups square and span-derived in
+   * BOTH rendering and collision, just like other structural footprints. */
+  const hasStructuralAir = (tx: number, tz: number): boolean =>
+    columns !== undefined && tx >= 0 && tz >= 0 && tx < w && tz < h
+    && (columns[tz * w + tx]?.some(sp => sp.owner < 0) ?? false);
   const isPillar = (tx: number, tz: number): boolean =>
-    (dungeon.pillarWall?.[tz]?.[tx] ?? false) || isRoadsTile(tx, tz) || isBuried(tx, tz);
+    (dungeon.pillarWall?.[tz]?.[tx] ?? false) || isRoadsTile(tx, tz)
+    || isBuried(tx, tz) || hasStructuralAir(tx, tz);
 
   const register = (tx: number, tz: number, seg: ContourSegment): void => {
     if (tx < 0 || tz < 0 || tx >= w || tz >= h) return;

@@ -137,6 +137,7 @@ export function buildRoadsContour(world: WorldData): RoadsContour {
     for (let tx = 0; tx < w; tx++) {
       if (!isRoads(tx, tz)) continue;
       if (L.pillarWall?.[tz]?.[tx]) continue;
+      if (L.roadBuildingTiles?.[tz]?.[tx]) continue;
       const k = tz * w + tx;
       if (L.tiles[tz]![tx] === TileType.Wall) {
         const spans = world.columns[k]!;

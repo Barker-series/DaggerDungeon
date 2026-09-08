@@ -28,6 +28,11 @@ check('declared dependencies cover full footprint at min/default/max', () => {
     const base = new TileBaseLayer(17), transit = new TransitLayer(17, base), height = new HeightLayer(17, base, transit);
     const column = new ColumnLayer(17, base, transit, height);
     for (const dep of (column as any).deps) {
+      if(dep.layer.name==='road-buildings') {
+        assert.equal(dep.padTiles,0,'road parcels own all their output within their chunk');
+        assert.ok(dep.layer.deps.every((p:any)=>p.padTiles===2),'road planning declares its own two-tile provider context');
+        continue;
+      }
       assert.ok(dep.padTiles >= 2 * siloMaxReachTiles(), `padding ${dep.padTiles} < diameter ${2 * siloMaxReachTiles()}`);
       assert.equal(dep.padTiles % 14, 0);
       assert.ok(legacyWindowPaddingPc() * 56 >= dep.padTiles + 28 + 14, 'legacy guard covers composed upstream dependency');
@@ -45,7 +50,7 @@ check('hot column reset reconstructs dependency and working pad together', () =>
   const changed = layersFor(17, 0);
   assert.notEqual(changed.column, oldColumn, 'changed padding must reconstruct the column layer');
   assert.equal(changed.transit, old.transit, 'hot column changes preserve upstream cache');
-  for (const dep of changed.column.deps) assert.ok(dep.padTiles >= 2 * siloMaxReachTiles());
+  for (const dep of changed.column.deps) if(dep.layer.name!=='road-buildings') assert.ok(dep.padTiles >= 2 * siloMaxReachTiles());
   // Exercise provider ensure + actual working-grid assembly with the new pad.
   changed.column.ensure({ tx0: -56, tz0: -56, tx1: 0, tz1: 0 });
   const warm = changed.column.get(-1, -1);

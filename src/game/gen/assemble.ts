@@ -22,8 +22,10 @@ import { pillarFootprint } from '../dungeon/pillar-geometry';
 import { planOwnedBridges, bridgeTiles, type BridgeSpec } from '../dungeon/pillar-bridges';
 import { pickFarthestCell, nearestPermanentTransit } from '../DungeonGenerator';
 import { assembleGrid, type ChunkBounds } from './chunked';
+import { InfrastructureLayer, InfrastructurePlanLayer } from './infrastructure-layers';
+import { mergeInfrastructureData, type InfrastructureData } from '../dungeon/infrastructure-columns';
 import {
-  TileBaseLayer, TransitLayer, HeightLayer, ColumnLayer, setupCellsFromChunks,
+  TileBaseLayer, TransitLayer, HeightLayer, ColumnLayer, RoadBuildingLayer, setupCellsFromChunks,
   columnPaddingTiles, legacyWindowPaddingPc,
 } from './layers';
 
@@ -43,7 +45,10 @@ interface GenState {
   tileBase: TileBaseLayer;
   transit: TransitLayer;
   height: HeightLayer;
+  roadPlans: RoadBuildingLayer;
   column: ColumnLayer;
+  infrastructurePlans: InfrastructurePlanLayer;
+  infrastructure: InfrastructureLayer;
 }
 
 let state: GenState | null = null;
@@ -63,10 +68,13 @@ export function resetGenState(from: GenResetLevel = 'all'): void {
   // reach edits, preserving the expensive upstream caches.
   if (state.column.padTiles !== columnPaddingTiles()) {
     const [seed, stack] = state.key.split(':').map(Number);
-    state.column = new ColumnLayer(seed! + stack! * 100000, state.tileBase, state.transit, state.height);
+    state.column = new ColumnLayer(seed! + stack! * 100000, state.tileBase, state.transit, state.height,state.roadPlans);
+    state.infrastructure = new InfrastructureLayer(seed! + stack! * 100000,state.column,state.infrastructurePlans);
   }
+  state.infrastructure.clearAll();
   if (from === 'transit') {
     state.transit.clearAll();
+    state.roadPlans.clearAll();
     state.height.clearAll();
     state.column.clearAll();
     return;
@@ -90,8 +98,11 @@ function layersFor(seed: number, stack: number): GenState {
   const tileBase = new TileBaseLayer(stackSeed);
   const transit = new TransitLayer(stackSeed, tileBase);
   const height = new HeightLayer(stackSeed, tileBase, transit);
-  const column = new ColumnLayer(stackSeed, tileBase, transit, height);
-  state = { key, tileBase, transit, height, column };
+  const roadPlans = new RoadBuildingLayer(stackSeed,tileBase,transit);
+  const column = new ColumnLayer(stackSeed, tileBase, transit, height,roadPlans);
+  const infrastructurePlans = new InfrastructurePlanLayer(stackSeed);
+  const infrastructure = new InfrastructureLayer(stackSeed,column,infrastructurePlans);
+  state = { key, tileBase, transit, height, roadPlans, column, infrastructurePlans, infrastructure };
   return state;
 }
 
@@ -114,7 +125,7 @@ export function generateWorldChunked(opts: ChunkedGenOpts): WorldData {
     tx0: originPcx * CT, tz0: originPcz * CT,
     tx1: (originPcx + CORE_PC) * CT, tz1: (originPcz + CORE_PC) * CT,
   };
-  S.column.ensure(b);
+  S.infrastructure.ensure(b);
   // Transit one ring wider: nothing structural needs it, but keeping
   // the ring warm means the next recenter's providers are cached.
   S.transit.ensure({
@@ -125,16 +136,24 @@ export function generateWorldChunked(opts: ChunkedGenOpts): WorldData {
   const tiles = assembleGrid(S.transit, (c) => c.tiles, b);
   const pillarWall = assembleGrid(S.tileBase, (c) => c.pillarWall, b);
   const ceilingHeights = assembleGrid(S.height, (c) => c.ceiling, b);
-  const floorHeights = assembleGrid(S.column, (c) => c.floor, b);
-  const pillarGround = assembleGrid(S.column, (c) => c.pillarGround, b);
+  const floorHeights = assembleGrid(S.infrastructure, (c) => c.floor, b);
+  const pillarGround = assembleGrid(S.infrastructure, (c) => c.pillarGround, b);
+  const roadBuildingTiles = assembleGrid(S.column,(c)=>c.roadBuildingTiles,b);
+  const roadPlanMap = new Map<string, NonNullable<WorldData['roadBuildings']>[number]>();
   const columns: ColumnSpan[][] = new Array(GRID_TILES * GRID_TILES);
+  const infrastructureBaseColumns: ColumnSpan[][] = new Array(GRID_TILES * GRID_TILES);
+  const infrastructureData: InfrastructureData[] = [];
   for (let pcz = 0; pcz < CORE_PC; pcz++) {
     for (let pcx = 0; pcx < CORE_PC; pcx++) {
       const chunk = S.column.get(originPcx + pcx, originPcz + pcz);
+      const infra = S.infrastructure.get(originPcx + pcx, originPcz + pcz);
+      infrastructureData.push(infra.data);
+      for(const plan of chunk.roadBuildings)roadPlanMap.set(plan.id,plan);
       for (let tz = 0; tz < CT; tz++) {
         for (let tx = 0; tx < CT; tx++) {
           columns[(pcz * CT + tz) * GRID_TILES + (pcx * CT + tx)] =
-            chunk.columns[tz * CT + tx]!;
+            infra.columns[tz * CT + tx]!;
+          infrastructureBaseColumns[(pcz * CT + tz) * GRID_TILES + (pcx * CT + tx)] = infra.baseColumns[tz * CT + tx]!;
         }
       }
     }
@@ -261,6 +280,7 @@ export function generateWorldChunked(opts: ChunkedGenOpts): WorldData {
     goldenPath: [],
     pillarWall,
     pillarGround,
+    roadBuildingTiles,
   };
 
   const errs = validateColumns(columns, GRID_TILES, GRID_TILES);
@@ -273,7 +293,7 @@ export function generateWorldChunked(opts: ChunkedGenOpts): WorldData {
     tx0: b.tx0 - KEEP_MARGIN_PC * CT, tz0: b.tz0 - KEEP_MARGIN_PC * CT,
     tx1: b.tx1 + KEEP_MARGIN_PC * CT, tz1: b.tz1 + KEEP_MARGIN_PC * CT,
   };
-  for (const layer of [S.tileBase, S.transit, S.height, S.column]) layer.release(keep);
+  for (const layer of [S.tileBase, S.transit, S.height, S.roadPlans, S.column, S.infrastructurePlans, S.infrastructure]) layer.release(keep);
 
   return {
     seed,
@@ -285,12 +305,15 @@ export function generateWorldChunked(opts: ChunkedGenOpts): WorldData {
     pillars,
     bridges,
     subways: [],
+    roadBuildings: [...roadPlanMap.values()].sort((a,b)=>a.tz0-b.tz0||a.tx0-b.tx0),
+    infrastructureBaseColumns,
+    infrastructure: mergeInfrastructureData(infrastructureData),
   };
 }
 
 /** Number of live chunks across all layers (perf probes). */
 export function chunkedStateSize(): number {
   if (!state) return 0;
-  return [state.tileBase, state.transit, state.height, state.column]
+  return [state.tileBase, state.transit, state.height, state.roadPlans, state.column, state.infrastructurePlans, state.infrastructure]
     .reduce((n, l) => n + l.chunkCount(), 0);
 }

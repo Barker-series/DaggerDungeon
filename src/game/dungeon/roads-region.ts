@@ -25,6 +25,12 @@ export const GAME_ROAD_PARAMS: RoadFieldParams = {
   terrainScale: 2600,
 };
 
+/** Shared foundation datum for road plotting and later building plans. */
+export function roadPlinthHeight(blockHash: number): number {
+  return blockHash < 0.22 ? 0.6
+    : 3 * (1 + Math.min(3, Math.floor(((blockHash - 0.22) / 0.78) * 4)));
+}
+
 /**
  * Carve street veins into all 'roads'-district cells of the window.
  * `cellTileSize` is dungeon-cell tiles; absolute tile coords come from the
@@ -168,9 +174,7 @@ export function cutRoadBlockTops(
         // the district is therefore ≤0.65 (steppable) or ≥2.4 (a real
         // wall) — no knee-high lips in the un-steppable dead zone to get
         // stuck on. blockHash is constant per block.
-        const top = s.blockHash < 0.22
-          ? 0.6
-          : 3 * (1 + Math.min(3, Math.floor(((s.blockHash - 0.22) / 0.78) * 4)));
+        const top = roadPlinthHeight(s.blockHash);
         // SEAM DOCTRINE: a flat structural top butting corner-blended
         // terrain at near-equal height is the one crack condition (the
         // blended surface climbs away from the flat slab and no wall face

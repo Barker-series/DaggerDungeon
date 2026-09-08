@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { CAMERA_FAR, FOG_DEFAULT, FOG_ROADS, FOG_EMBER } from './visibility-policy';
+import { AmbientAudio, sampleAmbientLocation } from './AmbientAudio';
 import { DungeonRenderer, syncDetailUniforms } from './DungeonRenderer';
 import { GridCamera } from './Camera';
 import { LightingSystem } from './LightingSystem';
@@ -6,6 +8,9 @@ import { SpriteManager } from './SpriteManager';
 import { KeyboardInput, type InputAction } from './InputManager';
 import { generateWorld } from '../game/DungeonGenerator';
 import { Movers } from './Movers';
+import { ServiceLadders, serviceBodyClear, type LadderPosition } from './ServiceLadders';
+import { collectServiceLadders } from '../game/dungeon/frame-services';
+import { infrastructureBaseWorld, infrastructureColumnAt, infrastructureBodyBlocked, infrastructureVerticalContact } from '../game/dungeon/infrastructure-columns';
 import { sampleCornerField } from '../game/dungeon/heightfield';
 import { prepareWindow, type WindowPrep } from '../game/dungeon/window-prep';
 import { spanAt } from '../game/dungeon/columns';
@@ -80,12 +85,10 @@ const STAND_HEIGHT = 1.75;
 const CROUCH_HEIGHT = 1.15;
 
 // ── Area fog — the atmosphere follows where you are ──
-// Black is the default; specific places override, and the color FADES
+// Neutral haze is the default; specific places override, and the color FADES
 // between areas rather than switching (exponential chase toward the
 // target). Ember's red identity lives here now, not on its textures.
-const FOG_DEFAULT = 0x0f0e12;
-const FOG_ROADS = 0x26262b; // dark gray under the open street sky
-const FOG_EMBER = 0x2b0a06; // dark heat haze
+
 const FOG_FADE_RATE = 1.2; // per-second chase toward the target color
 const PLAYER_RADIUS = 0.35;
 const CROUCH_SPEED_MULT = 0.55;
@@ -129,6 +132,12 @@ export class GameEngine {
 
   private dungeonRenderer: DungeonRenderer;
   private movers: Movers | null = null;
+  private serviceLadders = new ServiceLadders();
+  private ambientAudio = new AmbientAudio(() => {
+    const p = this.gridCamera.position;
+    return this.world ? sampleAmbientLocation(this.world, p.x, p.y, p.z, this.seed)
+      : { rumble: 0, air: 0, pipe: 0, character: 0 };
+  });
   /** Window origin on the infinite plane, in pillar cells */
   private originPcx = 0;
   private originPcz = 0;
@@ -250,14 +259,14 @@ export class GameEngine {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2) * this.renderScale);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMapping = THREE.ReinhardToneMapping;
     this.renderer.toneMappingExposure = 1.2;
     this.renderer.shadowMap.enabled = false;
 
     this.scene = new THREE.Scene();
 
     // Far plane covers a full look down (or up) a multi-level shaft
-    this.threeCamera = new THREE.PerspectiveCamera(75, 1, 0.1, 160);
+    this.threeCamera = new THREE.PerspectiveCamera(75, 1, 0.1, CAMERA_FAR);
     this.postProcessing = new PostProcessing(this.renderer, this.scene, this.threeCamera);
     this.gridCamera = new GridCamera(this.threeCamera);
     this.gridCamera.attach(canvas);
@@ -289,6 +298,7 @@ export class GameEngine {
     window.addEventListener('wheel', this.handleEditorWheel, { passive: false });
     window.addEventListener('mousedown', this.handleMarkClick);
     window.addEventListener('mouseup', this.handleEditorMouseUp);
+    this.ambientAudio.attach(canvas);
   }
 
   /** Pointer-locked LMB: mark the surface under the crosshair with a
@@ -419,6 +429,8 @@ export class GameEngine {
   private setEditorMode(on: boolean): void {
     if (on === this.editorMode) return;
     this.editorMode = on;
+    this.serviceLadders.reset();
+    this.mantle = null;
     const store = useGameStore.getState();
     store.setEditorActive(on);
     if (on) {
@@ -556,6 +568,9 @@ export class GameEngine {
         store.setCurrentFloor(stack);
         this.buildWindow(stack);
       }
+      this.serviceLadders.reset();
+      this.mantle = null;
+      this.isGrounded = false;
       this.gridCamera.setPosition(t.x, t.y, t.z);
       if (t.yaw !== undefined) this.gridCamera.yaw = t.yaw;
       if (t.pitch !== undefined) this.gridCamera.pitch = t.pitch;
@@ -987,6 +1002,7 @@ export class GameEngine {
         console.warn(`[stream] cache miss at ${key}; synchronous fallback`);
       }
     }
+    this.serviceLadders.adopt(this.world.infrastructure?.ladders ?? collectServiceLadders(this.world));
     markPhase('world');
     // Worker-prepared contours when the window was prefetched; the
     // synchronous fallback builds them here
@@ -996,7 +1012,7 @@ export class GameEngine {
     this.pitContour = prep.pitContour;
     this.roadsContour = prep.roadsContour;
     // LAZY: tiles are evaluated on first query around the player
-    this.foldContour = new FoldContour(this.world);
+    this.foldContour = new FoldContour(infrastructureBaseWorld(this.world));
     markPhase('collision');
     // Adopt the window as the chunk data source. No geometry is built
     // here: chunks stream in via updateChunks each frame — surviving
@@ -1108,7 +1124,7 @@ export class GameEngine {
           const exactColumn = dx === 0 && dz === 0;
           const x = exactColumn ? pos.x : tx * TILE_SIZE + TILE_SIZE / 2;
           const z = exactColumn ? pos.z : tz * TILE_SIZE + TILE_SIZE / 2;
-          for (const span of this.world.columns[tz * w + tx]!) {
+          for (const span of this.columnAt(x,z) ?? []) {
             if (span.floor === ABYSS_FLOOR || span.ceil - span.floor < EYE_HEIGHT + 0.2) continue;
             const y = span.owner < 0
               ? span.floor
@@ -1150,6 +1166,7 @@ export class GameEngine {
   }
 
   loadStack(stack: number, seed: number): void {
+    this.serviceLadders.reset();
     this.seed = seed;
     this.worldCache.clear();
     this.prepCache.clear();
@@ -1191,6 +1208,7 @@ export class GameEngine {
   }
 
   start(): void {
+    this.serviceLadders.reset();
     let fpsFrames = 0;
     let fpsWindowStart = 0;
     let lastCapTick = 0;
@@ -1210,6 +1228,7 @@ export class GameEngine {
       this.timer.update(timestamp);
       const dt = Math.min(this.timer.getDelta(), 0.1);
       if (!this.paused) this.update(dt);
+      this.ambientAudio.tick(timestamp / 1000);
       this.postProcessing.render(dt);
       // FPS: count real presented frames, publish twice a second
       fpsFrames++;
@@ -1228,6 +1247,7 @@ export class GameEngine {
 
   stop(): void {
     this.stopped = true;
+    this.ambientAudio.dispose();
     cancelAnimationFrame(this.animFrameId);
     this.input.dispose();
     this.gridCamera.detach();
@@ -1246,7 +1266,15 @@ export class GameEngine {
 
   setPaused(paused: boolean): void {
     this.paused = paused;
+    this.ambientAudio.setPaused(paused);
   }
+
+  setAmbientVolume(volume: number, muted = false): void {
+    this.ambientAudio.setVolume(volume, muted);
+  }
+
+  /** Only UI trusted play/resume events use this bridge. */
+  unlockAmbientAudio(): void { this.ambientAudio.unlock(); }
 
   setBrightness(exposure: number): void {
     this.renderer.toneMappingExposure = exposure;
@@ -1337,12 +1365,7 @@ export class GameEngine {
   /** Air spans of the column containing a world position */
   private columnAt(x: number, z: number) {
     if (!this.world) return undefined;
-    const tx = Math.floor(x / TILE_SIZE);
-    const tz = Math.floor(z / TILE_SIZE);
-    if (tx < 0 || tz < 0 || tx >= this.world.levels[0]!.width || tz >= this.world.levels[0]!.height) {
-      return undefined;
-    }
-    return this.world.columns[tz * this.world.levels[0]!.width + tx];
+    return infrastructureColumnAt(this.world,x,z);
   }
 
   /** Apron ground at a chamfer pocket (contoured wall column) for a
@@ -1485,16 +1508,69 @@ export class GameEngine {
     ] as const) {
       best = Math.max(best, this.worldGround(x + dx, z + dz, limitY));
     }
+    if(this.world)best=Math.max(best,infrastructureVerticalContact(this.world,x,z,limitY+0.6,PLAYER_RADIUS,'floor'));
     return best;
   }
 
   // ── Player Movement ──
+
+  private ladderPosition(): LadderPosition {
+    const p = this.gridCamera.position;
+    return { x: p.x + this.originPcx * PCELL, y: p.y, z: p.z + this.originPcz * PCELL };
+  }
+
+  private ladderClear(p: LadderPosition): boolean {
+    if (!this.world) return false;
+    const world = this.world;
+    const width = world.levels[0]!.width;
+    return serviceBodyClear(p, (absoluteX, absoluteZ) => {
+      const x = absoluteX - this.originPcx * PILLAR_CELL_TILES;
+      const z = absoluteZ - this.originPcz * PILLAR_CELL_TILES;
+      return x >= 0 && z >= 0 && x < width && z < width ? (world.infrastructureBaseColumns ?? world.columns)[z * width + x] : undefined;
+    }, Math.max(1.8, STAND_HEIGHT), PLAYER_RADIUS)
+      && !infrastructureBodyBlocked(world,p.x-this.originPcx*PCELL,p.y,p.z-this.originPcz*PCELL,Math.max(1.8,STAND_HEIGHT),PLAYER_RADIUS);
+  }
+
+  private applyLadderPosition(p: LadderPosition): void {
+    this.gridCamera.position.set(p.x - this.originPcx * PCELL, p.y, p.z - this.originPcz * PCELL);
+    this.vy = this.velX = this.velZ = 0;
+    this.mantle = null;
+    this.mantleCooldown = 0.25;
+    // Gravity resumes after release; normal physics finds the actual landing.
+    this.isGrounded = false;
+    this.crouchAmount = 0;
+    this.gridCamera.eyeHeight = EYE_HEIGHT;
+  }
 
   private processMovement(dt: number): void {
     if (!this.world) return;
     const pos = this.gridCamera.position;
     const groundAt = (x: number, z: number): number =>
       this.playerGround(x, z, pos.y + CLIMB_HEADROOM);
+
+    // Human forward approach can acquire a ladder without a separate F press.
+    // Physical keys only: virtual bot movement must not grab optional routes.
+    if (!this.serviceLadders.active) {
+      this.gridCamera.getForward(_forward);
+      const absolute = this.ladderPosition();
+      const intent = (this.input.isKeyDown('KeyW') || this.input.isKeyDown('ArrowUp'))
+        && !this.input.isKeyDown('KeyS') && !this.input.isKeyDown('ArrowDown');
+      if (!useGameStore.getState().autoPlay && !this.input.hasMovementOverride()
+        && !this.input.jumpHeld() && !this.input.hasAction('interact')
+        && this.serviceLadders.approach(absolute, _forward, intent, p => this.ladderClear(p))) {
+        this.applyLadderPosition(absolute);
+        this.onNotice('Ladder — W/S climb, F or Space release');
+      }
+    }
+
+    // Ladder movement owns this frame before mantle, walking, or gravity.
+    if (this.serviceLadders.active) {
+      const absolute = this.ladderPosition();
+      const direction = this.input.getMovementDir(_moveDir).y;
+      this.serviceLadders.step(absolute, direction, this.input.jumpHeld(), dt, p => this.ladderClear(p));
+      this.applyLadderPosition(absolute);
+      return;
+    }
 
     // ── Ledge mantle in progress: it owns the player until done. The
     // target span was validated at grab time; rise above the lip first,
@@ -1745,6 +1821,7 @@ export class GameEngine {
       }
     }
     if (!this.isGrounded) {
+      const beforeY=pos.y;
       this.vy -= GRAVITY * dt;
       pos.y += this.vy * dt;
       // Ceiling collision: rising into solid overhead stops at it — a
@@ -1753,13 +1830,9 @@ export class GameEngine {
       if (this.vy > 0) {
         const overheadSpans = this.columnAt(pos.x, pos.z);
         const span = overheadSpans ? spanAt(overheadSpans, pos.y, 0.05) : null;
-        if (span && span.ceil < 1e8) {
-          const bodyHeight = STAND_HEIGHT - (STAND_HEIGHT - CROUCH_HEIGHT) * this.crouchAmount;
-          if (pos.y + bodyHeight > span.ceil) {
-            pos.y = span.ceil - bodyHeight;
-            this.vy = 0;
-          }
-        }
+        const ceiling=Math.min(span?.ceil ?? Infinity,infrastructureVerticalContact(this.world,pos.x,pos.z,beforeY,PLAYER_RADIUS,'ceiling'));
+        const bodyHeight = STAND_HEIGHT - (STAND_HEIGHT - CROUCH_HEIGHT) * this.crouchAmount;
+        if(pos.y+bodyHeight>ceiling){pos.y=ceiling-bodyHeight;this.vy=0;}
       }
       if (this.vy <= 0 && pos.y <= ground) {
         pos.y = ground;
@@ -1782,6 +1855,23 @@ export class GameEngine {
    *  stair-step catching (the "bounce outward in tunnels" feel). */
   private collisionNormalAt(x: number, z: number): [number, number] | null {
     if (!this.world) return [1, 0];
+    const bodyHeight = this.input.hasMovementOverride() ? CROUCH_HEIGHT
+      : STAND_HEIGHT-(STAND_HEIGHT-CROUCH_HEIGHT)*this.crouchAmount;
+    const feet = this.gridCamera.position.y;
+    const blocked = (px:number,pz:number):boolean => infrastructureBodyBlocked(this.world!,px,feet+STEP_UP,pz,Math.max(0.2,bodyHeight-STEP_UP),PLAYER_RADIUS);
+    if (blocked(x,z)) {
+      // The exact physical field, not a tile-sized pipe box, supplies contact.
+      // Probe toward free space for a stable sliding normal on diagonal facets.
+      for (const d of [0.05,0.2,0.5]) {
+        const nx=Number(!blocked(x+d,z))-Number(!blocked(x-d,z));
+        const nz=Number(!blocked(x,z+d))-Number(!blocked(x,z-d));
+        const len=Math.hypot(nx,nz);
+        if(len>0)return [nx/len,nz/len];
+      }
+      const dx=this.gridCamera.position.x-x,dz=this.gridCamera.position.z-z;
+      const len=Math.hypot(dx,dz);
+      return len>0 ? [dx/len,dz/len] : [1,0];
+    }
     let bestD2 = Infinity;
     let bestNx = 0;
     let bestNz = 0;
@@ -1816,7 +1906,7 @@ export class GameEngine {
         // "soft": their pockets are walkable, the contour segments below
         // are their real surface.)
         const spans = tx >= 0 && tz >= 0 && tx < w && tz < w
-          ? this.world.columns[tz * w + tx]
+          ? (this.world.infrastructureBaseColumns ?? this.world.columns)[tz * w + tx]
           : undefined;
         const soft = dungeon !== undefined
           && dungeon.tiles[tz]?.[tx] === TileType.Wall
@@ -1955,7 +2045,7 @@ export class GameEngine {
   }
 
   /** Fade the distance fog toward the color of the area the player is
-   *  in: dark gray in roads districts, dark red in ember, black default. */
+   *  in: cool roads haze, warm ember dust, neutral haze elsewhere. */
   private updateAreaFog(dt: number, x: number, z: number): void {
     const L = this.world?.levels[0];
     if (!L) return;
@@ -2007,6 +2097,15 @@ export class GameEngine {
     switch (action) {
       case 'interact':
         {
+          if (this.editorMode) break;
+          if (!useGameStore.getState().autoPlay && this.world) {
+            const absolute = this.ladderPosition();
+            if (this.serviceLadders.interact(absolute, p => this.ladderClear(p))) {
+              this.applyLadderPosition(absolute);
+              this.onNotice(this.serviceLadders.active ? 'Ladder — W/S climb, F or Space release' : 'Ladder released');
+              break;
+            }
+          }
           const pos = this.gridCamera.position;
           const notice = this.movers?.interact(pos.x, pos.z, pos.y);
           if (notice) this.onNotice(notice);
@@ -2016,6 +2115,8 @@ export class GameEngine {
         this.respawn();
         break;
       case 'toggleAutoPlay': {
+        this.serviceLadders.reset();
+        this.isGrounded = false;
         const store = useGameStore.getState();
         store.toggleAutoPlay();
         // Release the bot's virtual keys when switching off mid-walk
@@ -2040,6 +2141,7 @@ export class GameEngine {
   /** Return to the stack's entrance on the top level (R to unstick, or the
    *  only way back from a bottomless fall) */
   private respawn(): void {
+    this.serviceLadders.reset();
     if (!this.world) return;
     // The run has ONE respawn point: the original spawn of window (0,0)
     // for this seed. Each window recomputes its own entrance, so
@@ -2086,6 +2188,7 @@ export class GameEngine {
   /** Dev/debug helper: place the player at a tile, optionally facing a
    *  yaw/pitch. `level` defaults to the level currently occupied. */
   teleport(tileX: number, tileY: number, yaw?: number, level?: number, pitch?: number): void {
+    this.serviceLadders.reset();
     if (!this.world) return;
     const li = level ?? Math.max(0, this.currentOwner());
     const x = tileX * TILE_SIZE + TILE_SIZE / 2;

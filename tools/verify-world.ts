@@ -41,6 +41,7 @@ import { regionAtCell, type RegionType } from '../src/game/dungeon/region-layer'
 import type { BiomeType } from '../src/game/dungeon/cells';
 import { findForwardExplorationPath } from '../src/game/pathfinding';
 import { TileType } from '../src/game/types';
+import { auditRoadBuildings } from './road-building-audit';
 
 const DEFAULT_SEEDS = [1, 7, 42, 99, 137, 500, 999, 1234, 4096, 7777, 12345, 31337, 55555, 90210, 2024, 13];
 const seeds = process.argv.slice(2).filter((a) => !a.startsWith('--')).map(Number).filter((n) => Number.isFinite(n));
@@ -493,6 +494,10 @@ for (const seed of SEEDS) {
   if (unsettledMarriage > 0) {
     fail(`seed ${seed}: ${unsettledMarriage} pillar-ground tiles remain before marriage fixpoint`);
   }
+
+  const roadAudit=auditRoadBuildings(world);
+  for(const error of roadAudit.errors)fail(`seed ${seed}: ${error}`);
+  if(roadAudit.buildings>0)console.log(`  road facilities=${roadAudit.buildings} targets=${roadAudit.targets} errors=${roadAudit.errors.length}`);
 
   console.log(`seed ${seed}: density=${occupancyPercent.toFixed(1)}% deep=${descendable}/${deepPillars} ${ms}ms pillars=${world.pillars.size} elevators=${elevatorShafts} climbable=${climbable} rooms=${roomSocketTotal - unreachableRoomSockets}/${roomSocketTotal} bridges=${world.bridges.length} bridgeTiles=${total} sockets=${brokenTransitSockets} unreachable=${unreachableTerrain} cracks=${cracks} unsettled=${unsettledMarriage}`);
 }

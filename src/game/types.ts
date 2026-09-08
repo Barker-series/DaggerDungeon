@@ -3,6 +3,8 @@
 import type { BiomeType } from './dungeon/cells';
 import type { PillarSpec } from './dungeon/pillar-layer';
 import type { BridgeSpec } from './dungeon/pillar-bridges';
+import type { RoadBuildingPlan } from './dungeon/road-buildings';
+import type { InfrastructureData } from './dungeon/infrastructure-columns';
 
 export enum TileType {
   Wall = 0,
@@ -105,6 +107,8 @@ export interface DungeonData {
    *  collision live in the column spans. Travels with the level so
    *  worker-generated worlds agree with the engine thread. */
   roadsCells?: boolean[][];
+  /** Road-facility columns use their authored spans, not plinth contours. */
+  roadBuildingTiles?: boolean[][];
 }
 
 // ── The column model: the single authority on solid vs air ──
@@ -141,6 +145,10 @@ export interface WorldData {
    *  sorted bottom-up. Built once after ALL generation mutations; nothing
    *  may modify the world after it exists. */
   columns: ColumnSpan[][];
+  /** Excavated structural base for exact infrastructure column refinement.
+   * `columns` projects the same physical solids at tile centers for navigation. */
+  infrastructureBaseColumns?: ColumnSpan[][];
+  infrastructure?: InfrastructureData;
   /** Pillar kebab specs, keyed "cx,cz" — the bounded window over the
    *  cell-local pillar function (see pillar-layer.ts). Data-only in
    *  Phase 1: drives the debug map; geometry/bridges come next. */
@@ -153,6 +161,8 @@ export interface WorldData {
   /** Legacy short bore scaffolding. It carries no fake runtime trains;
    *  long-distance rail will replace it with a routed track layer. */
   subways: BridgeSpec[];
+  /** Complete absolute-coordinate road parcels overlapping this window. */
+  roadBuildings?: RoadBuildingPlan[];
 }
 
 // ── Constants ──

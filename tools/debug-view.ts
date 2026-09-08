@@ -15,6 +15,8 @@
 /* eslint-disable no-console */
 import { writeFileSync } from 'fs';
 import { execSync } from 'child_process';
+import { triangleFacingNormal } from './triangle-facing';
+import { infrastructureColumnAt } from '../src/game/dungeon/infrastructure-columns';
 
 // three's TextureLoader needs a DOM — stub before the renderer loads
 (globalThis as unknown as { document: unknown }).document = {
@@ -109,9 +111,9 @@ if (facesArg) {
   });
 }
 
-/** 9 position floats + 3 authored-normal floats (the renderer sets
- *  explicit normals and uses DoubleSide, so WINDING is meaningless —
- *  the authored normal is the only truth about which way a face looks) */
+/** 9 position floats + 3 authored shading-normal floats + 3 geometric
+ *  facing-normal floats. FrontSide visibility follows winding; smooth
+ *  normals are used only for the inspection image's lighting. */
 type Tri = number[];
 const buckets = new Map<number, Tri[]>();
 const bkey = (tx: number, tz: number) => tz * 4096 + tx;
@@ -130,6 +132,7 @@ scene.traverse((o) => {
     const nrm = g.getAttribute('normal');
     const j0 = idx.getX(i);
     t.push(nrm ? nrm.getX(j0) : 0, nrm ? nrm.getY(j0) : 0, nrm ? nrm.getZ(j0) : 0);
+    t.push(...triangleFacingNormal(t));
     const minTx = Math.floor(Math.min(t[0]!, t[3]!, t[6]!) / TILE_SIZE);
     const maxTx = Math.floor(Math.max(t[0]!, t[3]!, t[6]!) / TILE_SIZE);
     const minTz = Math.floor(Math.min(t[2]!, t[5]!, t[8]!) / TILE_SIZE);
@@ -185,14 +188,13 @@ function cast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: nu
     if (best < d + TILE_SIZE) break;
   }
   if (!bestTri) return { d: Infinity, n: [0, 0, 0], back: false };
-  // The AUTHORED normal (winding is meaningless in this renderer)
+  // Authored normals shade the image; geometric normals determine facing.
   const n: [number, number, number] = [bestTri[9]!, bestTri[10]!, bestTri[11]!];
   const len = Math.hypot(...n) || 1;
   const nn: [number, number, number] = [n[0] / len, n[1] / len, n[2] / len];
-  // WRONG-SIDE hit: the surface's own normal points AWAY from the eye,
-  // so we are looking at its back. DoubleSide renders it anyway, which
-  // is exactly why missing/flipped walls never show up as holes.
-  const back = nn[0] * dx + nn[1] * dy + nn[2] * dz > 0.05;
+  // Smooth tube vertex normals are not facet normals at a grazing edge.
+  // The front-face renderer contract is actual winding, never DoubleSide.
+  const back = bestTri[12]! * dx + bestTri[13]! * dy + bestTri[14]! * dz > 0.05;
   return { d: best, n: nn, back };
 }
 
@@ -230,7 +232,7 @@ let curPx = 0; let curPy = 0; let curKind = '';
 // DungeonRenderer (cell crest, lifted by real ceilings / wall cap-max /
 // pillar crowns).
 const crownOf = (tx: number, tz: number): number => {
-  const col = world.columns[tz * L.width + tx]!;
+  const col = (world.infrastructureBaseColumns ?? world.columns)[tz * L.width + tx]!;
   if (col.length > 0 && col[col.length - 1]!.ceil >= SKY_CEIL) return Infinity;
   let v = L.cellCrests[Math.floor(tz / 14)]?.[Math.floor(tx / 14)] ?? 0;
   for (const s of col) if (s.ceil < SKY_CEIL) v = Math.max(v, s.ceil);
@@ -260,7 +262,7 @@ const dataAir = (x: number, y: number, z: number): boolean => {
   const tz = Math.floor(z / TILE_SIZE);
   if (tx < 0 || tz < 0 || tx >= L.width || tz >= L.height) return true;
   if (y > crownOf(tx, tz)) return true; // above the rendered crown = sky
-  return world.columns[tz * L.width + tx]!.some((s) => s.floor < y && y < s.ceil);
+  return (infrastructureColumnAt(world,x,z) ?? []).some((s) => s.floor < y && y < s.ceil);
 };
 // Contour (soft-wall) chamfers narrow wall tiles: the wedge between the
 // tile edge and the marching-squares diagonal is DATA-solid but
@@ -329,7 +331,7 @@ if (rayArg) {
   hits.sort((a, b) => a.t - b.t);
   for (const { t, tri } of hits.slice(0, 20)) {
     const hx = eye.x + dx * t, hy = eye.y + dy * t, hz = eye.z + dz * t;
-    const n = [tri[9]!, tri[10]!, tri[11]!];
+    const n = [tri[12]!, tri[13]!, tri[14]!];
     const nl2 = Math.hypot(n[0]!, n[1]!, n[2]!) || 1;
     const back = (n[0]! * dx + n[1]! * dy + n[2]! * dz) / nl2 > 0.05;
     console.log(`  t=${t.toFixed(2)} at(${hx.toFixed(2)},${hy.toFixed(2)},${hz.toFixed(2)}) n(${(n[0]! / nl2).toFixed(2)},${(n[1]! / nl2).toFixed(2)},${(n[2]! / nl2).toFixed(2)}) ${back ? 'BACK' : 'front'}`);
@@ -373,9 +375,7 @@ for (let py = 0; py < H; py++) {
     const light = 0.45 + 0.55 * Math.abs(n[0]! * 0.35 + n[1]! * 0.85 + n[2]! * 0.4);
     const fog = Math.max(0.25, 1 - d / 160);
     const base = 215 * light * fog;
-    // tint: floors warm, ceilings cool, walls neutral. NOTE: the
-    // renderer's horizontal quads wind clockwise-from-above, so their
-    // GEOMETRIC normal points down for floors — invert accordingly.
+    // Tint uses the authored shading normal; facing uses geometry above.
     const upness = n[1]!;
     const r = upness > 0.5 ? base : upness < -0.5 ? base * 0.8 : base * 0.95;
     const g = base * 0.92;

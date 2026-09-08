@@ -1,4 +1,8 @@
 interface SettingsMenuProps {
+  audioVolume: number;
+  audioMuted: boolean;
+  onAudioVolumeChange: (value: number) => void;
+  onAudioMutedChange: (value: boolean) => void;
   brightness: number;
   renderScale: number;
   mouseSensitivity: number;
@@ -14,6 +18,7 @@ interface SettingsMenuProps {
 }
 
 export function SettingsMenu({
+  audioVolume, audioMuted, onAudioVolumeChange, onAudioMutedChange,
   brightness,
   renderScale,
   mouseSensitivity,
@@ -106,6 +111,22 @@ export function SettingsMenu({
               checked={fpsCap60}
               onChange={(event) => onFpsCap60Change(event.currentTarget.checked)}
             />
+          </span>
+        </label>
+
+        <label className="settings-control">
+          <span className="settings-control-row">
+            <span>Ambient volume</span>
+            <output>{Math.round(audioVolume * 100)}%</output>
+          </span>
+          <input aria-label="Ambient volume" type="range" min="0" max="1" step="0.01"
+            value={audioVolume} onInput={(event) => onAudioVolumeChange(Number(event.currentTarget.value))} />
+        </label>
+        <label className="settings-control">
+          <span className="settings-control-row">
+            <span>Mute ambience</span>
+            <input aria-label="Mute ambience" type="checkbox" checked={audioMuted}
+              onChange={(event) => onAudioMutedChange(event.currentTarget.checked)} />
           </span>
         </label>
 

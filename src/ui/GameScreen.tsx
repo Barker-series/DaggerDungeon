@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { GameEngine } from '../engine/GameEngine';
+import { AUDIO_SETTINGS_KEY, DEFAULT_AUDIO_SETTINGS, loadAudioSettings } from '../engine/AmbientAudio';
 import { useGameStore } from '../store/gameStore';
 import { HUD } from './HUD';
 import { Compass } from './Compass';
@@ -12,6 +13,7 @@ import { SettingsMenu } from './SettingsMenu';
 import { VisualLab } from './VisualLab';
 import {
   DEFAULT_VISUAL_SETTINGS,
+  migrateVisualSettings,
   type VisualSettings,
 } from '../engine/PostProcessing';
 import type { InputAction } from '../engine/InputManager';
@@ -31,30 +33,9 @@ function loadSetting(key: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function clampVisual(value: unknown, min: number, max: number, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? Math.min(max, Math.max(min, value))
-    : fallback;
-}
-
 function loadVisualSettings(): VisualSettings {
   try {
-    const saved = JSON.parse(localStorage.getItem(VISUAL_SETTINGS_KEY) ?? '');
-    if (saved.version !== 6) return { ...DEFAULT_VISUAL_SETTINGS };
-    return {
-      ...DEFAULT_VISUAL_SETTINGS,
-      ...saved,
-      version: 6,
-      bloomStrength: clampVisual(saved.bloomStrength, 0, 1, DEFAULT_VISUAL_SETTINGS.bloomStrength),
-      bloomRadius: clampVisual(saved.bloomRadius, 0, 1, DEFAULT_VISUAL_SETTINGS.bloomRadius),
-      bloomThreshold: clampVisual(saved.bloomThreshold, 0, 0.25, DEFAULT_VISUAL_SETTINGS.bloomThreshold),
-      contrast: clampVisual(saved.contrast, 0.8, 1.2, DEFAULT_VISUAL_SETTINGS.contrast),
-      saturation: clampVisual(saved.saturation, 0, 1.5, DEFAULT_VISUAL_SETTINGS.saturation),
-      vignette: clampVisual(saved.vignette, 0, 0.5, DEFAULT_VISUAL_SETTINGS.vignette),
-      aoEnabled: typeof saved.aoEnabled === 'boolean' ? saved.aoEnabled : DEFAULT_VISUAL_SETTINGS.aoEnabled,
-      aoIntensity: clampVisual(saved.aoIntensity, 0, 1, DEFAULT_VISUAL_SETTINGS.aoIntensity),
-      aoRadius: clampVisual(saved.aoRadius, 0.3, 2, DEFAULT_VISUAL_SETTINGS.aoRadius),
-    };
+    return migrateVisualSettings(JSON.parse(localStorage.getItem(VISUAL_SETTINGS_KEY) ?? ''));
   } catch {
     return { ...DEFAULT_VISUAL_SETTINGS };
   }
@@ -66,6 +47,9 @@ export function GameScreen() {
   const [pointerLocked, setPointerLocked] = useState(false);
   const [pointerLockUnavailable, setPointerLockUnavailable] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [audioSettings, setAudioSettings] = useState(() => {
+    try { return loadAudioSettings(localStorage); } catch { return { ...DEFAULT_AUDIO_SETTINGS }; }
+  });
   const [visualLabOpen, setVisualLabOpen] = useState(false);
   const [notice, setNotice] = useState('');
   const noticeTimerRef = useRef<number | null>(null);
@@ -142,6 +126,11 @@ export function GameScreen() {
     localStorage.setItem(VISUAL_SETTINGS_KEY, JSON.stringify(visualSettings));
   }, [visualSettings]);
 
+  useEffect(() => {
+    engineRef.current?.setAmbientVolume(audioSettings.volume, audioSettings.muted);
+    try { localStorage.setItem(AUDIO_SETTINGS_KEY, JSON.stringify(audioSettings)); } catch { /* Storage may be blocked. */ }
+  }, [audioSettings]);
+
   const setPaused = useCallback((paused: boolean) => {
     setSettingsOpen(paused);
     engineRef.current?.setPaused(paused);
@@ -196,6 +185,7 @@ export function GameScreen() {
   }, []);
 
   const handleRestoreDefaults = useCallback(() => {
+    setAudioSettings({ ...DEFAULT_AUDIO_SETTINGS });
     engineRef.current?.setBrightness(DEFAULT_BRIGHTNESS);
     engineRef.current?.setMouseSensitivity(DEFAULT_MOUSE_SENSITIVITY);
     engineRef.current?.setPlayerSpeed(DEFAULT_PLAYER_SPEED);
@@ -240,7 +230,10 @@ export function GameScreen() {
       {!settingsOpen && !visualLabOpen && !pointerLocked && !pointerLockUnavailable && !editorActive && (
         <div
           className="pointer-lock-overlay"
-          onClick={handlePlayClick}
+          onClick={(event) => {
+            if (event.isTrusted) engineRef.current?.unlockAmbientAudio();
+            void handlePlayClick();
+          }}
         >
           <div className="pointer-lock-prompt">Click to Play</div>
           <div className="pointer-lock-hint">Escape to release mouse</div>
@@ -303,6 +296,10 @@ export function GameScreen() {
       {notice && <div className="game-notice" role="status">{notice}</div>}
       {settingsOpen && (
         <SettingsMenu
+          audioVolume={audioSettings.volume}
+          audioMuted={audioSettings.muted}
+          onAudioVolumeChange={(volume) => setAudioSettings((s) => ({ ...s, volume }))}
+          onAudioMutedChange={(muted) => setAudioSettings((s) => ({ ...s, muted }))}
           brightness={brightness}
           renderScale={renderScale}
           mouseSensitivity={mouseSensitivity}
