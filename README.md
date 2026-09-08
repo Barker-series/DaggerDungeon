@@ -1,6 +1,6 @@
 # Dagger Dungeon
 
-A first-person megastructure exploration game built with Three.js and React on the RUN.game platform. One vast vertical world: massive climbable pillars rising out of a procedurally sculpted dungeon floor, connected by high bridges over bottomless pits.
+A first-person BLAME!-inspired megastructure exploration game built with Three.js and React on the RUN.game platform. One endless vertical world: authored buildings, ground strata, permanent transit, bridges and physical infrastructure cooperate through deterministic layers and one authoritative column model.
 
 ## The Purpose
 
@@ -65,7 +65,9 @@ The generator uses a **LayerProcGen** architecture — layered procedural genera
 4. **Infinite-world discipline** — every generation feature is a pure function of (seed, absolute cell) plus a bounded neighbor radius. No global scans in new code.
 5. **Front faces are the contract** — structural geometry has consistent triangle winding and renders front-side only. `DoubleSide` is reserved for intentional billboards, never used to conceal missing or reversed faces.
 
-Design documents: [`docs/dungeon-layer-design.md`](docs/dungeon-layer-design.md), [`docs/layerprocgen-findings.md`](docs/layerprocgen-findings.md), [`docs/roads-layer-design.md`](docs/roads-layer-design.md)
+**Editing content? Start with [`docs/CONTENT_AUTHORING.md`](docs/CONTENT_AUTHORING.md)** for owning files, reusable building plans, focused checks and saved-view previews.
+
+Current direction: [`docs/PLAN.md`](docs/PLAN.md). Layer references: [`docs/layerprocgen-findings.md`](docs/layerprocgen-findings.md), [`docs/roads-layer-design.md`](docs/roads-layer-design.md). The older [`docs/dungeon-layer-design.md`](docs/dungeon-layer-design.md) is historical, not the current architecture.
 
 ## Debug Tooling — the DDSNAP loop
 
@@ -164,12 +166,18 @@ src/
     LightingSystem.ts      # Nearest-K room lighting
 
   game/
-    DungeonGenerator.ts    # Orchestrator: pillar field → layers → column model → bridges
+    DungeonGenerator.ts    # Reference/DDSNAP pipeline and synchronous runtime fallback
+    gen/assemble.ts        # Shipping window facade over cached chunked layers
+    gen/layers.ts          # TileBase, Transit, Height, road parcels and Columns
+    gen/infrastructure-layers.ts # Coarse network → physical infrastructure chunks
     types.ts               # DungeonData, WorldData, ColumnSpan
     mapslice.ts            # Elevation-slice classifier (shared by both maps)
     pathfinding.ts         # World A* (bot, compass)
     dungeon/
-      pillar-layer.ts      # Coarse pillar layer — the kebab assembler (pure function)
+      pillar-layer.ts      # Coarse building selection: frames, legacy kebabs, elevators
+      frame-building.ts    # Framed massing, storeys, air and published sockets
+      frame-core-plan.ts   # Editable validated stair/landing/opening recipes
+      structure-kit.ts     # Shared local recipe compiler, no renderer dependencies
       pillar-chunks.ts     # Chunk contract + graybox chunk library
       pillar-geometry.ts   # Chunks → footprints + per-tile air spans (ramps, plazas, corbels)
       pillar-bridges.ts    # Neighbor-pair bridge planning + column carving
@@ -186,6 +194,8 @@ src/
   bot/DungeonBot.ts        # Auto-play state machine
 
 tools/
+  content-workflow.ts      # Grouped checks + named DDSNAP previews (npm run content)
+  content-views.json       # Literal saved views with purpose and source provenance
   debug-view.ts            # DDSNAP viewer: exact-view software raycast + world data dump
   verify-world.ts          # Multi-seed generation and navigation invariants
   export-reference-assets.mjs # Blender-ready scale references for replacement assets

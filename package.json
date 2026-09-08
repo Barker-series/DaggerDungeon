@@ -4,6 +4,8 @@
   "description": "React + Vite + TypeScript app with RundotGameAPI integration",
   "type": "module",
   "scripts": {
+    "content": "node node_modules/tsx/dist/cli.mjs tools/content-workflow.ts",
+    "test:content": "node node_modules/tsx/dist/cli.mjs --test tools/content-workflow.test.ts",
     "dev": "vite",
     "_build": "tsc && vite build",
     "build": "npm run _build",

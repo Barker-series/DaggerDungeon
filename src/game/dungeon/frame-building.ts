@@ -9,13 +9,17 @@ import type { PillarSpec, PlacedChunk, ResolvedSocket } from './pillar-layer';
 import type { PillarRoomSocket } from './pillar-rooms';
 import type { SocketFace } from './pillar-chunks';
 import { frameServiceDecks, frameServiceSolids } from './frame-services';
+import {
+  FRAME_CORE,
+  FRAME_PITCH as CORE_PITCH,
+  FRAME_SLAB as CORE_SLAB,
+  FRAME_DOOR_HEIGHT as CORE_DOOR_HEIGHT,
+} from './frame-core-plan';
 
-export const FRAME_PITCH = 9;
-export const FRAME_SLAB = 1.5;
+export const FRAME_PITCH = CORE_PITCH;
+export const FRAME_SLAB = CORE_SLAB;
+export const FRAME_DOOR_HEIGHT = CORE_DOOR_HEIGHT;
 export const FRAME_ROOF_CLEARANCE = 6;
-/** A fixed opening proportion for the taller occupied storeys; width stays
- *  two tiles and the remaining lintel/floor band stays structural. */
-export const FRAME_DOOR_HEIGHT = 6;
 const BEAM_DEPTH = 2.5;
 const MIN_AIR = 1.5;
 const POSTS = [15, 20, 25, 31, 36, 40];
@@ -107,25 +111,23 @@ export function frameBuildingAir(
   const slab = (y: number, depth = FRAME_SLAB): void => {
     solids.push([y - depth, y]);
   };
-  const inCore = x >= 18 && x <= 23 && z >= 18 && z <= 29;
-  const coreWall = x >= 17 && x <= 24 && z >= 17 && z <= 30 && !inCore;
+  const { interior, envelope } = FRAME_CORE;
+  const inCore = x >= interior.x0 && x <= interior.x1 && z >= interior.z0 && z <= interior.z1;
+  const coreWall =
+    x >= envelope.x0 && x <= envelope.x1 && z >= envelope.z0 && z <= envelope.z1 && !inCore;
 
   if (inCore) {
-    // A taller storey needs more treads, not larger risers. Seven rises on
-    // the outward flight and eight on the return keep the fixed 0.6 step;
-    // the final outward tread joins a generous flat turning landing.
     slab(bottom);
     const lastFlight = p.aboveLevels - (roofClosed ? 2 : 1);
-    for (let level = -p.belowLevels; level <= lastFlight; level++) {
-      const y = frameFloorY(level);
-      if (z <= 19) slab(y);
-      else if (z >= 28) slab(y + 4.2);
-      else if (x <= 19) slab(y + Math.min(7, z - 19) * 0.6);
-      else if (x >= 22) slab(y + 4.2 + (28 - z) * 0.6);
-    }
+    FRAME_CORE.storey.appendLevels(x, z, -p.belowLevels, lastFlight, FRAME_PITCH, 0.5, solids);
     // Only the arrival landing closes the top. A plate over the entire well
     // would block the last flight; the surrounding roof is reached here.
-    if (z <= 19 || (x >= 22 && z === 20)) slab(frameFloorY(p.aboveLevels - (roofClosed ? 1 : 0)));
+    FRAME_CORE.arrival.appendSolids(
+      x,
+      z,
+      frameFloorY(p.aboveLevels - (roofClosed ? 1 : 0)),
+      solids,
+    );
     if (roofClosed) solids.push([top - FRAME_SLAB, cap]);
   } else {
     const levels: number[] = [];
@@ -138,13 +140,15 @@ export function frameBuildingAir(
     if (pierAt(x, z) && levels.length) {
       solids.push([bottom - FRAME_SLAB, frameFloorY(levels[levels.length - 1]!)]);
     } else if (coreWall) {
-      for (let level = -p.belowLevels; level < p.aboveLevels; level++) {
-        const y = frameFloorY(level);
-        // One deliberate landing entrance per storey, opening onto the
-        // atrium-side internal circulation spine.
-        const door = x === 24 && (z === 18 || z === 19);
-        solids.push([door ? y + FRAME_DOOR_HEIGHT : y, frameFloorY(level + 1)]);
-      }
+      FRAME_CORE.wall.appendLevels(
+        x,
+        z,
+        -p.belowLevels,
+        p.aboveLevels - 1,
+        FRAME_PITCH,
+        0.5,
+        solids,
+      );
     } else {
       // Occupied room bays behind the open/recessed facade galleries. Fixed
       // door sizes; thick crosswalls carry the floors instead of perforating
@@ -198,9 +202,10 @@ export function createFrameSpec(frame: FrameBuildingPlan, pcx: number, pcz: numb
       baseY: level * FRAME_PITCH,
       rotation: frame.rotation,
     });
-    publish(22, 18, level, 'entry');
-    publish(25, 20, level, 'room');
-    publish(25, 29, level, 'room');
+    const anchors = FRAME_CORE.storey.sockets;
+    publish(anchors['entry']!.x, anchors['entry']!.z, level, 'entry');
+    publish(anchors['spineNorth']!.x, anchors['spineNorth']!.z, level, 'room');
+    publish(anchors['spineSouth']!.x, anchors['spineSouth']!.z, level, 'room');
     for (const [x, z] of [
       [30, 19],
       [30, 35],
@@ -231,7 +236,8 @@ export function createFrameSpec(frame: FrameBuildingPlan, pcx: number, pcz: numb
   }
   for (const d of frameServiceDecks(frame)) {
     const group = `service-${d.level}`;
-    publish(22, 18, d.level - 1, 'entry', group);
+    const entry = FRAME_CORE.storey.sockets['entry']!;
+    publish(entry.x, entry.z, d.level - 1, 'entry', group);
     publish(28, 24, d.level - 1, 'room', group);
     publish(d.ladderX, 23, d.level - 1, 'room', group);
     publish(d.ladderX, 22, d.level, 'room', group);

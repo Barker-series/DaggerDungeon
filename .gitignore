@@ -10,3 +10,7 @@ coverage/
 .rundot-docs
 .env
 .asset-bot/
+
+# Reproducible content-workflow outputs, not authored game assets.
+/artifacts/content/
+/artifacts/content-baseline/

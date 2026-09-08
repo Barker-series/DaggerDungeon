@@ -7,6 +7,11 @@ constant, with a live seed-driven field viewer). Roads design:
 `docs/roads-layer-design.md`. Interiors kit: `docs/pillar-room-kit.md`. Asset
 handoff: `docs/modular-asset-handoff.md`.*
 
+**Working on content:** [CONTENT_AUTHORING.md](CONTENT_AUTHORING.md) is the
+start-here source map, authoring workflow and verification guide. This document
+remains the design authority; the guide explains how to implement that direction
+without rediscovering layer ownership or the debugging commands.
+
 ## The Dream
 
 This is no longer a fantasy dungeon generator. It is an endless, brutalist

@@ -1,0 +1,44 @@
+[
+  {
+    "id": "frame-atrium",
+    "feature": "Framed building atrium transfer level",
+    "purpose": "Inspect occupied wings, gallery openings and the protected central void.",
+    "source": "docs/framed-buildings.md",
+    "snapshot": "DDSNAP1{\"seed\":1234,\"stack\":1,\"opx\":0,\"opz\":-1,\"x\":232.5,\"y\":18.5,\"z\":250.5,\"yaw\":-1.5707963267948966,\"pitch\":0.2}"
+  },
+  {
+    "id": "core-switchback",
+    "feature": "Framed internal switchback core",
+    "purpose": "Inspect the ascending flight, landings and slab clearances after kit edits.",
+    "source": "docs/framed-buildings.md",
+    "snapshot": "DDSNAP1{\"seed\":1234,\"stack\":1,\"opx\":0,\"opz\":-1,\"x\":280.5,\"y\":18.5,\"z\":277.5,\"yaw\":0,\"pitch\":0.1}"
+  },
+  {
+    "id": "frame-ladder",
+    "feature": "Framed service ladder and upper landing",
+    "purpose": "Inspect physical ladder approach, rung clearance and the existing shelf landing, not the historical local pipe bank.",
+    "source": "docs/atrium-maintenance.md",
+    "snapshot": "DDSNAP1{\"seed\":1234,\"stack\":1,\"opx\":0,\"opz\":-1,\"x\":433.5,\"y\":18.5,\"z\":238.5,\"yaw\":0,\"pitch\":0.35}"
+  },
+  {
+    "id": "service-crossing",
+    "feature": "Exposed infrastructure crossing above road facilities",
+    "purpose": "Inspect long physical trunks and the road-facility relationship.",
+    "source": "docs/infrastructure-network.md",
+    "snapshot": "DDSNAP1{\"seed\":1788647085001,\"stack\":1,\"opx\":-5,\"opz\":1,\"x\":514.5,\"y\":60,\"z\":329.1,\"yaw\":-0.3,\"pitch\":-0.3}"
+  },
+  {
+    "id": "service-walkbeam",
+    "feature": "Enclosed maintenance walk-beam and side-port ladder",
+    "purpose": "Inspect service access geometry, walkway support and ladder connections.",
+    "source": "docs/infrastructure-network.md",
+    "snapshot": "DDSNAP1{\"seed\":1234,\"stack\":1,\"opx\":-1,\"opz\":-1,\"x\":348,\"y\":75,\"z\":199.5,\"yaw\":-1.6,\"pitch\":0.15}"
+  },
+  {
+    "id": "main-pipe",
+    "feature": "Main pipe interior",
+    "purpose": "Inspect the real octagonal bore and interior-facing surfaces.",
+    "source": "docs/infrastructure-network.md",
+    "snapshot": "DDSNAP1{\"seed\":1234,\"stack\":1,\"opx\":-1,\"opz\":-1,\"x\":308,\"y\":78.9,\"z\":190.5,\"yaw\":-1.5707963267948966,\"pitch\":0}"
+  }
+]
