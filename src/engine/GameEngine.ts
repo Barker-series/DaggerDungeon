@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createMaterial } from './MaterialLibrary';
 import { CAMERA_FAR, FOG_DEFAULT, FOG_ROADS, FOG_EMBER } from './visibility-policy';
 import { AmbientAudio, sampleAmbientLocation } from './AmbientAudio';
 import { DungeonRenderer, syncDetailUniforms } from './DungeonRenderer';
@@ -243,13 +244,9 @@ export class GameEngine {
     // Structural geometry is front-facing only. Debug views keep culling
     // enabled so they reveal winding and missing-face bugs instead of hiding
     // them behind a different material contract.
-    solid: new THREE.MeshBasicMaterial({ color: 0xb8b2a8, side: THREE.FrontSide }),
-    wireframe: new THREE.MeshBasicMaterial({
-      color: 0xd4a44a,
-      wireframe: true,
-      side: THREE.FrontSide,
-    }),
-    normals: new THREE.MeshNormalMaterial({ side: THREE.FrontSide }),
+    solid: createMaterial('debug-solid'),
+    wireframe: createMaterial('debug-wireframe'),
+    normals: createMaterial('debug-normals'),
   };
 
   constructor(
@@ -330,7 +327,7 @@ export class GameEngine {
       if (!hit) return;
       const mesh = new THREE.Mesh(
         new THREE.SphereGeometry(0.3, 8, 6),
-        new THREE.MeshBasicMaterial({ color: 0xff2020 }),
+        createMaterial('debug-mark'),
       );
       mesh.userData['debugMark'] = true;
       mesh.position.copy(hit.point);
@@ -612,14 +609,14 @@ export class GameEngine {
       }
     }
     const group = new THREE.Group();
-    const mk = (verts: number[], color: number, opacity: number): void => {
+    const mk = (verts: number[], materialId: string): void => {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-      const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false });
+      const mat = createMaterial<THREE.LineBasicMaterial>(materialId);
       group.add(new THREE.LineSegments(g, mat));
     };
-    mk(cellVerts, 0x2a6a8a, 0.25);
-    mk(chunkVerts, 0x00e5ff, 0.6);
+    mk(cellVerts, 'editor-grid-cell');
+    mk(chunkVerts, 'editor-grid-chunk');
     this.scene.add(group);
     this.editorGridGroup = group;
   }
@@ -735,11 +732,7 @@ export class GameEngine {
       }
       tri.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
       tri.setIndex([0, 1, 2]);
-      const triMesh = new THREE.Mesh(tri, new THREE.MeshBasicMaterial({
-        color: 0x00e5ff, transparent: true, opacity: 0.5, side: THREE.DoubleSide,
-        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-        depthWrite: false,
-      }));
+      const triMesh = new THREE.Mesh(tri, createMaterial('editor-selection-face'));
       triMesh.userData['ddkit'] = true;
       sub.add(triMesh);
     }
@@ -751,7 +744,18 @@ export class GameEngine {
         new THREE.Vector3(tx * TILE_SIZE, y0, tz * TILE_SIZE),
         new THREE.Vector3((tx + 1) * TILE_SIZE, y1, (tz + 1) * TILE_SIZE),
       );
-      const helper = new THREE.Box3Helper(box, 0x00e5ff);
+      // Box3Helper creates a hidden native material. Keep its exact unit-box
+      // geometry and transform, but route appearance through the shared role.
+      const geometry = new THREE.BufferGeometry();
+      geometry.setIndex([0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7]);
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute([
+        1, 1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1,
+        1, 1, -1, -1, 1, -1, -1, -1, -1, 1, -1, -1,
+      ], 3));
+      geometry.computeBoundingSphere();
+      const helper = new THREE.LineSegments(geometry, createMaterial<THREE.LineBasicMaterial>('editor-selection-box'));
+      box.getCenter(helper.position);
+      box.getSize(helper.scale).multiplyScalar(0.5);
       helper.userData['ddkit'] = true;
       sub.add(helper);
     }

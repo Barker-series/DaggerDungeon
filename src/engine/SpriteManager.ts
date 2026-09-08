@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { createMaterial, getTexture } from './MaterialLibrary';
+import { SPRITE_STYLE, SPRITE_TEXTURE_STYLE } from '../game/material-presets';
 import { TILE_SIZE } from '../game/types';
 import type { GridPos } from '../game/types';
 
@@ -6,19 +8,6 @@ const MAX_SPRITES = 128;
 const LERP_SPEED = 10;
 const SPRITE_Y = 1.2;
 
-const texLoader = new THREE.TextureLoader();
-const texCache = new Map<string, THREE.Texture>();
-
-function getTexture(path: string): THREE.Texture {
-  let tex = texCache.get(path);
-  if (!tex) {
-    tex = texLoader.load(path);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.magFilter = THREE.NearestFilter;
-    texCache.set(path, tex);
-  }
-  return tex;
-}
 
 interface SpriteEntry {
   id: string;
@@ -30,7 +19,7 @@ interface SpriteEntry {
 export class SpriteManager {
   private scene: THREE.Scene;
   private group: THREE.Group;
-  private entries: Map<string, { entry: SpriteEntry; mesh: THREE.Mesh }> = new Map();
+  private entries: Map<string, { entry: SpriteEntry; mesh: THREE.Mesh | THREE.Sprite }> = new Map();
   private planeGeom: THREE.PlaneGeometry;
 
   constructor(scene: THREE.Scene) {
@@ -47,27 +36,24 @@ export class SpriteManager {
   }
 
   /** Add a sprite at world position with color fallback */
-  addSpriteWorld(id: string, worldX: number, worldZ: number, color: number, scale = 1.5, texturePath?: string): void {
+  addSpriteWorld(id: string, worldX: number, worldZ: number, color: number, scale = 1.5, texturePath?: string, materialId?: string): void {
     if (this.entries.size >= MAX_SPRITES) return;
 
     let material: THREE.Material;
-    if (texturePath) {
-      material = new THREE.MeshBasicMaterial({
-        map: getTexture(texturePath),
-        side: THREE.DoubleSide,
-        transparent: true,
-        alphaTest: 0.1,
+    if (materialId) {
+      // Named roles own their texture/tint; legacy arguments remain compatible.
+      material = createMaterial(materialId);
+    } else if (texturePath) {
+      material = createMaterial('sprite-textured', {
+        map: getTexture({ ...SPRITE_TEXTURE_STYLE, path: texturePath }),
       });
     } else {
-      material = new THREE.MeshBasicMaterial({
-        color,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.95,
-      });
+      material = createMaterial('sprite-color', { color });
     }
 
-    const mesh = new THREE.Mesh(this.planeGeom, material);
+    const mesh = material instanceof THREE.SpriteMaterial
+      ? new THREE.Sprite(material)
+      : new THREE.Mesh(this.planeGeom, material);
     mesh.scale.set(scale, scale, 1);
     mesh.position.set(worldX, SPRITE_Y, worldZ);
 
@@ -123,7 +109,7 @@ export class SpriteManager {
     if (!data) return;
     const mat = data.mesh.material as THREE.MeshBasicMaterial;
     const origColor = mat.color.getHex();
-    mat.color.set(0xffffff);
+    mat.color.set(SPRITE_STYLE.flashColor);
     setTimeout(() => {
       if (this.entries.has(id)) {
         mat.color.set(origColor);

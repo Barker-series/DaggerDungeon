@@ -265,6 +265,10 @@ test('group selection separates cheap authoring from world gates and deduplicate
     'frame-core-plan.test',
   ]);
   const all = selectChecks('all');
+  assert.ok(
+    selectChecks('materials').includes('verify-metal-readability'),
+    'the normal material check must catch pipe/ladder contrast regressions',
+  );
   assert.equal(new Set(all).size, all.length);
   assert.ok(all.includes('verify-world'));
   assert.ok(all.includes('verify-migration'));

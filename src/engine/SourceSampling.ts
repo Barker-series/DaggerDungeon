@@ -57,7 +57,9 @@ float sourceHeight = 0.0;
 export const SOURCE_MAP_FRAGMENT = `#ifdef USE_MAP
   vec4 sourceTexel = sourceSample(map, vMapUv);
   diffuseColor.rgb *= sourceTexel.rgb;
+  #ifdef USE_BUMPMAP
   sourceHeight = sourceTexel.a * bumpScale;
+  #endif
 #endif
 // SOURCE_MAP_END`;
 export const SOURCE_NORMAL_FRAGMENT = `#ifdef USE_BUMPMAP

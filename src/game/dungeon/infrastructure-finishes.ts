@@ -4,6 +4,7 @@
 import type { InfrastructurePrimitive, InfrastructurePoint } from './infrastructure-solid';
 import { regionAtCell, type RegionType } from './region-layer';
 import { cellSeed, mulberry32 } from './rng';
+import { PIPE_COLORS } from '../material-presets';
 
 export type PipeService = 'trunk' | 'return' | 'service';
 export interface PipeFinish {
@@ -12,14 +13,7 @@ export interface PipeFinish {
   readonly hex: number;
   readonly color: readonly [number, number, number];
 }
-export const TRUNK_FINISHES: Record<RegionType, readonly number[]> = {
-  city: [0xb7b6ae, 0xc4c0b3],
-  machine: [0x70797d, 0x62686b],
-  roads: [0xa7afb0, 0xb8b6a8],
-  canyon: [0xa39d8e, 0xb2afa4],
-  frontier: [0x8b9090, 0xa5a498],
-  fold: [0xacb4b5, 0xc1c2b8],
-};
+export const TRUNK_FINISHES = PIPE_COLORS.trunk;
 const linear = (v: number): number => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
 function finish(seed: number, x: number, z: number, service: PipeService): PipeFinish {
   const district = regionAtCell(seed, x * 8, z * 8);
@@ -28,9 +22,9 @@ function finish(seed: number, x: number, z: number, service: PipeService): PipeF
       ? TRUNK_FINISHES[district]
       : service === 'return'
         ? district === 'machine'
-          ? [0x687b72, 0x71848b]
-          : [0x667f8c, 0x788990]
-        : [0xc6bda7, 0xb1b7ad];
+          ? PIPE_COLORS.return.machine
+          : PIPE_COLORS.return.other
+        : PIPE_COLORS.service;
   const salt = service === 'trunk' ? 0x5041494e : service === 'return' ? 0x52455455 : 0x53455256;
   const hex = palette[Math.floor(mulberry32(cellSeed(x, z, seed, salt))() * palette.length)]!;
   const color = Object.freeze([

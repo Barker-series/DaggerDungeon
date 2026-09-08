@@ -2,7 +2,22 @@
 import * as THREE from 'three';
 import { TILE_SIZE } from '../game/types';
 import { SOURCE_SAMPLE_GLSL, SOURCE_MAP_FRAGMENT, SOURCE_NORMAL_FRAGMENT } from './SourceSampling';
+import { createNativeMaterial, getTexture } from './MaterialResources';
+import {
+  SOURCE_SURFACES,
+  METAL_TEXTURE_RESPONSE,
+  CABLE_PRESET,
+  FITTING_TREAD,
+  type SourceSurface,
+} from '../game/material-presets';
+export {
+  SOURCE_SURFACES,
+  METAL_TEXTURE_RESPONSE,
+  type SourceSurface,
+} from '../game/material-presets';
 export { sourceSampleTaps } from './SourceSampling';
+const glslFloat = (value: number): string =>
+  Number.isInteger(value) ? `${value}.0` : String(value);
 
 /** CPU reference of the shader's single-plane projection, before role repeat. */
 export function concreteTextureUV(p: number[], n: number[], origin: number[]): [number, number] {
@@ -38,121 +53,62 @@ float quietSlabFactor(vec2 p, float pixelWidth) {
   float tone = 0.98 + 0.02 * mod(floor(p.x / 3.0) + floor(p.y / 6.0), 2.0);
   return tone * (1.0 - 0.18 * joint);
 }`;
-export type SourceSurface =
-  | 'concrete-wall'
-  | 'concrete-floor'
-  | 'concrete-ceiling'
-  | 'concrete-mineral'
-  | 'painted-metal'
-  | 'rusted-metal'
-  | 'utility-tread';
-interface SurfaceProfile {
-  color: string;
-  height: string;
-  packed: string;
-  repeat: number;
-  bump: number;
-  shininess: number;
-  specular: number;
-}
-const profile = (
-  role: SourceSurface,
-  repeat: number,
-  bump: number,
-  shininess: number,
-  specular: number,
-): SurfaceProfile => ({
-  color: `/textures/source/${role}-color.jpg`,
-  height: `/textures/source/${role}-height.jpg`,
-  packed: `/textures/source/${role}-packed.webp`,
-  repeat,
-  bump,
-  shininess,
-  specular,
-});
-/** Legacy concrete is ordinary RGB: derive subtle relief from luminance,
- * never interpret its opaque alpha as authored packed metal height. */
-const quietProfile = (asset: string, bump: number): SurfaceProfile => ({
-  color: `/textures/${asset}.png`,
-  height: `/textures/${asset}.png`,
-  packed: `/textures/${asset}.png`,
-  repeat: 1,
-  bump,
-  shininess: 4,
-  specular: 0x171918,
-});
-export const SOURCE_SURFACES: Record<SourceSurface, SurfaceProfile> = {
-  'concrete-wall': quietProfile('concrete-clean-base', 0.018),
-  'concrete-floor': quietProfile('concrete-smooth-precast', 0.012),
-  'concrete-ceiling': quietProfile('concrete-clean-base', 0.006),
-  'concrete-mineral': quietProfile('concrete-fine-aggregate', 0.012),
-  'painted-metal': profile('painted-metal', 0.5, 0.035, 28, 0x44483f),
-  'rusted-metal': profile('rusted-metal', 1, 0.045, 10, 0x29251e),
-  'utility-tread': profile('utility-tread', 1.5, 0.07, 24, 0x454741),
-};
-/** Measured linear-luminance centres of the current CC0 maps. Neutralising
- * their hue must not squash all scratches/pitting into a near-constant value. */
-export const METAL_TEXTURE_RESPONSE = {
-  'painted-metal': { mean: 0.066, gain: 5 },
-  'rusted-metal': { mean: 0.06, gain: 3 },
-} as const;
+
 export function metalTextureValue(
   role: keyof typeof METAL_TEXTURE_RESPONSE,
   luminance: number,
 ): number {
   const p = METAL_TEXTURE_RESPONSE[role];
-  return Math.min(0.95, Math.max(0.25, 0.72 + (luminance - p.mean) * p.gain));
+  return Math.min(1, Math.max(0, luminance * p.gain));
 }
-const textures = new Map<string, THREE.Texture>();
-const loader = new THREE.TextureLoader();
+
 export function getSourceTexture(
   role: SourceSurface,
   channel: 'color' | 'height' | 'packed',
 ): THREE.Texture {
   const p = SOURCE_SURFACES[role],
     path = p[channel];
-  const cacheKey = `${path}:${channel === 'height' ? 'data' : 'srgb'}:${p.repeat}`;
-  const cached = textures.get(cacheKey);
-  if (cached) return cached;
-  const t = loader.load(path, undefined, undefined, (error) =>
-    console.error(`Failed to load material texture: ${path}`, error),
-  );
-  t.name = path;
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(p.repeat, p.repeat);
-  // Hardware sRGB decode affects RGB only, NOT linear height alpha.
-  t.colorSpace = channel === 'height' ? THREE.NoColorSpace : THREE.SRGBColorSpace;
-  t.premultiplyAlpha = false;
-  t.magFilter = THREE.LinearFilter;
-  t.minFilter = THREE.LinearMipmapLinearFilter;
-  t.generateMipmaps = true;
-  t.anisotropy = 4;
-  textures.set(cacheKey, t);
-  return t;
+  return getTexture({
+    path,
+    colorSpace: channel === 'height' ? 'linear' : 'srgb',
+    wrap: 'repeat',
+    repeat: p.repeat,
+    premultiplyAlpha: false,
+    magFilter: 'linear',
+    minFilter: 'mipmap',
+    mipmaps: true,
+    anisotropy: 4,
+  });
 }
 export function createSourceMaterial(
   role: SourceSurface | 'rubber',
   tint = 0xffffff,
 ): THREE.MeshPhongMaterial {
-  if (role === 'rubber')
-    return new THREE.MeshPhongMaterial({
-      name: 'source-rubber',
-      color: 0x242725,
-      specular: 0x101210,
-      shininess: 3,
-      side: THREE.FrontSide,
+  if (role === 'rubber') {
+    const material = createNativeMaterial<THREE.MeshPhongMaterial>({
+      kind: 'phong',
+      color: CABLE_PRESET.tint,
+      specular: CABLE_PRESET.specular,
+      shininess: CABLE_PRESET.shininess,
+      side: 'front',
     });
+    material.name = 'source-rubber';
+    return material;
+  }
   const p = SOURCE_SURFACES[role];
-  const material = new THREE.MeshPhongMaterial({
-    name: `source-${role}`,
-    map: getSourceTexture(role, 'packed'),
-    bumpMap: getSourceTexture(role, 'packed'),
-    bumpScale: p.bump,
-    color: tint,
-    specular: p.specular,
-    shininess: p.shininess,
-    side: THREE.FrontSide,
-  });
+  const material = createNativeMaterial<THREE.MeshPhongMaterial>(
+    {
+      kind: 'phong',
+      bumpScale: p.bump,
+      color: tint,
+      specular: p.specular,
+      shininess: p.shininess,
+      side: 'front',
+    },
+    { map: getSourceTexture(role, 'packed'), bumpMap: getSourceTexture(role, 'packed') },
+  );
+  material.name = `source-${role}`;
+  material.color.multiply(new THREE.Color(p.tint));
   material.vertexColors = role === 'painted-metal';
   const sampling = role.startsWith('concrete-')
     ? `
@@ -162,11 +118,11 @@ vec4 sourceSample(sampler2D tex, vec2 uv) {
 }
 float sourceHeight = 0.0;
 `
-    : role === 'painted-metal' || role === 'rusted-metal'
+    : role === 'painted-metal'
       ? SOURCE_SAMPLE_GLSL.replace('vec4 sourceSample(', 'vec4 sourceRawSample(') +
         `
 float sourceMetalDetail(float luminance) {
-  return clamp(0.72 + (luminance - ${METAL_TEXTURE_RESPONSE[role].mean.toFixed(3)}) * ${METAL_TEXTURE_RESPONSE[role].gain.toFixed(1)}, 0.25, 0.95);
+  return clamp(luminance * ${METAL_TEXTURE_RESPONSE[role].gain.toPrecision(17)}, 0.0, 1.0);
 }
 vec4 sourceSample(sampler2D tex, vec2 uv) {
   vec4 sourceTexel = sourceRawSample(tex, uv);
@@ -188,11 +144,12 @@ vec4 sourceSample(sampler2D tex, vec2 uv) {
       )
       .replace('#include <normal_fragment_maps>', SOURCE_NORMAL_FRAGMENT);
   };
-  material.customProgramCacheKey = () => `source-quiet-v4:${role}`;
+  material.customProgramCacheKey = () =>
+    `source-quiet-v5:${role}:${role === 'painted-metal' ? METAL_TEXTURE_RESPONSE[role].gain : ''}`;
   return material;
 }
 
-/** Keep the fittings batch: aligned nonslip deck, neutral worn steel sides. */
+/** Keep the fittings batch: aligned nonslip deck, original iron texture sides. */
 export function createSourceFittingMaterial(): THREE.MeshPhongMaterial {
   const material = createSourceMaterial('rusted-metal');
   const baseCompile = material.onBeforeCompile;
@@ -217,15 +174,18 @@ uniform float sourceTreadRelief;`,
       .replace(
         SOURCE_MAP_FRAGMENT,
         `#ifdef USE_MAP
- float sourceTopWeight = smoothstep(0.65, 0.95, vSourceUp);
+ float sourceTopWeight = smoothstep(${glslFloat(FITTING_TREAD.upwardStart)}, ${glslFloat(FITTING_TREAD.upwardFull)}, vSourceUp);
  vec4 iron = sourceSample(map, vMapUv);
- vec2 treadUV = vMapUv * 1.5;
+ vec2 treadUV = vMapUv * ${glslFloat(FITTING_TREAD.uvScale)};
  vec4 tread = textureGrad(sourceTread, treadUV, dFdx(treadUV), dFdy(treadUV));
  diffuseColor.rgb *= mix(iron.rgb, tread.rgb, sourceTopWeight);
+ #ifdef USE_BUMPMAP
  sourceHeight = mix(iron.a * bumpScale, tread.a * sourceTreadRelief, sourceTopWeight);
+ #endif
 #endif`,
       );
   };
-  material.customProgramCacheKey = () => 'source-fittings-neutral-tread-v4';
+  material.customProgramCacheKey = () =>
+    `source-fittings-iron-tread-v5:${JSON.stringify(FITTING_TREAD)}`;
   return material;
 }

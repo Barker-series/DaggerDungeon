@@ -11,22 +11,25 @@ assert.equal(
   'function',
   'neutral metal texture response needs a contrast-preserving mapping',
 );
-for (const [role, mean, gain] of [
-  ['painted-metal', 0.066, 5],
-  ['rusted-metal', 0.06, 3],
-] as const) {
-  const low = materials.metalTextureValue(role, mean - 0.01),
-    high = materials.metalTextureValue(role, mean + 0.01);
-  assert.ok(
-    high - low >= 0.02 * gain - 1e-8,
-    'scuffs and grain must not collapse into nearly flat paint',
+const mean = materials.METAL_TEXTURE_RESPONSE['painted-metal'].mean;
+assert.equal(
+  materials.metalTextureValue('painted-metal', 0),
+  0,
+  'black scuffs must stay black, not become a pale additive coating',
+);
+assert.ok(Math.abs(materials.metalTextureValue('painted-metal', mean) - 0.72) < 1e-8);
+assert.ok(
+  Math.abs(materials.metalTextureValue('painted-metal', mean / 2) - 0.36) < 1e-8,
+  'recolouring must retain source luminance ratios below saturation',
+);
+assert.equal(materials.metalTextureValue('painted-metal', 1), 1);
+for (const value of [0, 0.01, 0.06, 0.5, 1])
+  assert.equal(
+    materials.metalTextureValue('rusted-metal', value),
+    value,
+    'unpainted iron keeps its authored luminance',
   );
-  assert.ok(
-    Math.abs(materials.metalTextureValue(role, mean) - 0.72) < 1e-8,
-    'keep the current average finish brightness',
-  );
-  assert.ok(materials.metalTextureValue(role, 0) >= 0.2);
-  assert.ok(materials.metalTextureValue(role, 1) <= 0.95);
+for (const role of ['painted-metal', 'rusted-metal'] as const) {
   const m = materials.createSourceMaterial(role),
     s: any = {
       uniforms: {},
@@ -34,20 +37,44 @@ for (const [role, mean, gain] of [
       fragmentShader: THREE.ShaderLib.phong.fragmentShader,
     };
   m.onBeforeCompile(s, {} as any);
-  assert.ok(
+  assert.equal(
     s.fragmentShader.includes('sourceMetalDetail('),
-    'actual shader consumes the contrast-preserving response',
+    role === 'painted-metal',
+    'only recoloured paint uses a luminance response; iron must keep source RGB',
   );
+  assert.equal(s.fragmentShader.includes('vec3(wear)'), role === 'painted-metal');
+  if (role === 'painted-metal') {
+    const gain = materials.METAL_TEXTURE_RESPONSE[role].gain.toPrecision(17);
+    assert.ok(
+      s.fragmentShader.includes(`return clamp(luminance * ${gain}, 0.0, 1.0);`),
+      'the actual shader must match the multiplicative CPU response, not restore an additive wash',
+    );
+  }
   assert.ok(
     s.fragmentShader.includes('sourceTexel.a'),
     'height/relief remains authored texture data',
   );
 }
+const fitting = materials.createSourceFittingMaterial();
+const fittingShader: any = {
+  uniforms: {},
+  vertexShader: THREE.ShaderLib.phong.vertexShader,
+  fragmentShader: THREE.ShaderLib.phong.fragmentShader,
+};
+fitting.onBeforeCompile(fittingShader, {} as any);
+assert.ok(
+  !fittingShader.fragmentShader.includes('sourceMetalDetail('),
+  'real ladder batch retains iron colour',
+);
+assert.ok(
+  fittingShader.fragmentShader.includes('mix(iron.rgb, tread.rgb, sourceTopWeight)'),
+  'tread tops unchanged',
+);
 assert.equal(
   materials.createSourceMaterial('concrete-wall').map!.name,
   '/textures/concrete-clean-base.png',
   'quiet concrete remains protected',
 );
 console.log(
-  'metal readability: stronger texture contrast with stable mean, neutral colour and retained relief passed',
+  'metal readability: source-relative pipe contrast, original ladder iron RGB and protected concrete passed',
 );

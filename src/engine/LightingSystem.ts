@@ -1,37 +1,31 @@
 import * as THREE from 'three';
+import { createMaterial } from './MaterialLibrary';
 import { FOG_DEFAULT, FOG_NEAR, FOG_FAR } from './visibility-policy';
 import { TILE_SIZE, WALL_HEIGHT, TileType, SKY_CEIL } from '../game/types';
 import type { DungeonData, WorldData } from '../game/types';
-import { tileBiome, type BiomeType } from '../game/dungeon/cells';
+import { tileBiome } from '../game/dungeon/cells';
+import { BIOME_TORCH, LIGHT_STYLE } from '../game/material-presets';
 import { PILLAR_CELL_TILES } from '../game/dungeon/pillar-layer';
 import { infrastructureColumnAt } from '../game/dungeon/infrastructure-columns';
 
 
-const AMBIENT_COLOR = 0xdedbd2;
-const AMBIENT_INTENSITY = 0.40;
-const TORCH_COLOR = 0xffd6a0;
-const TORCH_INTENSITY = 2.5;
+const AMBIENT_COLOR = LIGHT_STYLE.ambientColor;
+const AMBIENT_INTENSITY = LIGHT_STYLE.ambientIntensity;
+const TORCH_COLOR = LIGHT_STYLE.torchColor;
+const TORCH_INTENSITY = LIGHT_STYLE.torchIntensity;
 const TORCH_DISTANCE = TILE_SIZE * 10; // must reach cell corners from its center
-const TORCH_DECAY = 1.5;
+const TORCH_DECAY = LIGHT_STYLE.torchDecay;
 
-// Each biome lights differently — the strongest cheap mood signal there is
-const BIOME_TORCH: Record<BiomeType, { color: number; intensity: number }> = {
-  dungeon: { color: 0xffd6a0, intensity: 2.5 }, // warm utility lamps
-  cave: { color: 0xe6c79e, intensity: 2.1 }, // dusty work lights
-  crypt: { color: 0xc0d2c3, intensity: 2.4 }, // aged fluorescent
-  ember: { color: 0xff9452, intensity: 3.1 }, // restrained furnace glow
-  outside: { color: 0xd0deea, intensity: 2.8 }, // cool overcast fill
-};
-const CORRIDOR_LIGHT_COLOR = 0xd4dbc6;
-const CORRIDOR_LIGHT_INTENSITY = 1.7;
+const CORRIDOR_LIGHT_COLOR = LIGHT_STYLE.corridorColor;
+const CORRIDOR_LIGHT_INTENSITY = LIGHT_STYLE.corridorIntensity;
 const CORRIDOR_LIGHT_DISTANCE = TILE_SIZE * 4;
 /** THRESHOLD BEACONS — light marks the mouths of the permanent transit
  *  corridors (the Mik principle: guide with light direction, never
  *  yellow paint). The network was 100% reachable but experientially
  *  invisible; a cold marker light at every mouth makes the
  *  infrastructure legible without touching geometry or UI. */
-const THRESHOLD_COLOR = 0xd5e4dc;
-const THRESHOLD_INTENSITY = 2.6;
+const THRESHOLD_COLOR = LIGHT_STYLE.thresholdColor;
+const THRESHOLD_INTENSITY = LIGHT_STYLE.thresholdIntensity;
 const THRESHOLD_DISTANCE = TILE_SIZE * 6;
 
 /** FIXED point-light pool (the synthcity free-list idea): exactly this
@@ -123,7 +117,7 @@ export class LightingSystem {
    *  glow — bloom turns it into a soft volumetric-looking source). */
   private pool: THREE.PointLight[] = [];
   private halos: THREE.Sprite[] = [];
-  private haloTexture: THREE.Texture | null = null;
+
   private frameMounts: THREE.InstancedMesh<THREE.BoxGeometry, THREE.MeshBasicMaterial> | null = null;
   private activeLevel = -1;
   private lastCullX = Infinity;
@@ -134,39 +128,15 @@ export class LightingSystem {
     this.scene = scene;
   }
 
-  private makeHaloTexture(): THREE.Texture {
-    if (this.haloTexture) return this.haloTexture;
-    const size = 64;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d')!;
-    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-    g.addColorStop(0, 'rgba(255,255,255,0.85)');
-    g.addColorStop(0.35, 'rgba(255,255,255,0.25)');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, size, size);
-    this.haloTexture = new THREE.CanvasTexture(canvas);
-    return this.haloTexture;
-  }
-
   private ensurePool(): void {
     if (this.pool.length > 0) return;
-    const halo = this.makeHaloTexture();
     for (let i = 0; i < LIGHT_POOL_SIZE; i++) {
-      const light = new THREE.PointLight(0xffffff, 0, TORCH_DISTANCE, TORCH_DECAY);
+      const light = new THREE.PointLight(LIGHT_STYLE.poolColor, 0, TORCH_DISTANCE, TORCH_DECAY);
       light.visible = true; // ALWAYS visible — constant shader light count
       this.scene.add(light);
       this.pool.push(light);
-      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: halo,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        transparent: true,
-        opacity: 0,
-      }));
-      sprite.scale.set(0.6, 0.6, 1); // small lamp glint — full-size halos read as floating orbs
+      const sprite = new THREE.Sprite(createMaterial<THREE.SpriteMaterial>('light-halo'));
+      sprite.scale.set(LIGHT_STYLE.haloScale, LIGHT_STYLE.haloScale, 1); // small lamp glint
       this.scene.add(sprite);
       this.halos.push(sprite);
     }
@@ -206,7 +176,7 @@ export class LightingSystem {
     this.globalLights.push(ambient);
 
     // Hemisphere light for subtle top/bottom color difference
-    const hemi = new THREE.HemisphereLight(0xb7c8ce, 0x51473a, 0.42);
+    const hemi = new THREE.HemisphereLight(LIGHT_STYLE.hemisphereSky, LIGHT_STYLE.hemisphereGround, LIGHT_STYLE.hemisphereIntensity);
     this.scene.add(hemi);
     this.globalLights.push(hemi);
 
@@ -218,7 +188,7 @@ export class LightingSystem {
     if (mountedFixtures.length) {
       this.frameMounts = new THREE.InstancedMesh(
         new THREE.BoxGeometry(1.8,0.12,0.25),
-        new THREE.MeshBasicMaterial({color:0xffd5a3}),mountedFixtures.length);
+        createMaterial<THREE.MeshBasicMaterial>('light-mount'),mountedFixtures.length);
       const matrix = new THREE.Matrix4();
       const q = new THREE.Quaternion();
       const position = new THREE.Vector3();
@@ -230,7 +200,7 @@ export class LightingSystem {
         this.frameMounts!.setMatrixAt(i,matrix.compose(position,q,scale));
         const isBore = i >= frameFixtures.length;
         this.levelFixtures[0]!.push({x:f.x,y:f.y,z:f.z,
-          color:isBore ? 0xd5e4dc : 0xffd5a3,intensity:2.5,distance:isBore ? 30 : 24});
+          color:isBore ? LIGHT_STYLE.boreColor : LIGHT_STYLE.mountColor,intensity:LIGHT_STYLE.mountIntensity,distance:isBore ? 30 : 24});
       });
       this.frameMounts.instanceMatrix.needsUpdate = true;
       this.frameMounts.computeBoundingSphere();
@@ -284,7 +254,7 @@ export class LightingSystem {
       light.distance = c.f.distance;
       halo.position.set(c.f.x, c.f.y, c.f.z);
       halo.material.color.setHex(c.f.color);
-      halo.material.opacity = Math.min(0.6, c.f.intensity * 0.18);
+      halo.material.opacity = Math.min(LIGHT_STYLE.haloMaxOpacity, c.f.intensity * LIGHT_STYLE.haloIntensityOpacity);
     }
   }
 

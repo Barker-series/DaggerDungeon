@@ -13,47 +13,23 @@ import { TUNABLES } from '../game/dungeon/tunables';
 import { FoldContour, contourTerrain, foldWedgesAt, terrainOr } from '../game/dungeon/fold-contour';
 import { floorEdgeSegments } from './floor-edge';
 import { buildStructureUtilityBuffers, type UtilityBatches } from './StructureUtilities';
-import { createSourceMaterial, createSourceFittingMaterial, CONCRETE_UV_GLSL, QUIET_SLAB_GLSL, SOURCE_SURFACES, type SourceSurface } from './SourceMaterials';
+import { CONCRETE_UV_GLSL, QUIET_SLAB_GLSL, type SourceSurface } from './SourceMaterials';
+import { createMaterial } from './MaterialLibrary';
+import { STRUCTURE_STYLE, NATIVE_MATERIALS } from '../game/material-presets';
 import { SOURCE_MAP_FRAGMENT } from './SourceSampling';
 
 import { buildWorldInfrastructureBuffers, buildWorldInfrastructureBuffersIncrementally, infrastructureRenderWorld } from './InfrastructureRenderer';
 
-const loader = new THREE.TextureLoader();
 
-function loadTex(path: string): THREE.Texture {
-  const tex = loader.load(
-    path,
-    (t) => { t.needsUpdate = true; },
-    undefined,
-    (err) => { console.error(`Failed to load texture: ${path}`, err); },
-  );
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(1, 1);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.magFilter = THREE.LinearFilter;
-  tex.minFilter = THREE.LinearMipmapLinearFilter;
-  tex.generateMipmaps = true;
-  return tex;
-}
-
-const STAIRS_TEX = loadTex('/textures/stairs-down.png');
 const TEXTURE_WORLD_ORIGIN = { value: new THREE.Vector3() };
 
 /** Region key: a biome, or 'tunnel' for connections carved through void */
 type RegionKey = BiomeType | 'tunnel';
 
-const REGION_TINTS: Record<RegionKey, number> = {
-  dungeon: 0xffffff,
-  cave: 0xc8bbaa, // warm mineral dust, not orange concrete
-  crypt: 0xb4bfba, // aged cool-grey services
-  ember: 0xa89a89, // soot and heat wear; lamps/fog carry the warm accent
-  outside: 0xc9ceca,
-  tunnel: 0xc5beb0,
-};
+const REGION_TINTS: Record<RegionKey, number> = STRUCTURE_STYLE.regionTints;
 
 // Per-region self-illumination (currently none; ember's red moved to fog)
-const REGION_EMISSIVE: Partial<Record<RegionKey, number>> = {};
+const REGION_EMISSIVE: Partial<Record<RegionKey, number>> = STRUCTURE_STYLE.regionEmissive;
 
 /** REGION_TINTS unpacked to linear-ish RGB triplets for vertex colors. */
 const TINT_RGB: Record<RegionKey, [number, number, number]> = Object.fromEntries(
@@ -146,7 +122,7 @@ float foldDetailField(vec2 p, float pixelWidth) {
 export function makeConcreteMaterial(
   tint: number,
   emissive: number,
-  roughness: number,
+  _legacyRoughness: number,
   constructionSeams = false,
   /** Fold wall detail: the 2D fold panel field replaces formwork seams
    *  (live-toggled by detailOn; seams return when it is off) */
@@ -155,12 +131,13 @@ export function makeConcreteMaterial(
 ): THREE.MeshPhongMaterial {
   constructionSeams = constructionSeams && surface === 'concrete-wall';
   foldDetail = foldDetail && surface === 'concrete-wall';
-  const material = createSourceMaterial(surface, tint);
-  material.vertexColors = true;
-  material.emissive.setHex(emissive);
-  material.shininess = 3 + (1-roughness)*12;
+  const material = createMaterial<THREE.MeshPhongMaterial>(surface);
+  material.color?.multiply(new THREE.Color(tint));
+  material.vertexColors = NATIVE_MATERIALS[surface]?.vertexColors ?? true;
+  material.emissive?.add(new THREE.Color(emissive));
 
   const baseCompile = material.onBeforeCompile;
+  const baseProgramKey = material.customProgramCacheKey();
   material.onBeforeCompile = (shader, renderer) => {
     baseCompile.call(material, shader, renderer);
 
@@ -182,10 +159,10 @@ varying vec3 vConcreteNormal;`,
 vConcretePosition = (modelMatrix * vec4(position, 1.0)).xyz + textureWorldOrigin;
 vConcreteNormal = mat3(modelMatrix) * normal;
 #ifdef USE_MAP
-vMapUv = concreteTextureUV(vConcretePosition, vConcreteNormal) * ${SOURCE_SURFACES[surface].repeat.toFixed(2)};
+vMapUv = concreteTextureUV(vConcretePosition, vConcreteNormal) * vec2(${(material.map?.repeat.x ?? 1).toPrecision(17)}, ${(material.map?.repeat.y ?? 1).toPrecision(17)});
 #endif
 #ifdef USE_BUMPMAP
-vBumpMapUv = concreteTextureUV(vConcretePosition, vConcreteNormal) * ${SOURCE_SURFACES[surface].repeat.toFixed(2)};
+vBumpMapUv = concreteTextureUV(vConcretePosition, vConcreteNormal) * vec2(${(material.bumpMap?.repeat.x ?? 1).toPrecision(17)}, ${(material.bumpMap?.repeat.y ?? 1).toPrecision(17)});
 #endif`,
       );
     shader.fragmentShader = shader.fragmentShader
@@ -287,7 +264,7 @@ float foldDetailH = 0.0;`,
     }
   };
   material.customProgramCacheKey = () =>
-    `source-concrete-quiet-v3:${surface}:${constructionSeams}:${foldDetail}`;
+    `source-concrete-quiet-v3:${surface}:${constructionSeams}:${foldDetail}:${baseProgramKey}:${material.map?.repeat.toArray()}:${material.bumpMap?.repeat.toArray()}`;
   return material;
 }
 
@@ -414,13 +391,7 @@ export class DungeonRenderer {
   private materials = new Map<RegionKey, RegionMaterials>();
   /** World being built — read by the per-vertex tint sampler in addMesh. */
   private tintWorld: WorldData | null = null;
-  private stairsMaterial = new THREE.MeshStandardMaterial({
-    map: STAIRS_TEX,
-    roughness: 0.7,
-    emissive: 0x1a3a2a,
-    emissiveIntensity: 0.15,
-    side: THREE.FrontSide,
-  });
+  private stairsMaterial = createMaterial<THREE.MeshStandardMaterial>('stairs');
   private markers: Marker[] = [];
   private markerTime = 0;
 
@@ -476,7 +447,7 @@ export class DungeonRenderer {
   private foldMaterialsFor(preset: number): RegionMaterials {
     let m = this.foldMaterials.get(preset);
     if (!m) {
-      const FOLD_TINTS = [0xc1b8a3, 0xa4aba5, 0xb6a896, 0xadb5ad]; // mineral/industrial variations, not debug colors
+      const FOLD_TINTS = STRUCTURE_STYLE.foldTints;
       const tint = FOLD_TINTS[preset % FOLD_TINTS.length]!;
       m = {
         wall: makeConcreteMaterial(tint, 0x000000, 0.9, true, true),
@@ -3494,9 +3465,9 @@ export class DungeonRenderer {
 
   // Window-independent materials, retained exactly like stairs/concrete.
   private utilityMaterials: Record<keyof UtilityBatches, THREE.MeshPhongMaterial> = {
-    pipe: createSourceMaterial('painted-metal'),
-    fitting: createSourceFittingMaterial(),
-    cable: createSourceMaterial('rubber'),
+    pipe: createMaterial<THREE.MeshPhongMaterial>('painted-metal'),
+    fitting: createMaterial<THREE.MeshPhongMaterial>('fitting'),
+    cable: createMaterial<THREE.MeshPhongMaterial>('rubber'),
   };
 
   /** Small decorative wall/overhead utilities, never collision or pipe bores.

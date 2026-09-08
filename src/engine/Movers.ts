@@ -12,6 +12,7 @@
  */
 
 import * as THREE from 'three';
+import { createMaterial } from './MaterialLibrary';
 import type { WorldData } from '../game/types';
 
 const PILLAR_WU = 168; // 56 tiles * 3
@@ -51,18 +52,8 @@ export class Movers {
 
   constructor(world: WorldData, scene: THREE.Scene) {
     scene.add(this.group);
-    const carMaterial = new THREE.MeshStandardMaterial({
-      color: 0x8a8578,
-      roughness: 0.55,
-      metalness: 0.45,
-    });
-    const callMaterial = new THREE.MeshStandardMaterial({
-      color: 0xb53022,
-      roughness: 0.35,
-      metalness: 0.55,
-      emissive: 0x481008,
-      emissiveIntensity: 1.2,
-    });
+    const carMaterial = createMaterial<THREE.MeshStandardMaterial>('elevator-car');
+    const callMaterial = createMaterial<THREE.MeshStandardMaterial>('elevator-call');
 
     for (const spec of world.pillars.values()) {
       if (!spec.elevator) continue;

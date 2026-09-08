@@ -8,6 +8,40 @@ through the source. Historical design notes are references, not competing specs.
 
 ## Commands you can use without remembering tool filenames
 
+### Material edits: the short path
+
+**All current project materials use `createMaterial(id)` from `src/engine/MaterialLibrary.ts`.**
+Edit **`src/game/material-presets.ts`** for appearance:
+- `NATIVE_MATERIALS`: named mesh, sprite, light-halo, elevator, stair and editor-overlay
+  definitions. Choose `standard` (PBR), `phong`, `basic` (unlit), `sprite`, `line` or `normal`.
+- `SOURCE_SURFACES`: the existing optimized concrete/pipe/iron/tread shader families.
+  Their current metal images pack height into alpha; new native materials do **not** need this.
+- `PIPE_COLORS`: actual deterministic trunk/return/service paint colours—steel blue,
+  weathered green, iron brown and ochre, not the old pale palette.
+- `STRUCTURE_STYLE`, `LIGHT_STYLE`, `BIOME_TORCH`, `SPRITE_STYLE`: contextual colour
+  multipliers, illumination and feedback. These are explicit rather than hidden in consumers.
+
+**New material:** copy the `painted-panel` entry in `NATIVE_MATERIALS`, give it a new name,
+and use `mesh.material = createMaterial('your-name')`. Put ordinary PNG/JPG/WebP images in
+`public/textures/` and set `map: { path: '/textures/your-image.png', repeat: 2 }`.
+Normal/roughness/metalness/emissive/alpha maps are supported; data maps default to linear,
+colour maps to sRGB. Setting `repeat` enables tiling. No factory switch or shader edit is needed.
+For new billboards, `SpriteManager.addSpriteWorld` accepts a final `materialId`; native
+sprite presets create real sprites and existing textured-quad sprites remain compatible.
+
+A native definition can also replace an existing source role under the same name—for
+example `concrete-wall`—when a regular PBR/unlit material is preferable to the packed shader.
+Its colour, emission and texture scale survive the structural renderer. Use `vertexColors`
+when a replacement should retain contextual vertex paint. Materials are caller-owned;
+textures are shared by image, colour space and sampler settings, not disposed with a mesh.
+
+Change one value → save → reload the **existing game** → inspect the same view.
+Reload clears cached pipe vertex colours; a material's white tint is not the pipe palette.
+Run `npm run content -- check materials` afterward. It includes consumer/lifecycle tests,
+new-material/edit tests and a coverage guard against reopening separate creation paths.
+For ordinary art edits, don't run world-generation suites or build another preview tool.
+Gray DDSNAP renders cannot approve colours/textures.
+
 Run from the repository root, with the existing installed dependencies:
 
 Local requirements are the project's Node dependencies and ImageMagick

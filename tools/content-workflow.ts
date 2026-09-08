@@ -123,6 +123,12 @@ export const CHECK_GROUPS: Record<string, { purpose: string; checks: string[] }>
     purpose: 'Quick material roles, shader-hook/UV contracts (not GPU compilation)',
     checks: [
       'texture-repetition.test',
+      'material-presets.test',
+      'material-library.test',
+      'material-edit-regressions.test',
+      'verify-material-consumers',
+      'verify-material-coverage',
+      'verify-metal-readability',
       'verify-quiet-materials',
       'verify-source-materials',
       'verify-world-finishes',

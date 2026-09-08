@@ -13,7 +13,7 @@ def linear(v):
     return v / 12.92 if v <= .04045 else ((v + .055) / 1.055) ** 2.4
 def srgb(v):
     return round(255 * (12.92*v if v <= .0031308 else 1.055*v**(1/2.4)-.055))
-roles = [('OLD CLEAN WALL', 'concrete-clean-base.png', None), ('CONCRETE SLABS / 3 x 6 metres', 'concrete-smooth-precast.png', None), ('QUIET CEILING / relief 0.006', 'concrete-clean-base.png', None), ('NATURAL MINERAL / no slab grid', 'concrete-fine-aggregate.png', None), ('PAINT / example service coat', 'source/painted-metal-packed.webp', (.28,.39,.43)), ('FITTING / neutral steel sides', 'source/rusted-metal-packed.webp', (1,1,1))]
+roles = [('OLD CLEAN WALL', 'concrete-clean-base.png', None), ('CONCRETE SLABS / 3 x 6 metres', 'concrete-smooth-precast.png', None), ('QUIET CEILING / relief 0.006', 'concrete-clean-base.png', None), ('NATURAL MINERAL / no slab grid', 'concrete-fine-aggregate.png', None), ('PAINT / example service coat', 'source/painted-metal-packed.webp', (.28,.39,.43)), ('FITTING / original worn iron', 'source/rusted-metal-packed.webp', None)]
 for i, (title, asset, coat) in enumerate(roles):
     tex = Image.open(Path('public/textures') / asset).convert('RGB').resize((120,90), Image.Resampling.LANCZOS)
     panel = Image.new('RGB', (w,h))
